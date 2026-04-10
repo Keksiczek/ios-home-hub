@@ -8,7 +8,7 @@ struct MemoryView: View {
     var body: some View {
         NavigationStack {
             Group {
-                if memory.facts.isEmpty && memory.candidates.isEmpty {
+                if memory.facts.isEmpty && memory.episodes.isEmpty && memory.candidates.isEmpty {
                     HHEmptyState(
                         icon: "sparkles",
                         title: "Nothing remembered yet",
@@ -31,20 +31,39 @@ struct MemoryView: View {
                             }
                         }
 
-                        Section("Remembered") {
-                            ForEach(memory.facts) { fact in
-                                FactRow(fact: fact,
-                                        onTogglePin: {
-                                            Task { await memory.setPinned(!fact.pinned, for: fact.id) }
-                                        },
-                                        onToggleDisabled: {
-                                            Task { await memory.setDisabled(!fact.disabled, for: fact.id) }
-                                        })
+                        if !memory.facts.isEmpty {
+                            Section("Remembered facts") {
+                                ForEach(memory.facts) { fact in
+                                    FactRow(fact: fact,
+                                            onTogglePin: {
+                                                Task { await memory.setPinned(!fact.pinned, for: fact.id) }
+                                            },
+                                            onToggleDisabled: {
+                                                Task { await memory.setDisabled(!fact.disabled, for: fact.id) }
+                                            })
+                                }
+                                .onDelete { offsets in
+                                    let targets = offsets.map { memory.facts[$0] }
+                                    for fact in targets {
+                                        Task { await memory.delete(fact.id) }
+                                    }
+                                }
                             }
-                            .onDelete { offsets in
-                                let targets = offsets.map { memory.facts[$0] }
-                                for fact in targets {
-                                    Task { await memory.delete(fact.id) }
+                        }
+
+                        if !memory.episodes.isEmpty {
+                            Section("Episodes") {
+                                ForEach(memory.episodes) { episode in
+                                    EpisodeRow(episode: episode,
+                                               onToggleDisabled: {
+                                                   Task { await memory.setEpisodeDisabled(!episode.disabled, for: episode.id) }
+                                               })
+                                }
+                                .onDelete { offsets in
+                                    let targets = offsets.map { memory.episodes[$0] }
+                                    for episode in targets {
+                                        Task { await memory.deleteEpisode(episode.id) }
+                                    }
                                 }
                             }
                         }
@@ -92,8 +111,12 @@ private struct CandidateRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: HHTheme.spaceS) {
             HStack {
-                HHTagChip(text: candidate.category.label,
-                          symbol: candidate.category.symbol)
+                HHTagChip(text: kindLabel,
+                          symbol: kindSymbol)
+                if candidate.kind == .fact {
+                    HHTagChip(text: candidate.category.label,
+                              symbol: candidate.category.symbol)
+                }
                 Spacer()
                 Text(candidate.proposedAt.formatted(.relative(presentation: .named)))
                     .font(HHTheme.caption)
@@ -111,6 +134,20 @@ private struct CandidateRow: View {
             }
         }
         .padding(.vertical, 4)
+    }
+
+    private var kindLabel: String {
+        switch candidate.kind {
+        case .fact:    return "Fact"
+        case .episode: return "Episode"
+        }
+    }
+
+    private var kindSymbol: String {
+        switch candidate.kind {
+        case .fact:    return "lightbulb"
+        case .episode: return "clock.arrow.circlepath"
+        }
     }
 }
 
@@ -152,6 +189,39 @@ private struct FactRow: View {
                       systemImage: fact.disabled ? "checkmark" : "xmark")
             }
             .tint(fact.disabled ? .green : .gray)
+        }
+    }
+}
+
+private struct EpisodeRow: View {
+    let episode: MemoryEpisode
+    let onToggleDisabled: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                HHTagChip(text: "Episode", symbol: "clock.arrow.circlepath")
+                Spacer()
+                Text(episode.createdAt.formatted(.relative(presentation: .named)))
+                    .font(HHTheme.caption)
+                    .foregroundStyle(HHTheme.textSecondary)
+                if episode.disabled {
+                    Text("Off")
+                        .font(HHTheme.caption)
+                        .foregroundStyle(HHTheme.textSecondary)
+                }
+            }
+            Text(episode.summary)
+                .font(HHTheme.body)
+                .foregroundStyle(episode.disabled ? HHTheme.textSecondary : HHTheme.textPrimary)
+        }
+        .padding(.vertical, 4)
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            Button(action: onToggleDisabled) {
+                Label(episode.disabled ? "Enable" : "Disable",
+                      systemImage: episode.disabled ? "checkmark" : "xmark")
+            }
+            .tint(episode.disabled ? .green : .gray)
         }
     }
 }

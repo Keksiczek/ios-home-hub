@@ -130,6 +130,28 @@ actor FileStore: Store {
         try write(all, to: "memory.json")
     }
 
+    // MARK: - Episodes
+
+    func loadMemoryEpisodes() async throws -> [MemoryEpisode] {
+        (try read([MemoryEpisode].self, from: "episodes.json")) ?? []
+    }
+
+    func save(episode: MemoryEpisode) async throws {
+        var all = (try read([MemoryEpisode].self, from: "episodes.json")) ?? []
+        if let idx = all.firstIndex(where: { $0.id == episode.id }) {
+            all[idx] = episode
+        } else {
+            all.append(episode)
+        }
+        try write(all, to: "episodes.json")
+    }
+
+    func deleteMemoryEpisode(id: UUID) async throws {
+        var all = (try read([MemoryEpisode].self, from: "episodes.json")) ?? []
+        all.removeAll { $0.id == id }
+        try write(all, to: "episodes.json")
+    }
+
     // MARK: - Settings + onboarding
 
     func loadAppSettings() async throws -> AppSettings? {

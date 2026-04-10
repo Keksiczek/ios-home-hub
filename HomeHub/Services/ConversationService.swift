@@ -126,13 +126,15 @@ final class ConversationService: ObservableObject {
             try? await store.save(conversation: conversations[idx])
         }
 
-        // Build prompt context.
+        // Build prompt context with layered memory.
         let facts = await memory.relevantFacts(for: userInput, limit: 8)
+        let episodes = await memory.relevantEpisodes(for: userInput, limit: 4)
         let historyWindow = Array(list.dropLast().suffix(20))
         let package = PromptContextPackage(
             assistant: personalization.assistantProfile,
             user: personalization.userProfile,
             facts: facts,
+            episodes: episodes,
             recentMessages: historyWindow,
             userInput: userInput,
             settings: settings.current
