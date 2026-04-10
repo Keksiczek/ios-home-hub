@@ -54,6 +54,10 @@ final class ModelDownloadService: ObservableObject {
         tasks[modelID]?.cancel()
         tasks[modelID] = nil
         active[modelID] = nil
+        #if HOMEHUB_REAL_RUNTIME
+        // User chose to cancel — wipe resume data so next attempt starts fresh.
+        clearResumeData(for: modelID)
+        #endif
         catalog.setInstallState(.notInstalled, for: modelID)
     }
 
@@ -84,13 +88,11 @@ final class ModelDownloadService: ObservableObject {
         do {
             let localURL = await localModels.localURL(for: modelID)
 
-            // Ensure parent directory exists
             try FileManager.default.createDirectory(
                 at: localURL.deletingLastPathComponent(),
                 withIntermediateDirectories: true
             )
 
-            // Set up progress delegate
             let progressDelegate = DownloadProgressDelegate { [weak self] fraction in
                 Task { @MainActor [weak self] in
                     guard let self, self.active[modelID] != nil else { return }
@@ -99,22 +101,39 @@ final class ModelDownloadService: ObservableObject {
                 }
             }
 
-            // Start download
-            let (tempURL, response) = try await URLSession.shared.download(
-                from: model.downloadURL,
-                delegate: progressDelegate
-            )
+            // Per-download session: Wi-Fi only + 2-hour resource timeout for large GGUF files.
+            // Using a dedicated session (not URLSession.shared) keeps configuration isolated
+            // and ensures finishTasksAndInvalidate() cleans up cleanly on early exit.
+            let config = URLSessionConfiguration.default
+            config.allowsCellularAccess = false          // Wi-Fi only — models are 2-5 GB
+            config.timeoutIntervalForResource = 7_200    // 2 h; slow Wi-Fi + large files
+            let session = URLSession(configuration: config)
+            defer { session.finishTasksAndInvalidate() }
 
-            // Check cancellation
-            if Task.isCancelled || active[modelID]?.isCancelled == true { return }
+            let tempURL: URL
+            let response: URLResponse
 
-            // Validate HTTP response
-            if let httpResponse = response as? HTTPURLResponse,
-               !(200..<300).contains(httpResponse.statusCode) {
-                throw DownloadError.invalidResponse(statusCode: httpResponse.statusCode)
+            // Resume an interrupted download when the server supports range requests.
+            if let resumeData = loadResumeData(for: modelID) {
+                (tempURL, response) = try await session.download(
+                    resumingWith: resumeData,
+                    delegate: progressDelegate
+                )
+                clearResumeData(for: modelID)
+            } else {
+                (tempURL, response) = try await session.download(
+                    from: model.downloadURL,
+                    delegate: progressDelegate
+                )
             }
 
-            // SHA-256 verification (if hash provided)
+            guard !Task.isCancelled, active[modelID]?.isCancelled != true else { return }
+
+            if let http = response as? HTTPURLResponse,
+               !(200..<300).contains(http.statusCode) {
+                throw DownloadError.invalidResponse(statusCode: http.statusCode)
+            }
+
             if let expectedHash = model.sha256 {
                 let actualHash = try sha256Hash(of: tempURL)
                 guard actualHash.lowercased() == expectedHash.lowercased() else {
@@ -125,7 +144,6 @@ final class ModelDownloadService: ObservableObject {
                 }
             }
 
-            // Move to final location
             if FileManager.default.fileExists(atPath: localURL.path) {
                 try FileManager.default.removeItem(at: localURL)
             }
@@ -135,18 +153,59 @@ final class ModelDownloadService: ObservableObject {
                 throw DownloadError.fileMoveFailed(error.localizedDescription)
             }
 
-            // Success
             catalog.setInstallState(.installed(localURL: localURL), for: modelID)
             active[modelID] = nil
             tasks[modelID] = nil
 
         } catch is CancellationError {
-            // Task was cancelled — state already cleaned up by cancel()
+            // User-initiated cancel — resume data already cleared by cancel().
+        } catch let urlError as URLError {
+            // Persist resume data so we can continue where we left off on retry.
+            if let data = urlError.downloadTaskResumeData {
+                saveResumeData(data, for: modelID)
+            }
+            let reason: String
+            switch urlError.code {
+            case .notConnectedToInternet, .networkConnectionLost:
+                reason = urlError.downloadTaskResumeData != nil
+                    ? "Download paused. Reconnect to Wi-Fi to continue."
+                    : "No internet connection. Connect to Wi-Fi and try again."
+            case .dataNotAllowed:
+                reason = "Wi-Fi required — models are downloaded on Wi-Fi only."
+            default:
+                reason = urlError.localizedDescription
+            }
+            catalog.setInstallState(.failed(reason: reason), for: modelID)
+            active[modelID] = nil
+            tasks[modelID] = nil
         } catch {
             catalog.setInstallState(.failed(reason: error.localizedDescription), for: modelID)
             active[modelID] = nil
             tasks[modelID] = nil
         }
+    }
+
+    // MARK: - Resume Data
+
+    /// Returns resume data saved from a previous interrupted download, if any.
+    private func loadResumeData(for modelID: String) -> Data? {
+        UserDefaults.standard.data(forKey: resumeDataKey(for: modelID))
+    }
+
+    /// Persists resume data to UserDefaults so interrupted downloads can continue
+    /// after an app restart or network interruption.
+    private func saveResumeData(_ data: Data, for modelID: String) {
+        UserDefaults.standard.set(data, forKey: resumeDataKey(for: modelID))
+    }
+
+    /// Removes stored resume data. Called on user-initiated cancel or successful
+    /// download completion.
+    func clearResumeData(for modelID: String) {
+        UserDefaults.standard.removeObject(forKey: resumeDataKey(for: modelID))
+    }
+
+    private func resumeDataKey(for modelID: String) -> String {
+        "com.homehub.app.resumeData.\(modelID)"
     }
 
     /// Computes SHA-256 hash of a file using streaming 1 MB reads.
