@@ -5,6 +5,8 @@ struct MemoryView: View {
     @EnvironmentObject private var settings: SettingsService
     @State private var showingAdd = false
 
+    private var hapticsEnabled: Bool { settings.current.haptics }
+
     var body: some View {
         NavigationStack {
             Group {
@@ -23,8 +25,10 @@ struct MemoryView: View {
                             Section("Proposed") {
                                 ForEach(memory.candidates) { candidate in
                                     CandidateRow(candidate: candidate) {
+                                        HHHaptics.notification(.success, enabled: hapticsEnabled)
                                         Task { await memory.accept(candidate) }
                                     } onReject: {
+                                        HHHaptics.impact(.light, enabled: hapticsEnabled)
                                         memory.reject(candidateID: candidate.id)
                                     }
                                 }
@@ -70,6 +74,7 @@ struct MemoryView: View {
 
                         Section {
                             Button(role: .destructive) {
+                                HHHaptics.notification(.warning, enabled: hapticsEnabled)
                                 Task { await memory.clearAll() }
                             } label: {
                                 Label("Clear all memory", systemImage: "trash")

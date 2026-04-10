@@ -139,7 +139,7 @@ final class PromptAssemblyTests: XCTestCase {
 
     // MARK: - Limits
 
-    func testFactsAreCappedAtTwelve() {
+    func testFactsAreCappedAtEight() {
         let facts = (0..<20).map { i in
             MemoryFact(id: UUID(), content: "Fact \(i)",
                        category: .other, source: .userManual,
@@ -149,12 +149,12 @@ final class PromptAssemblyTests: XCTestCase {
         let package = makePackage(facts: facts)
         let prompt = service.build(from: package)
 
-        // Should contain facts 0-11 but not 12+
-        XCTAssertTrue(prompt.systemPrompt.contains("Fact 11"))
-        XCTAssertFalse(prompt.systemPrompt.contains("Fact 12"))
+        // PromptAssemblyService caps facts at prefix(8) → 0-7 included.
+        XCTAssertTrue(prompt.systemPrompt.contains("Fact 7"))
+        XCTAssertFalse(prompt.systemPrompt.contains("Fact 8"))
     }
 
-    func testEpisodesAreCappedAtSix() {
+    func testEpisodesAreCappedAtThree() {
         let episodes = (0..<10).map { i in
             MemoryEpisode(id: UUID(),
                           summary: "Episode \(i)",
@@ -167,8 +167,9 @@ final class PromptAssemblyTests: XCTestCase {
         let package = makePackage(episodes: episodes)
         let prompt = service.build(from: package)
 
-        XCTAssertTrue(prompt.systemPrompt.contains("Episode 5"))
-        XCTAssertFalse(prompt.systemPrompt.contains("Episode 6"))
+        // PromptAssemblyService caps episodes at prefix(3) → 0-2 included.
+        XCTAssertTrue(prompt.systemPrompt.contains("Episode 2"))
+        XCTAssertFalse(prompt.systemPrompt.contains("Episode 3"))
     }
 
     // MARK: - Message assembly

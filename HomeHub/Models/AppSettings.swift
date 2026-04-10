@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 
 struct AppSettings: Codable, Equatable {
     var memoryEnabled: Bool
@@ -9,6 +10,9 @@ struct AppSettings: Codable, Equatable {
     var topP: Double
     var haptics: Bool
     var theme: AppTheme
+    /// ID of the last model the user loaded. Used to auto-load on
+    /// app launch and after onboarding.
+    var selectedModelID: String?
 
     static let `default` = AppSettings(
         memoryEnabled: true,
@@ -18,7 +22,8 @@ struct AppSettings: Codable, Equatable {
         temperature: 0.7,
         topP: 0.9,
         haptics: true,
-        theme: .system
+        theme: .system,
+        selectedModelID: nil
     )
 }
 
@@ -34,6 +39,16 @@ enum AppTheme: String, Codable, CaseIterable, Identifiable {
         case .system: return "Match system"
         case .light:  return "Light"
         case .dark:   return "Dark"
+        }
+    }
+
+    /// Maps to SwiftUI's `preferredColorScheme(_:)`.
+    /// `nil` means "follow the system setting".
+    var colorScheme: ColorScheme? {
+        switch self {
+        case .system: return nil
+        case .light:  return .light
+        case .dark:   return .dark
         }
     }
 }

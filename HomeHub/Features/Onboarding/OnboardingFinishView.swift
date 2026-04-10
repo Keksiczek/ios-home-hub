@@ -100,7 +100,8 @@ struct OnboardingFinishView: View {
         await service.commit(
             user: drafts.user,
             assistant: drafts.assistant,
-            memoryEnabled: drafts.memoryEnabled
+            memoryEnabled: drafts.memoryEnabled,
+            selectedModelID: drafts.selectedModelID
         )
     }
 }

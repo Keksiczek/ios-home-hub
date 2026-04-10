@@ -91,18 +91,71 @@ final class AppContainer: ObservableObject {
 
         if onboardingService.state.isCompleted {
             appState.phase = .ready
+            // Auto-load the last selected model if it's installed.
+            await autoLoadSelectedModel()
         } else {
             appState.phase = .onboarding
         }
     }
 
+    /// Attempts to load the model the user last selected. Called on
+    /// launch and after onboarding completes. Silent no-op when no
+    /// model is selected or the model file isn't installed yet.
+    func autoLoadSelectedModel() async {
+        guard let modelID = settingsService.current.selectedModelID,
+              let model = modelCatalogService.model(withID: modelID),
+              model.installState.isReady,
+              runtimeManager.activeModel == nil else { return }
+        await runtimeManager.load(model)
+    }
+
+    // MARK: - Lifecycle
+
+    /// Forward memory-pressure notification to the runtime.
+    func handleMemoryPressure() async {
+        if let llama = runtimeManager.runtime as? LlamaCppRuntime {
+            await llama.handleMemoryPressure()
+        }
+    }
+
+    /// Forward scene-phase changes to the runtime.
+    func handleScenePhaseChange(_ phase: ScenePhase) async {
+        switch phase {
+        case .background:
+            if let llama = runtimeManager.runtime as? LlamaCppRuntime {
+                await llama.handleBackground()
+            }
+        case .active:
+            // Reload model if it was unloaded while backgrounded.
+            if runtimeManager.activeModel == nil {
+                await autoLoadSelectedModel()
+            }
+        default:
+            break
+        }
+    }
+
     // MARK: - Factories
 
+    /// Production wiring. Uses `FileStore` for persistence.
+    ///
+    /// Runtime selection:
+    /// - Default: `MockLocalRuntime` — the app is fully functional with
+    ///   simulated inference. Use this until the llama.cpp xcframework
+    ///   is integrated.
+    /// - To use the real llama.cpp runtime, add `HOMEHUB_REAL_RUNTIME`
+    ///   to Swift Active Compilation Conditions in Xcode build settings.
     static func live() -> AppContainer {
-        AppContainer(
+        let runtime: any LocalLLMRuntime
+        #if HOMEHUB_REAL_RUNTIME
+        runtime = LlamaCppRuntime()
+        #else
+        runtime = MockLocalRuntime()
+        #endif
+        return AppContainer(
             appState: AppState(),
             store: FileStore(),
-            runtime: LlamaCppRuntime()
+            runtime: runtime
         )
     }
 
