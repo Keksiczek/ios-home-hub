@@ -35,7 +35,19 @@ final class ModelCatalogService: ObservableObject {
     }
 }
 
+// MARK: - Curated model catalog
+
 enum ModelCatalog {
+    /// Curated list of models tested on iPhone 16 Pro and M-series iPad.
+    ///
+    /// Download URLs point to HuggingFace GGUF repositories. When
+    /// `HOMEHUB_REAL_RUNTIME` is set, `ModelDownloadService` fetches
+    /// these URLs with progress tracking and optional SHA-256
+    /// verification. In development builds, downloads are simulated.
+    ///
+    /// SHA-256 hashes are left nil because the upstream files may be
+    /// re-quantised. Set them after verifying a known-good download
+    /// to enable integrity checks.
     static let curated: [LocalModel] = [
         LocalModel(
             id: "llama-3.2-3b-instruct-q4_k_m",
@@ -45,7 +57,9 @@ enum ModelCatalog {
             quantization: "Q4_K_M",
             sizeBytes: 2_100_000_000,
             contextLength: 8192,
-            downloadURL: URL(string: "https://example.com/models/llama-3.2-3b-instruct-q4_k_m.gguf")!,
+            downloadURL: URL(string:
+                "https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf"
+            )!,
             sha256: nil,
             installState: .notInstalled,
             recommendedFor: [.iPhone, .iPadMSeries],
@@ -59,7 +73,9 @@ enum ModelCatalog {
             quantization: "Q4_K_M",
             sizeBytes: 2_400_000_000,
             contextLength: 4096,
-            downloadURL: URL(string: "https://example.com/models/phi-3.5-mini-instruct-q4_k_m.gguf")!,
+            downloadURL: URL(string:
+                "https://huggingface.co/bartowski/Phi-3.5-mini-instruct-GGUF/resolve/main/Phi-3.5-mini-instruct-Q4_K_M.gguf"
+            )!,
             sha256: nil,
             installState: .notInstalled,
             recommendedFor: [.iPhone, .iPadMSeries],
@@ -73,7 +89,9 @@ enum ModelCatalog {
             quantization: "Q5_K_M",
             sizeBytes: 2_500_000_000,
             contextLength: 8192,
-            downloadURL: URL(string: "https://example.com/models/qwen-2.5-3b-instruct-q5_k_m.gguf")!,
+            downloadURL: URL(string:
+                "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q5_k_m.gguf"
+            )!,
             sha256: nil,
             installState: .notInstalled,
             recommendedFor: [.iPhone, .iPadMSeries],
@@ -87,7 +105,9 @@ enum ModelCatalog {
             quantization: "Q4_K_M",
             sizeBytes: 4_800_000_000,
             contextLength: 8192,
-            downloadURL: URL(string: "https://example.com/models/llama-3.1-8b-instruct-q4_k_m.gguf")!,
+            downloadURL: URL(string:
+                "https://huggingface.co/bartowski/Meta-Llama-3.1-8B-Instruct-GGUF/resolve/main/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf"
+            )!,
             sha256: nil,
             installState: .notInstalled,
             recommendedFor: [.iPadMSeries],

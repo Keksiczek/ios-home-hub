@@ -31,7 +31,10 @@ let package = Package(
         .target(
             name: "HomeHub",
             path: "HomeHub",
-            exclude: ["App/HomeHubApp.swift"],
+            exclude: [
+                "App/HomeHubApp.swift",
+                "Runtime/Bridge/HomeHub-Bridging-Header.h"
+            ],
             swiftSettings: [
                 // Default: use MockLocalRuntime in live() builds.
                 // When integrating the real llama.cpp xcframework, add

@@ -10,18 +10,6 @@ import Foundation
 /// ctx.close()   // always call when done
 /// ```
 ///
-/// # Wiring the real implementation
-/// 1. Add the llama.cpp xcframework (built with `cmake -DGGML_METAL=ON`)
-///    as a binary target in `Package.swift` or directly into the Xcode
-///    project under *Frameworks, Libraries, and Embedded Content*.
-/// 2. Create a bridging header (or a separate `LlamaCppKit` SPM target)
-///    that imports `llama.h`.
-/// 3. Replace the bodies of `load`, `stream`, and `close` below with the
-///    corresponding llama.cpp C-API calls:
-///    - `load`   → `llama_load_model_from_file` + `llama_new_context_with_model`
-///    - `stream` → `llama_decode` loop + `llama_token_to_piece` per token
-///    - `close`  → `llama_free` + `llama_free_model`
-///
 /// # GPU layers
 /// Pass `.maximum` on Metal-capable devices (iPhone 12+ / all Apple Silicon
 /// iPads). Use `.none` in the iOS Simulator where Metal compute shaders are
@@ -35,14 +23,6 @@ import Foundation
 /// `LlamaRuntimeActor` ensures `close()` is called exactly once.
 struct LlamaContextHandle: @unchecked Sendable {
 
-    // TODO: Store UnsafeMutableRawPointer to llama_context here when
-    // the real xcframework is wired in. Keep the model pointer alongside
-    // so close() can free both in the right order (context first, then model).
-    //
-    // Example:
-    //   private let context: OpaquePointer   // llama_context *
-    //   private let model:   OpaquePointer   // llama_model *
-
     // MARK: - GPU strategy
 
     enum GPULayers: Sendable {
@@ -53,82 +33,68 @@ struct LlamaContextHandle: @unchecked Sendable {
         /// Offload exactly `n` transformer layers to GPU.
         case layers(Int)
 
-        /// Maps to the `n_gpu_layers` parameter expected by llama.cpp.
         fileprivate var count: Int32 {
             switch self {
-            case .none:         return 0
-            case .maximum:      return 999   // llama.cpp interprets large values as "all"
+            case .none:          return 0
+            case .maximum:       return 999
             case .layers(let n): return Int32(n)
             }
         }
     }
 
+#if HOMEHUB_REAL_RUNTIME
+
+    // MARK: - Real llama.cpp implementation
+
+    private let contextPtr: OpaquePointer   // llama_context *
+    private let modelPtr: OpaquePointer     // llama_model *
+
+    private init(context: OpaquePointer, model: OpaquePointer) {
+        self.contextPtr = context
+        self.modelPtr = model
+    }
+
+    // MARK: - One-time backend init
+
+    private static let backendInitOnce: Void = {
+        llama_backend_init()
+    }()
+
     // MARK: - Factory
 
-    /// Loads a GGUF model from disk and prepares an inference context.
-    ///
-    /// This call is synchronous and blocks the calling thread until the
-    /// model weights are mapped into memory. Run it from a background
-    /// thread / actor task — `LlamaRuntimeActor.load` handles this.
-    ///
-    /// - Parameters:
-    ///   - modelPath: Absolute path to a `.gguf` file inside the app sandbox.
-    ///   - contextLength: KV-cache size in tokens. Match the model's advertised
-    ///     context window.
-    ///   - gpuLayers: Metal offload strategy (see ``GPULayers``).
-    ///
-    /// - Throws:
-    ///   - `RuntimeError.incompatibleModel` — GGUF header unrecognised or
-    ///     quantisation type unsupported by this build.
-    ///   - `RuntimeError.outOfMemory` — model weights + KV cache exceed the
-    ///     device's available unified memory.
-    ///   - `RuntimeError.underlying` — unexpected llama.cpp error.
     static func load(
         modelPath: String,
         contextLength: Int,
         gpuLayers: GPULayers
     ) throws -> LlamaContextHandle {
-        // TODO: Replace this block with real llama.cpp calls:
-        //
-        //   var modelParams = llama_model_default_params()
-        //   modelParams.n_gpu_layers = gpuLayers.count
-        //
-        //   guard let model = llama_load_model_from_file(modelPath, modelParams) else {
-        //       // llama.cpp returns nil on bad GGUF or unsupported quant
-        //       throw RuntimeError.incompatibleModel(
-        //           "llama_load_model_from_file returned nil for \(modelPath)"
-        //       )
-        //   }
-        //
-        //   var ctxParams = llama_context_default_params()
-        //   ctxParams.n_ctx     = UInt32(contextLength)
-        //   ctxParams.n_batch   = 512
-        //   ctxParams.n_ubatch  = 512
-        //   ctxParams.flash_attn = true  // Metal supports flash attention
-        //
-        //   guard let ctx = llama_new_context_with_model(model, ctxParams) else {
-        //       llama_free_model(model)
-        //       throw RuntimeError.outOfMemory
-        //   }
-        //
-        //   return LlamaContextHandle(context: ctx, model: model)
+        _ = backendInitOnce
 
-        throw RuntimeError.underlying(
-            "LlamaContextHandle.load is a stub – wire in the llama.cpp xcframework. " +
-            "See the doc comment above for step-by-step instructions."
-        )
+        var modelParams = llama_model_default_params()
+        modelParams.n_gpu_layers = gpuLayers.count
+
+        guard let model = llama_model_load_from_file(modelPath, modelParams) else {
+            throw RuntimeError.incompatibleModel(
+                "llama_model_load_from_file returned nil for \(modelPath). " +
+                "The file may be corrupt, use an unsupported quantisation, or have an invalid GGUF header."
+            )
+        }
+
+        var ctxParams = llama_context_default_params()
+        ctxParams.n_ctx    = UInt32(contextLength)
+        ctxParams.n_batch  = 512
+        ctxParams.n_ubatch = 512
+        ctxParams.flash_attn = true
+
+        guard let ctx = llama_init_from_model(model, ctxParams) else {
+            llama_model_free(model)
+            throw RuntimeError.outOfMemory
+        }
+
+        return LlamaContextHandle(context: ctx, model: model)
     }
 
     // MARK: - Generation
 
-    /// Streams decoded token pieces for `prompt`.
-    ///
-    /// Each yielded `String` is a BPE/SentencePiece *piece* (typically one
-    /// to a few characters). The stream ends when the model emits EOS, when
-    /// `maxTokens` is reached, or when a `stopSequence` is detected.
-    /// Cancelling the consuming `Task` stops generation via `Task.isCancelled`.
-    ///
-    /// - Throws: `RuntimeError.underlying` on any llama.cpp sampling error.
     func stream(
         prompt: String,
         maxTokens: Int,
@@ -136,20 +102,200 @@ struct LlamaContextHandle: @unchecked Sendable {
         topP: Float,
         stopSequences: [String]
     ) throws -> AsyncThrowingStream<String, Error> {
-        // TODO: Replace with real generation loop:
-        //
-        //   1. Tokenise: llama_tokenize(model, prompt, tokens, maxLen, addBos, special)
-        //   2. Evaluate prompt: llama_decode(context, batch)
-        //   3. For i in 0..<maxTokens:
-        //      a. Sample: configure llama_sampler (temperature, top-p, repetition)
-        //      b. token = llama_sampler_sample(sampler, context, -1)
-        //      c. if token == llama_token_eos(model) { break }
-        //      d. piece = llama_token_to_piece(model, token)
-        //      e. Check stopSequences; if matched, break
-        //      f. yield piece
-        //      g. if Task.isCancelled { llama_kv_cache_clear(context); break }
-        //   4. Clean up sampler
+        let ctx = contextPtr
+        let model = modelPtr
 
+        return AsyncThrowingStream { continuation in
+            let task = Task.detached(priority: .userInitiated) {
+                do {
+                    // --- 1. Tokenise ---
+                    let promptBytes = Array(prompt.utf8CString)
+                    let maxTokenCount = promptBytes.count + 64
+                    var tokens = [llama_token](repeating: 0, count: maxTokenCount)
+                    let nTokens = tokens.withUnsafeMutableBufferPointer { buf in
+                        llama_tokenize(
+                            model,
+                            promptBytes, Int32(promptBytes.count - 1), // exclude null terminator
+                            buf.baseAddress!, Int32(maxTokenCount),
+                            true,  // add_special (BOS)
+                            false  // parse_special
+                        )
+                    }
+
+                    guard nTokens > 0 else {
+                        continuation.finish(throwing: RuntimeError.underlying("Tokenisation failed"))
+                        return
+                    }
+
+                    let promptTokens = Array(tokens.prefix(Int(nTokens)))
+
+                    // --- 2. Clear KV cache ---
+                    llama_kv_cache_clear(ctx)
+
+                    // --- 3. Evaluate prompt in batches ---
+                    let batchSize = 512
+                    var pos: Int32 = 0
+                    for batchStart in stride(from: 0, to: promptTokens.count, by: batchSize) {
+                        if Task.isCancelled {
+                            continuation.finish()
+                            return
+                        }
+
+                        let batchEnd = min(batchStart + batchSize, promptTokens.count)
+                        let batchSlice = Array(promptTokens[batchStart..<batchEnd])
+                        let n = Int32(batchSlice.count)
+
+                        let batch = batchSlice.withUnsafeBufferPointer { buf in
+                            llama_batch_get_one(UnsafeMutablePointer(mutating: buf.baseAddress!), n)
+                        }
+
+                        let status = llama_decode(ctx, batch)
+                        if status != 0 {
+                            continuation.finish(throwing: RuntimeError.underlying(
+                                "llama_decode failed during prompt evaluation (status: \(status))"
+                            ))
+                            return
+                        }
+                        pos += n
+                    }
+
+                    // --- 4. Set up sampler chain ---
+                    let samplerParams = llama_sampler_chain_default_params()
+                    guard let sampler = llama_sampler_chain_init(samplerParams) else {
+                        continuation.finish(throwing: RuntimeError.underlying("Failed to init sampler chain"))
+                        return
+                    }
+                    defer { llama_sampler_free(sampler) }
+
+                    llama_sampler_chain_add(sampler, llama_sampler_init_temp(temperature))
+                    llama_sampler_chain_add(sampler, llama_sampler_init_top_p(topP, 1))
+                    llama_sampler_chain_add(sampler, llama_sampler_init_dist(UInt32.random(in: 0...UInt32.max)))
+
+                    // --- 5. Generation loop ---
+                    var stopBuffer = ""
+                    let maxStopLen = stopSequences.map(\.count).max() ?? 0
+                    let eosToken = llama_vocab_eos(llama_model_get_vocab(model))
+
+                    for _ in 0..<maxTokens {
+                        if Task.isCancelled {
+                            llama_kv_cache_clear(ctx)
+                            continuation.finish()
+                            return
+                        }
+
+                        let newToken = llama_sampler_sample(sampler, ctx, -1)
+
+                        if newToken == eosToken {
+                            // Flush any buffered text
+                            if !stopBuffer.isEmpty {
+                                continuation.yield(stopBuffer)
+                            }
+                            continuation.finish()
+                            return
+                        }
+
+                        // Convert token to text
+                        var pieceBuffer = [CChar](repeating: 0, count: 256)
+                        let pieceLen = llama_token_to_piece(
+                            model, newToken,
+                            &pieceBuffer, Int32(pieceBuffer.count),
+                            0,     // lstrip
+                            false  // special
+                        )
+
+                        guard pieceLen > 0 else { continue }
+
+                        let piece = String(
+                            bytes: pieceBuffer.prefix(Int(pieceLen)).map { UInt8(bitPattern: $0) },
+                            encoding: .utf8
+                        ) ?? ""
+
+                        // Stop sequence detection
+                        if !stopSequences.isEmpty {
+                            stopBuffer += piece
+                            var matched = false
+                            for seq in stopSequences {
+                                if stopBuffer.contains(seq) {
+                                    // Yield text before the stop sequence
+                                    if let range = stopBuffer.range(of: seq) {
+                                        let before = String(stopBuffer[stopBuffer.startIndex..<range.lowerBound])
+                                        if !before.isEmpty {
+                                            continuation.yield(before)
+                                        }
+                                    }
+                                    continuation.finish()
+                                    return
+                                }
+                            }
+                            // Flush safe prefix (keep only last maxStopLen chars)
+                            if stopBuffer.count > maxStopLen {
+                                let flushEnd = stopBuffer.index(stopBuffer.endIndex, offsetBy: -maxStopLen)
+                                let toFlush = String(stopBuffer[stopBuffer.startIndex..<flushEnd])
+                                continuation.yield(toFlush)
+                                stopBuffer = String(stopBuffer[flushEnd...])
+                            }
+                        } else {
+                            continuation.yield(piece)
+                        }
+
+                        // Prepare next decode
+                        var nextTokenArr = [newToken]
+                        let nextBatch = nextTokenArr.withUnsafeMutableBufferPointer { buf in
+                            llama_batch_get_one(buf.baseAddress!, 1)
+                        }
+                        let decodeStatus = llama_decode(ctx, nextBatch)
+                        if decodeStatus != 0 {
+                            continuation.finish(throwing: RuntimeError.underlying(
+                                "llama_decode failed during generation (status: \(decodeStatus))"
+                            ))
+                            return
+                        }
+                    }
+
+                    // Flush remaining buffer
+                    if !stopBuffer.isEmpty {
+                        continuation.yield(stopBuffer)
+                    }
+                    continuation.finish()
+
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+
+            continuation.onTermination = { @Sendable _ in task.cancel() }
+        }
+    }
+
+    // MARK: - Cleanup
+
+    func close() {
+        llama_free(contextPtr)
+        llama_model_free(modelPtr)
+    }
+
+#else
+
+    // MARK: - Stub implementation (development builds)
+
+    static func load(
+        modelPath: String,
+        contextLength: Int,
+        gpuLayers: GPULayers
+    ) throws -> LlamaContextHandle {
+        throw RuntimeError.underlying(
+            "LlamaContextHandle.load is a stub – wire in the llama.cpp xcframework. " +
+            "Set HOMEHUB_REAL_RUNTIME in Swift Active Compilation Conditions to enable the real runtime."
+        )
+    }
+
+    func stream(
+        prompt: String,
+        maxTokens: Int,
+        temperature: Float,
+        topP: Float,
+        stopSequences: [String]
+    ) throws -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
             continuation.finish(
                 throwing: RuntimeError.underlying("LlamaContextHandle.stream stub")
@@ -157,14 +303,9 @@ struct LlamaContextHandle: @unchecked Sendable {
         }
     }
 
-    // MARK: - Cleanup
-
-    /// Frees the llama_context and llama_model pointers.
-    ///
-    /// Must be called exactly once when this handle is no longer needed.
-    /// `LlamaRuntimeActor` guarantees this via its `unload()` method.
     func close() {
-        // TODO: llama_free(context); llama_free_model(model)
-        // Order matters: free the context before the model.
+        // No-op in stub mode.
     }
+
+#endif
 }
