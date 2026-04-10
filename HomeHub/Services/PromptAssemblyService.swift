@@ -65,6 +65,14 @@ final class PromptAssemblyService {
             chunks.append("About the user:\n" + userLines.joined(separator: "\n"))
         }
 
+        // L0.5: Summary of older messages when the conversation exceeds the window.
+        if let summary = package.conversationSummary {
+            chunks.append("""
+            Earlier in this conversation (condensed summary — may be incomplete):
+            \(summary)
+            """)
+        }
+
         // L1. Durable facts — conservative cap to stay within context budget.
         if !package.facts.isEmpty {
             let factLines = package.facts.prefix(8).map { "- \($0.content)" }

@@ -173,15 +173,16 @@ final class LlamaCppRuntime: LocalLLMRuntime, @unchecked Sendable {
 
                 // Emit generationStarted only after successful borrow so
                 // requestID is only surfaced when we know we have a context.
-                let handle: ModelHandle?
-                if let m = await actor.loadedModel { handle = ModelHandle(from: m) }
-                else { handle = nil }
+                let loadedModel = await actor.loadedModel
+                let handle = loadedModel.map { ModelHandle(from: $0) }
 
                 if let handle {
                     await telemetry.emit(.generationStarted(requestID: requestID, handle: handle))
                 }
 
-                let renderedPrompt = ChatTemplate.render(prompt)
+                // Pass the model family so ChatTemplate selects the correct format.
+                // Llama 3.x uses header tokens; Qwen/Phi use ChatML (<|im_start|>).
+                let renderedPrompt = ChatTemplate.render(prompt, family: loadedModel?.family ?? "")
                 let started = Date()
                 var tokens = 0
                 var firstTokenDate: Date? = nil

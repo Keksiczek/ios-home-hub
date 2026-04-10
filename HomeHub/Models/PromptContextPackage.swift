@@ -15,6 +15,11 @@ struct PromptContextPackage {
     var recentMessages: [Message]
     var userInput: String
     var settings: AppSettings
+    /// Condensed summary of messages older than the history window.
+    /// Set by `ConversationService` when the context budget is > 60% used
+    /// and there are messages outside the 20-message window. Injected into
+    /// the system prompt so older context isn't silently dropped.
+    var conversationSummary: String? = nil
 }
 
 /// A snapshot of the user's personalization state at a point in

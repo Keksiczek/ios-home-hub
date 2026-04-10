@@ -17,22 +17,26 @@ across restarts.
 | App entry / DI container | Complete |
 | Persistence (FileStore JSON) | Complete |
 | Runtime abstraction | Complete |
-| LlamaCppRuntime façade | Complete (C++ bridge is stubbed) |
+| LlamaCppRuntime façade | Complete — C++ bridge implemented, xcframework must be built |
 | MockLocalRuntime | Complete — used for development builds |
 | PromptAssemblyService | Complete — layered L0-L2 + guardrails |
 | MemoryExtractionService | Complete — structured + heuristic fallback |
 | ConversationService | Complete — streaming, cancel, persistence |
-| Model catalog / download | MVP — simulated download, curated catalog |
+| Model catalog / download | Complete — real URLSession, Wi-Fi-only, resume on interruption |
+| Chat templates | Complete — Llama 3 header format + ChatML (Qwen, Phi) |
 | Lifecycle (background/memory) | Wired — scenePhase + memory-pressure hooks |
 | Tests (8 files, 50+ cases) | Covering services, persistence, runtime |
 
 ### What's mock / limited
 
-- **LlamaContextHandle** — the C++ bridge (`load`, `stream`, `close`) are stubs.
-  When `HOMEHUB_REAL_RUNTIME` is not set, the app uses `MockLocalRuntime`
-  which streams canned responses without touching any model file.
-- **Model downloads** — simulated progress loop, no real `URLSession` fetch.
-  A stub file is written to disk so the install state is consistent.
+- **LlamaContextHandle** — the C++ bridge (`load`, `stream`, `close`) is fully
+  implemented behind `#if HOMEHUB_REAL_RUNTIME`. When the flag is not set the
+  app uses `MockLocalRuntime` which streams canned responses without touching
+  any model file. Set `HOMEHUB_REAL_RUNTIME` and link the xcframework to use
+  real inference.
+- **Model downloads** — real `URLSession` implementation behind
+  `HOMEHUB_REAL_RUNTIME`: Wi-Fi-only, resume data on interruption, SHA-256
+  verification. Development builds use a simulated progress loop.
 - **Memory extraction** — structured extraction via the local model falls back
   to heuristic keyword triggers when using `MockLocalRuntime` (the mock
   doesn't produce valid JSON for extraction prompts).
@@ -167,35 +171,23 @@ cmake --build build-ios --config Release
   *Frameworks, Libraries, and Embedded Content*.
 - Create a bridging header or a separate SPM target that imports `llama.h`.
 
-### 3. Implement LlamaContextHandle
-
-Replace the three stub methods in `HomeHub/Runtime/LlamaContextHandle.swift`:
-
-- `load(modelPath:contextLength:gpuLayers:)` → `llama_load_model_from_file`
-  + `llama_new_context_with_model`
-- `stream(prompt:maxTokens:temperature:topP:stopSequences:)` →
-  `llama_decode` loop + `llama_token_to_piece`
-- `close()` → `llama_free` + `llama_free_model`
-
-See the detailed TODO comments in that file for exact API mappings.
-
-### 4. Enable the real runtime
+### 3. Enable the real runtime
 
 Add `HOMEHUB_REAL_RUNTIME` to **Swift Active Compilation Conditions** in
 your Xcode build settings (or uncomment the line in `project.yml`).
 This switches `AppContainer.live()` from `MockLocalRuntime` to
 `LlamaCppRuntime`.
 
-### 5. Replace simulated downloads
+### 4. Verify download URLs
 
-Implement real `URLSession` download logic in `ModelDownloadService` with:
-- Background session support
-- Resume data
-- SHA-256 verification
-- Wi-Fi-only gating
-
-Update the download URLs in `ModelCatalog.curated` to point to real
-Hugging Face GGUF endpoints.
+The download URLs in `ModelCatalogService.swift` already point to real
+Hugging Face GGUF endpoints. The real `URLSession` implementation (behind
+`HOMEHUB_REAL_RUNTIME`) handles:
+- **Wi-Fi-only** via `allowsCellularAccess = false`
+- **Resume on interruption** — resume data stored in UserDefaults, picked up
+  automatically when the user retries a failed download
+- **SHA-256 verification** — populate `sha256` on each `LocalModel` after
+  verifying a known-good download to enable integrity checks
 
 ## RAM guidelines
 

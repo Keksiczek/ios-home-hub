@@ -130,6 +130,11 @@ final class AppContainer: ObservableObject {
             if runtimeManager.activeModel == nil {
                 await autoLoadSelectedModel()
             }
+            // Handle "New chat" intent fired via Siri / Shortcuts.
+            if UserDefaults.standard.bool(forKey: "homeHub.pendingNewChat") {
+                UserDefaults.standard.removeObject(forKey: "homeHub.pendingNewChat")
+                await conversationService.createConversation()
+            }
         default:
             break
         }

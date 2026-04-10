@@ -16,8 +16,10 @@ final class ConversationService: ObservableObject {
     private let memory: MemoryService
     private let settings: SettingsService
     private let personalization: PersonalizationService
+    private let summarizer: SummarizationService
 
     private var activeStreams: [UUID: Task<Void, Never>] = [:]
+    private var summaryByConversation: [UUID: ConversationSummary] = [:]
 
     init(
         store: any Store,
@@ -33,6 +35,7 @@ final class ConversationService: ObservableObject {
         self.memory = memory
         self.settings = settings
         self.personalization = personalization
+        self.summarizer = SummarizationService(runtime: runtime)
     }
 
     // MARK: - Loading
@@ -79,6 +82,7 @@ final class ConversationService: ObservableObject {
         conversations.removeAll { $0.id == id }
         messagesByConversation[id] = nil
         streamingConversationIDs.remove(id)
+        summaryByConversation[id] = nil
         try? await store.delete(conversationID: id)
     }
 
@@ -100,7 +104,50 @@ final class ConversationService: ObservableObject {
         streamingConversationIDs.remove(conversationID)
     }
 
-    private func performSend(userInput: String, in conversationID: UUID) async {
+    /// Drops the last assistant reply and re-runs generation from the
+    /// preceding user message. No-op if a stream is already active.
+    func regenerate(in conversationID: UUID) {
+        guard activeStreams[conversationID] == nil else { return }
+        var list = messagesByConversation[conversationID] ?? []
+
+        guard let lastAssistantIdx = list.lastIndex(where: { $0.role == .assistant }),
+              lastAssistantIdx > 0,
+              list[lastAssistantIdx - 1].role == .user else { return }
+
+        let userInput = list[lastAssistantIdx - 1].content
+        list.remove(at: lastAssistantIdx)
+        messagesByConversation[conversationID] = list
+
+        activeStreams[conversationID] = Task { [weak self] in
+            await self?.performSend(
+                userInput: userInput,
+                in: conversationID,
+                skipUserMessage: true
+            )
+        }
+    }
+
+    // MARK: - Internals
+
+    /// Returns the appropriate stop sequences for the currently loaded model.
+    /// These are checked at the text level in addition to the EOS token check
+    /// inside llama.cpp, providing double-stop protection for models that use
+    /// a turn-ending token distinct from their vocabulary EOS.
+    private func stopSequences(for model: LocalModel?) -> [String] {
+        switch model?.family.lowercased() {
+        case "gemma3", "gemma2": return ["<end_of_turn>"]
+        case "llama":            return ["<|eot_id|>"]
+        default:                 return []
+        }
+    }
+
+    /// - Parameter skipUserMessage: `true` when called from `regenerate()` —
+    ///   the user message is already in the list, don't add it again.
+    private func performSend(
+        userInput: String,
+        in conversationID: UUID,
+        skipUserMessage: Bool = false
+    ) async {
         streamingConversationIDs.insert(conversationID)
         defer {
             streamingConversationIDs.remove(conversationID)
@@ -109,27 +156,65 @@ final class ConversationService: ObservableObject {
 
         var list = messagesByConversation[conversationID] ?? []
 
-        let userMessage = Message.user(userInput, in: conversationID)
-        list.append(userMessage)
+        // Capture everything that came BEFORE the current user turn.
+        // For fresh sends this is the entire existing history.
+        // For regeneration the list already ends with the target user message, so drop it.
+        // This snapshot is the source of truth for the history window and summarisation;
+        // it must NOT include the current user input (that goes into package.userInput).
+        let priorMessages = skipUserMessage ? Array(list.dropLast()) : list
+
+        // Only add a new user message for fresh sends, not regeneration.
+        let userMessage: Message?
+        if !skipUserMessage {
+            let msg = Message.user(userInput, in: conversationID)
+            list.append(msg)
+            userMessage = msg
+            try? await store.save(message: msg)
+
+            if let idx = conversations.firstIndex(where: { $0.id == conversationID }) {
+                conversations[idx].lastMessagePreview = userInput
+                conversations[idx].updatedAt = .now
+                try? await store.save(conversation: conversations[idx])
+            }
+        } else {
+            userMessage = nil
+        }
 
         var assistantMessage = Message.assistantPlaceholder(in: conversationID)
         list.append(assistantMessage)
         messagesByConversation[conversationID] = list
-
-        try? await store.save(message: userMessage)
         try? await store.save(message: assistantMessage)
 
-        // Touch conversation preview + timestamp.
-        if let idx = conversations.firstIndex(where: { $0.id == conversationID }) {
-            conversations[idx].lastMessagePreview = userInput
-            conversations[idx].updatedAt = .now
-            try? await store.save(conversation: conversations[idx])
+        // Summarisation trigger: generate a summary of older context once the
+        // conversation grows beyond the history window and the estimated context
+        // fill crosses 60%. The summary is injected into the system prompt so
+        // older turns are never silently dropped. Generated at most once per
+        // conversation (stored in summaryByConversation).
+        let contextLength = runtime.activeModel?.contextLength ?? 4_096
+        let totalChars = priorMessages.reduce(0) { $0 + $1.content.count }
+        let estimatedFill = Double(totalChars / 4) / Double(contextLength)
+
+        var summaryText: String? = summaryByConversation[conversationID]?.summary
+        if priorMessages.count > 20 && estimatedFill > 0.6 && summaryByConversation[conversationID] == nil {
+            // Summarise the older portion; keep the last 10 messages intact in
+            // the history window so recent context stays verbatim.
+            let olderMessages = Array(priorMessages.dropLast(10))
+            if let generated = await summarizer.summarize(messages: olderMessages) {
+                let summary = ConversationSummary(
+                    conversationID: conversationID,
+                    summary: generated,
+                    coversMessageIDs: olderMessages.map(\.id),
+                    generatedAt: .now
+                )
+                summaryByConversation[conversationID] = summary
+                summaryText = generated
+            }
         }
 
         // Build prompt context with layered memory.
         let facts = await memory.relevantFacts(for: userInput, limit: 8)
         let episodes = await memory.relevantEpisodes(for: userInput, limit: 4)
-        let historyWindow = Array(list.dropLast().suffix(20))
+        let historyWindow = Array(priorMessages.suffix(20))
         let package = PromptContextPackage(
             assistant: personalization.assistantProfile,
             user: personalization.userProfile,
@@ -137,14 +222,15 @@ final class ConversationService: ObservableObject {
             episodes: episodes,
             recentMessages: historyWindow,
             userInput: userInput,
-            settings: settings.current
+            settings: settings.current,
+            conversationSummary: summaryText
         )
         let runtimePrompt = prompts.build(from: package)
         let parameters = RuntimeParameters(
             maxTokens: settings.current.maxResponseTokens,
             temperature: settings.current.temperature,
             topP: settings.current.topP,
-            stopSequences: []
+            stopSequences: stopSequences(for: runtime.activeModel)
         )
 
         do {
@@ -171,9 +257,19 @@ final class ConversationService: ObservableObject {
             try? await store.save(message: assistantMessage)
         }
 
-        // Fire-and-forget memory consideration on the user turn.
-        Task { [memory, userMessage] in
-            await memory.consider(message: userMessage)
+        // Auto-title: rename "New chat" from first user message content.
+        if let msg = userMessage {
+            let isFirstMessage = list.filter({ $0.role == .user }).count == 1
+            if isFirstMessage,
+               let idx = conversations.firstIndex(where: { $0.id == conversationID }),
+               conversations[idx].title == "New chat" {
+                let title = String(userInput.prefix(60))
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                await rename(conversationID: conversationID, to: title.isEmpty ? "Chat" : title)
+            }
+
+            // Fire-and-forget memory consideration on the user turn.
+            Task { [memory] in await memory.consider(message: msg) }
         }
     }
 

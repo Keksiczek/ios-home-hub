@@ -30,8 +30,8 @@ final class ModelCatalogService: ObservableObject {
     }
 
     var recommendedStarter: LocalModel {
-        // Llama 3.2 3B is the safe default — fits on iPhone, fast, warm.
-        models.first(where: { $0.id == "llama-3.2-3b-instruct-q4_k_m" }) ?? models[0]
+        // Gemma 3 4B is the recommended default — strong reasoning, fits on iPhone.
+        models.first(where: { $0.id == "gemma-3-4b-it-q4_k_m" }) ?? models[0]
     }
 }
 
@@ -40,15 +40,86 @@ final class ModelCatalogService: ObservableObject {
 enum ModelCatalog {
     /// Curated list of models tested on iPhone 16 Pro and M-series iPad.
     ///
-    /// Download URLs point to HuggingFace GGUF repositories. When
-    /// `HOMEHUB_REAL_RUNTIME` is set, `ModelDownloadService` fetches
-    /// these URLs with progress tracking and optional SHA-256
-    /// verification. In development builds, downloads are simulated.
-    ///
-    /// SHA-256 hashes are left nil because the upstream files may be
-    /// re-quantised. Set them after verifying a known-good download
-    /// to enable integrity checks.
+    /// Download URLs point to HuggingFace GGUF repositories (bartowski builds).
+    /// SHA-256 hashes are left nil because upstream files may be re-quantised;
+    /// populate them after verifying a known-good download to enable integrity
+    /// checks.
     static let curated: [LocalModel] = [
+
+        // MARK: Gemma 3
+
+        LocalModel(
+            id: "gemma-3-4b-it-q4_k_m",
+            displayName: "Gemma 3 4B Instruct",
+            family: "Gemma3",
+            parameterCount: "4B",
+            quantization: "Q4_K_M",
+            sizeBytes: 2_600_000_000,
+            contextLength: 8192,
+            downloadURL: URL(string:
+                "https://huggingface.co/bartowski/gemma-3-4b-it-GGUF/resolve/main/gemma-3-4b-it-Q4_K_M.gguf"
+            )!,
+            sha256: nil,
+            installState: .notInstalled,
+            recommendedFor: [.iPhone, .iPadMSeries],
+            license: "Gemma Terms of Use"
+        ),
+
+        LocalModel(
+            id: "gemma-3-12b-it-q4_k_m",
+            displayName: "Gemma 3 12B Instruct",
+            family: "Gemma3",
+            parameterCount: "12B",
+            quantization: "Q4_K_M",
+            sizeBytes: 7_300_000_000,
+            contextLength: 8192,
+            downloadURL: URL(string:
+                "https://huggingface.co/bartowski/gemma-3-12b-it-GGUF/resolve/main/gemma-3-12b-it-Q4_K_M.gguf"
+            )!,
+            sha256: nil,
+            installState: .notInstalled,
+            recommendedFor: [.iPadMSeries],
+            license: "Gemma Terms of Use"
+        ),
+
+        // MARK: Gemma 2
+
+        LocalModel(
+            id: "gemma-2-2b-it-q4_k_m",
+            displayName: "Gemma 2 2B Instruct",
+            family: "Gemma2",
+            parameterCount: "2B",
+            quantization: "Q4_K_M",
+            sizeBytes: 1_600_000_000,
+            contextLength: 8192,
+            downloadURL: URL(string:
+                "https://huggingface.co/bartowski/gemma-2-2b-it-GGUF/resolve/main/gemma-2-2b-it-Q4_K_M.gguf"
+            )!,
+            sha256: nil,
+            installState: .notInstalled,
+            recommendedFor: [.iPhone, .iPadMSeries],
+            license: "Gemma Terms of Use"
+        ),
+
+        LocalModel(
+            id: "gemma-2-9b-it-q4_k_m",
+            displayName: "Gemma 2 9B Instruct",
+            family: "Gemma2",
+            parameterCount: "9B",
+            quantization: "Q4_K_M",
+            sizeBytes: 5_400_000_000,
+            contextLength: 8192,
+            downloadURL: URL(string:
+                "https://huggingface.co/bartowski/gemma-2-9b-it-GGUF/resolve/main/gemma-2-9b-it-Q4_K_M.gguf"
+            )!,
+            sha256: nil,
+            installState: .notInstalled,
+            recommendedFor: [.iPadMSeries],
+            license: "Gemma Terms of Use"
+        ),
+
+        // MARK: Llama 3.x
+
         LocalModel(
             id: "llama-3.2-3b-instruct-q4_k_m",
             displayName: "Llama 3.2 3B Instruct",
@@ -65,6 +136,26 @@ enum ModelCatalog {
             recommendedFor: [.iPhone, .iPadMSeries],
             license: "Llama 3.2 Community License"
         ),
+
+        LocalModel(
+            id: "llama-3.1-8b-instruct-q4_k_m",
+            displayName: "Llama 3.1 8B Instruct",
+            family: "Llama",
+            parameterCount: "8B",
+            quantization: "Q4_K_M",
+            sizeBytes: 4_800_000_000,
+            contextLength: 8192,
+            downloadURL: URL(string:
+                "https://huggingface.co/bartowski/Meta-Llama-3.1-8B-Instruct-GGUF/resolve/main/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf"
+            )!,
+            sha256: nil,
+            installState: .notInstalled,
+            recommendedFor: [.iPadMSeries],
+            license: "Llama 3.1 Community License"
+        ),
+
+        // MARK: Phi / Qwen
+
         LocalModel(
             id: "phi-3.5-mini-instruct-q4_k_m",
             displayName: "Phi 3.5 Mini Instruct",
@@ -81,6 +172,7 @@ enum ModelCatalog {
             recommendedFor: [.iPhone, .iPadMSeries],
             license: "MIT"
         ),
+
         LocalModel(
             id: "qwen-2.5-3b-instruct-q5_k_m",
             displayName: "Qwen 2.5 3B Instruct",
@@ -97,21 +189,5 @@ enum ModelCatalog {
             recommendedFor: [.iPhone, .iPadMSeries],
             license: "Apache 2.0"
         ),
-        LocalModel(
-            id: "llama-3.1-8b-instruct-q4_k_m",
-            displayName: "Llama 3.1 8B Instruct",
-            family: "Llama",
-            parameterCount: "8B",
-            quantization: "Q4_K_M",
-            sizeBytes: 4_800_000_000,
-            contextLength: 8192,
-            downloadURL: URL(string:
-                "https://huggingface.co/bartowski/Meta-Llama-3.1-8B-Instruct-GGUF/resolve/main/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf"
-            )!,
-            sha256: nil,
-            installState: .notInstalled,
-            recommendedFor: [.iPadMSeries],
-            license: "Llama 3.1 Community License"
-        )
     ]
 }

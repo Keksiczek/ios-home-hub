@@ -2,6 +2,9 @@ import SwiftUI
 
 struct MessageBubbleView: View {
     let message: Message
+    /// Called when the user picks "Regenerate" from the context menu.
+    /// Pass `nil` for all messages except the last completed assistant reply.
+    var onRegenerate: (() -> Void)? = nil
 
     var body: some View {
         HStack {
@@ -10,6 +13,13 @@ struct MessageBubbleView: View {
             VStack(alignment: .leading, spacing: 4) {
                 if message.content.isEmpty && message.status == .streaming {
                     TypingIndicator()
+                } else if message.role == .assistant {
+                    // Assistant output is rendered as markdown (bold, italic,
+                    // code blocks, inline code, lists). User messages stay plain.
+                    MarkdownContentView(
+                        content: message.content,
+                        textColor: textColor
+                    )
                 } else {
                     Text(message.content)
                         .font(HHTheme.body)
@@ -37,6 +47,22 @@ struct MessageBubbleView: View {
                 RoundedRectangle(cornerRadius: HHTheme.cornerLarge, style: .continuous)
                     .stroke(strokeColor, lineWidth: 1)
             )
+            .contextMenu {
+                Button {
+                    UIPasteboard.general.string = message.content
+                } label: {
+                    Label("Copy", systemImage: "doc.on.doc")
+                }
+
+                if let onRegenerate {
+                    Divider()
+                    Button {
+                        onRegenerate()
+                    } label: {
+                        Label("Regenerate", systemImage: "arrow.clockwise")
+                    }
+                }
+            }
 
             if message.role == .assistant { Spacer(minLength: 40) }
         }
