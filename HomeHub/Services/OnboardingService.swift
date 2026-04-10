@@ -41,11 +41,13 @@ final class OnboardingService: ObservableObject {
     }
 
     /// Finalize onboarding: write the user profile, assistant profile,
-    /// and memory preference, then transition the app to `.ready`.
+    /// memory preference, and selected model, then transition the app
+    /// to `.ready`.
     func commit(
         user: UserProfile,
         assistant: AssistantProfile,
-        memoryEnabled: Bool
+        memoryEnabled: Bool,
+        selectedModelID: String? = nil
     ) async {
         await personalization.update(user: user)
         await personalization.update(assistant: assistant)
@@ -53,6 +55,7 @@ final class OnboardingService: ObservableObject {
         var nextSettings = settings.current
         nextSettings.memoryEnabled = memoryEnabled
         nextSettings.autoExtractMemory = memoryEnabled
+        nextSettings.selectedModelID = selectedModelID
         await settings.update(nextSettings)
 
         state.isCompleted = true

@@ -62,6 +62,22 @@ final class ModelDownloadService: ObservableObject {
         }
 
         let localURL = await localModels.localURL(for: model.id)
+
+        // Create a stub file at the expected path so
+        // LocalModelService.isInstalled() returns true and the UI
+        // flow is consistent. The real download implementation will
+        // write the actual GGUF bytes here instead.
+        if !FileManager.default.fileExists(atPath: localURL.path) {
+            try? FileManager.default.createDirectory(
+                at: localURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            FileManager.default.createFile(
+                atPath: localURL.path,
+                contents: Data("STUB_MODEL".utf8)
+            )
+        }
+
         catalog.setInstallState(.installed(localURL: localURL), for: model.id)
         active[model.id] = nil
         tasks[model.id] = nil

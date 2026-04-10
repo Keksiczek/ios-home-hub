@@ -24,6 +24,11 @@ struct RootView: View {
         .task {
             await container.bootstrap()
         }
+        .onChange(of: appState.phase) { _, newPhase in
+            if newPhase == .ready {
+                Task { await container.autoLoadSelectedModel() }
+            }
+        }
     }
 }
 

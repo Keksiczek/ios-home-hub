@@ -4,6 +4,7 @@ struct ModelsView: View {
     @EnvironmentObject private var catalog: ModelCatalogService
     @EnvironmentObject private var downloads: ModelDownloadService
     @EnvironmentObject private var runtime: RuntimeManager
+    @EnvironmentObject private var settings: SettingsService
 
     var body: some View {
         NavigationStack {
@@ -16,7 +17,12 @@ struct ModelsView: View {
                             isLoading: runtime.state == .loading(modelID: model.id),
                             onDownload: { downloads.start(model) },
                             onCancelDownload: { downloads.cancel(model.id) },
-                            onLoad: { Task { await runtime.load(model) } },
+                            onLoad: {
+                                Task {
+                                    await runtime.load(model)
+                                    await settings.set(\.selectedModelID, to: model.id)
+                                }
+                            },
                             onUnload: { Task { await runtime.unload() } }
                         )
                     }

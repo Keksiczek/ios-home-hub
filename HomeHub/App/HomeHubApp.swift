@@ -3,6 +3,7 @@ import SwiftUI
 @main
 struct HomeHubApp: App {
     @StateObject private var container = AppContainer.live()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
@@ -19,6 +20,14 @@ struct HomeHubApp: App {
                 .environmentObject(container.onboardingService)
                 .tint(HHTheme.accent)
                 .preferredColorScheme(nil)
+                .onReceive(NotificationCenter.default.publisher(
+                    for: UIApplication.didReceiveMemoryWarningNotification
+                )) { _ in
+                    Task { await container.handleMemoryPressure() }
+                }
+                .onChange(of: scenePhase) { _, newPhase in
+                    Task { await container.handleScenePhaseChange(newPhase) }
+                }
         }
     }
 }

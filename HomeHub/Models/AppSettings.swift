@@ -9,6 +9,9 @@ struct AppSettings: Codable, Equatable {
     var topP: Double
     var haptics: Bool
     var theme: AppTheme
+    /// ID of the last model the user loaded. Used to auto-load on
+    /// app launch and after onboarding.
+    var selectedModelID: String?
 
     static let `default` = AppSettings(
         memoryEnabled: true,
@@ -18,7 +21,8 @@ struct AppSettings: Codable, Equatable {
         temperature: 0.7,
         topP: 0.9,
         haptics: true,
-        theme: .system
+        theme: .system,
+        selectedModelID: nil
     )
 }
 
