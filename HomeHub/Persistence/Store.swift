@@ -27,6 +27,10 @@ protocol Store: AnyObject, Sendable {
     func save(fact: MemoryFact) async throws
     func deleteMemoryFact(id: UUID) async throws
 
+    func loadMemoryEpisodes() async throws -> [MemoryEpisode]
+    func save(episode: MemoryEpisode) async throws
+    func deleteMemoryEpisode(id: UUID) async throws
+
     func loadAppSettings() async throws -> AppSettings?
     func save(settings: AppSettings) async throws
 

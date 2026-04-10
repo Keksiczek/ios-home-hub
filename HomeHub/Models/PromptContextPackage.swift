@@ -11,6 +11,7 @@ struct PromptContextPackage {
     var assistant: AssistantProfile
     var user: UserProfile
     var facts: [MemoryFact]
+    var episodes: [MemoryEpisode]
     var recentMessages: [Message]
     var userInput: String
     var settings: AppSettings

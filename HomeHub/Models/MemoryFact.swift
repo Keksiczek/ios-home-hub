@@ -3,6 +3,10 @@ import Foundation
 /// A piece of long-term, user-controlled context the assistant can
 /// reference. Distinct from chat history. The user can add, edit,
 /// pin, disable, and delete facts at any time from the Memory tab.
+///
+/// v2: provenance fields link back to the source conversation/message
+/// so users can audit where information came from. These are optional
+/// for backward compatibility with v1 persisted data.
 struct MemoryFact: Identifiable, Codable, Equatable, Hashable {
     let id: UUID
     var content: String
@@ -13,6 +17,11 @@ struct MemoryFact: Identifiable, Codable, Equatable, Hashable {
     var lastUsedAt: Date?
     var pinned: Bool
     var disabled: Bool
+
+    // v2 provenance — optional for backward compatibility.
+    var sourceConversationID: UUID?
+    var sourceMessageID: UUID?
+    var extractionMethod: ExtractionMethod?
 
     enum Category: String, Codable, CaseIterable, Hashable, Identifiable {
         case personal
@@ -54,13 +63,23 @@ struct MemoryFact: Identifiable, Codable, Equatable, Hashable {
     }
 }
 
-/// A fact that has been *proposed* by the extraction service but not
-/// yet accepted by the user. Surfaced as cards in the Memory tab.
+/// A memory item that has been *proposed* by extraction but not yet
+/// accepted by the user. Surfaced as cards in the Memory tab.
+///
+/// v2: candidates can be either durable facts or episodic summaries,
+/// distinguished by `kind`. The UI shows both in the same review flow.
 struct MemoryCandidate: Identifiable, Equatable, Hashable {
     let id: UUID
     var content: String
+    var kind: Kind
     var category: MemoryFact.Category
     var sourceConversationID: UUID
     var sourceMessageID: UUID
     var proposedAt: Date
+    var extractionMethod: ExtractionMethod
+
+    enum Kind: String, Hashable {
+        case fact
+        case episode
+    }
 }

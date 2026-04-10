@@ -10,6 +10,7 @@ actor InMemoryStore: Store {
     private var conversations: [Conversation] = []
     private var messages: [UUID: [Message]] = [:]
     private var facts: [MemoryFact] = []
+    private var episodes: [MemoryEpisode] = []
     private var settings: AppSettings?
     private var onboarding: OnboardingState?
 
@@ -112,6 +113,18 @@ actor InMemoryStore: Store {
     }
     func deleteMemoryFact(id: UUID) async throws {
         facts.removeAll { $0.id == id }
+    }
+
+    func loadMemoryEpisodes() async throws -> [MemoryEpisode] { episodes }
+    func save(episode: MemoryEpisode) async throws {
+        if let idx = episodes.firstIndex(where: { $0.id == episode.id }) {
+            episodes[idx] = episode
+        } else {
+            episodes.append(episode)
+        }
+    }
+    func deleteMemoryEpisode(id: UUID) async throws {
+        episodes.removeAll { $0.id == id }
     }
 
     func loadAppSettings() async throws -> AppSettings? { settings }

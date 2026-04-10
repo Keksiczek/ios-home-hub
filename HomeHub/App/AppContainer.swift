@@ -48,7 +48,7 @@ final class AppContainer: ObservableObject {
         let catalog = ModelCatalogService()
         let localModels = LocalModelService()
         let downloads = ModelDownloadService(localModels: localModels, catalog: catalog)
-        let extractor = MemoryExtractionService()
+        let extractor = MemoryExtractionService(runtime: runtime)
         let memory = MemoryService(store: store, settings: settings, extractor: extractor)
         let prompts = PromptAssemblyService()
         let runtimeManager = RuntimeManager(runtime: runtime)

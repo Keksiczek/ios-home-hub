@@ -4,14 +4,15 @@ import Foundation
 /// `RuntimePrompt` the runtime actually sees. No side effects, no
 /// state — trivial to unit test.
 ///
-/// Order of context, from most to least stable:
+/// v2 layered memory assembly:
 ///
-/// 1. Assistant persona + tone + style
-/// 2. User personalization profile (name, work, interests, context)
-/// 3. Relevant memory facts (pinned + keyword-scored)
-/// 4. Privacy guardrails
-/// 5. Recent conversation messages (most recent N)
-/// 6. Current user input
+/// L0: Assistant persona + tone + style + user profile
+/// L1: Approved durable facts (pinned + keyword-scored)
+/// L2: Relevant episodic summaries
+/// L3: (future) Source excerpts, loaded only when strongly relevant
+///
+/// Privacy guardrails + recent conversation messages + current input
+/// follow the memory layers.
 @MainActor
 final class PromptAssemblyService {
 
@@ -33,17 +34,17 @@ final class PromptAssemblyService {
     private func assembleSystemPrompt(from package: PromptContextPackage) -> String {
         var chunks: [String] = []
 
-        // 1. Assistant persona base
+        // L0a. Assistant persona base
         chunks.append(package.assistant.systemPromptBase)
 
-        // 2. Tone + style hints
+        // L0b. Tone + style hints
         chunks.append("""
         Tone: \(package.assistant.tone.label.lowercased()). \
         Preferred response style: \(package.user.preferredResponseStyle.label.lowercased()) — \
         \(package.user.preferredResponseStyle.blurb)
         """)
 
-        // 3. User profile
+        // L0c. User profile
         var userLines: [String] = []
         if !package.user.displayName.isEmpty {
             userLines.append("Name: \(package.user.displayName)")
@@ -64,7 +65,7 @@ final class PromptAssemblyService {
             chunks.append("About the user:\n" + userLines.joined(separator: "\n"))
         }
 
-        // 4. Memory facts
+        // L1. Durable facts
         if !package.facts.isEmpty {
             let factLines = package.facts.prefix(12).map { "- \($0.content)" }
             chunks.append("""
@@ -73,7 +74,16 @@ final class PromptAssemblyService {
             """)
         }
 
-        // 5. Privacy guardrails
+        // L2. Episodic summaries
+        if !package.episodes.isEmpty {
+            let episodeLines = package.episodes.prefix(6).map { "- \($0.summary)" }
+            chunks.append("""
+            Recent context (episodic, may be outdated):
+            \(episodeLines.joined(separator: "\n"))
+            """)
+        }
+
+        // Privacy guardrails
         chunks.append("""
         Never fabricate personal details about the user. If you're \
         unsure, ask or say you don't know. You run entirely on-device \
