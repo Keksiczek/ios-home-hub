@@ -1,6 +1,35 @@
 import Foundation
 import os
 
+// MARK: - Unload policy
+
+extension LlamaCppRuntime {
+    /// Governs when the runtime automatically unloads the active model
+    /// in response to device lifecycle events.
+    ///
+    /// Set `unloadPolicy` before calling `load()`. The runtime evaluates
+    /// the policy inside `handleMemoryPressure()` and `handleBackground()`.
+    ///
+    /// **Default**: `.onBackgroundOrMemoryPressure` — safest choice for
+    /// production; reclaims memory aggressively to avoid OS termination.
+    enum UnloadPolicy: Sendable {
+        /// Never unload automatically; only when `unload()` is called explicitly.
+        /// Use in tests or when the caller wants full control over the lifecycle.
+        case manual
+
+        /// Unload when the app moves to the background (`handleBackground()`).
+        /// Memory-pressure warnings are ignored.
+        case onBackground
+
+        /// Unload on background **and** on memory-pressure notifications.
+        /// Recommended for production: the model is large and will be reloaded
+        /// on foreground when the user resumes a conversation.
+        case onBackgroundOrMemoryPressure
+    }
+}
+
+// MARK: - LlamaCppRuntime
+
 /// V1 preferred local runtime, backed by `llama.cpp` compiled as an
 /// xcframework with the Metal backend enabled.
 ///
@@ -8,33 +37,66 @@ import os
 ///
 /// `LlamaCppRuntime` is a thin façade that:
 /// 1. Conforms to `LocalLLMRuntime` — the only interface the rest of the
-///    app ever talks to (via `RuntimeManager`).
-/// 2. Delegates all mutable C++ state to `LlamaRuntimeActor`. No `NSLock`
-///    needed; the actor provides compiler-checked exclusive access.
-/// 3. Measures and logs load time, first-token latency, and tokens/second.
+///    app ever touches (via `RuntimeManager`).
+/// 2. Delegates all mutable C++ state to `LlamaRuntimeActor`.
+///    No `NSLock` needed anywhere.
+/// 3. Provides a deterministic **generate × unload contract** via
+///    `GenerationCancellationToken` (see below).
+/// 4. Emits structured `RuntimeTelemetryEvent`s for load time, TTFT, and
+///    tokens/sec to all subscribers of `telemetry`.
 ///
-/// See `LlamaContextHandle.swift` for step-by-step xcframework integration.
+/// See `LlamaContextHandle.swift` for xcframework integration instructions.
 ///
-/// ## loadedModel sync access
+/// ## generate() × unload() contract
 ///
-/// The `LocalLLMRuntime` protocol requires a *synchronous* `loadedModel`
-/// property (so `MemoryExtractionService` and other actors can gate on it
-/// without an extra async hop). We satisfy this with a lightweight mirror
-/// `_loadedModel` that is written immediately after each actor-serialised
-/// `load` / `unload` completes. Because both `RuntimeManager.load()` and
-/// `RuntimeManager.unload()` are called on the `@MainActor`, the writes to
-/// `_loadedModel` always happen on the main actor; the window between the
-/// actor commit and the mirror update is a single suspension point that no
-/// caller in the current app can observe with a visible race.
-/// `@unchecked Sendable` acknowledges this accepted trade-off.
+/// When `unload()` is called while a generation is running:
+/// 1. The actor's `currentCancellationToken` is cancelled.
+/// 2. The generation Task checks `token.isCancelled` before each token.
+/// 3. On seeing `true` it yields `.finished(reason: .cancelled, stats: ...)`
+///    and returns — **without calling back into C++**.
+/// 4. The caller (UI / `ConversationService`) receives a clean stream
+///    termination. Exactly like user-initiated `Task` cancellation.
 ///
-/// ## Why not llama.cpp + MLX?
-/// V1 ships llama.cpp for broad device support (iPhone 12+ / all iPads).
-/// A future `MLXRuntime` can take over on M-series iPads where MLX gives
-/// better throughput, backed by the same `LocalLLMRuntime` protocol.
+/// **At most one extra token** can be decoded after `unload()` is called —
+/// the one whose decode started before the cancel flag was observed. That
+/// token is discarded (not yielded to the caller). Subsequent loop
+/// iterations see `isCancelled = true` and stop.
+///
+/// ## loadedModel consistency
+///
+/// `loadedModel` is a sync-accessible mirror of the actor's authoritative
+/// state. It is written only from `load()` / `unload()` call sites, both
+/// of which are invoked from `RuntimeManager` on the `@MainActor`. Reads
+/// from other actors (e.g. `MemoryExtractionService`) see a value that is
+/// at most one suspension-point stale — acceptable for the
+/// "is a model loaded?" guard. For guaranteed consistency, use
+/// `currentModel() async`.
+///
+/// `@unchecked Sendable` acknowledges the sync mirror pattern: the compiler
+/// cannot verify the write/read concurrency, but we have established the
+/// invariant manually (write path is always `@MainActor`).
 final class LlamaCppRuntime: LocalLLMRuntime, @unchecked Sendable {
 
     let identifier = "llama.cpp"
+
+    // MARK: - Telemetry (first-class citizen)
+
+    /// Subscribe to receive structured `RuntimeTelemetryEvent`s.
+    ///
+    /// ```swift
+    /// let (stream, id) = await runtime.telemetry.subscribe()
+    /// Task {
+    ///     for await event in stream { handle(event) }
+    /// }
+    /// // Later: await runtime.telemetry.unsubscribe(id: id)
+    /// ```
+    let telemetry = RuntimeTelemetry()
+
+    // MARK: - Unload policy
+
+    /// Controls automatic unloading on lifecycle events.
+    /// Default: `.onBackgroundOrMemoryPressure`.
+    var unloadPolicy: UnloadPolicy = .onBackgroundOrMemoryPressure
 
     // MARK: - State
 
@@ -42,6 +104,8 @@ final class LlamaCppRuntime: LocalLLMRuntime, @unchecked Sendable {
     private let runtimeActor = LlamaRuntimeActor()
 
     /// Sync-accessible cache — see class-level doc for threading contract.
+    /// Not the authoritative source of truth; use `currentModel() async` for
+    /// guaranteed-consistent reads.
     private var _loadedModel: LocalModel?
 
     private let log = Logger(subsystem: "HomeHub", category: "LlamaCppRuntime")
@@ -58,10 +122,6 @@ final class LlamaCppRuntime: LocalLLMRuntime, @unchecked Sendable {
         }
 
         let started = Date()
-
-        // The actor's load() is synchronous (blocking I/O on the actor thread).
-        // It may take several seconds for multi-GB models; the main actor is
-        // free while we await the result.
         do {
             try await runtimeActor.load(model: model, path: url.path)
         } catch let runtimeError as RuntimeError {
@@ -73,18 +133,19 @@ final class LlamaCppRuntime: LocalLLMRuntime, @unchecked Sendable {
         _loadedModel = model
 
         let loadMs = Int(Date().timeIntervalSince(started) * 1_000)
+        let handle = ModelHandle(from: model)
+
+        await telemetry.emit(.modelLoaded(handle: handle, durationMs: loadMs))
         log.info("Model loaded: '\(model.displayName, privacy: .public)' in \(loadMs)ms")
         #if DEBUG
         print("[LlamaCppRuntime] ✓ '\(model.displayName)' loaded in \(loadMs)ms")
         #endif
     }
 
-    // MARK: - Unload
+    // MARK: - Unload (protocol)
 
     func unload() async {
-        await runtimeActor.unload()
-        _loadedModel = nil
-        log.info("Model unloaded.")
+        await unload(reason: .manual)
     }
 
     // MARK: - Generate
@@ -93,22 +154,31 @@ final class LlamaCppRuntime: LocalLLMRuntime, @unchecked Sendable {
         prompt: RuntimePrompt,
         parameters: RuntimeParameters
     ) -> AsyncThrowingStream<RuntimeEvent, Error> {
-        // Capture only Sendable values for the detached Task.
-        let actor = runtimeActor
-        let log = log
+        let actor    = runtimeActor
+        let log      = log
+        let telemetry = telemetry
+        let requestID = UUID()
 
         return AsyncThrowingStream { continuation in
             let task = Task.detached(priority: .userInitiated) {
-                // --- Context acquisition ---
-                // Single actor hop: we get a value-copy of the context handle.
-                // If unload() is called after this point the C++ layer will
-                // error on the next decode; we surface that as a stream error.
+                // --- Borrow context + token atomically (single actor hop) ---
                 let ctx: LlamaContextHandle
+                let generationToken: GenerationCancellationToken
                 do {
-                    ctx = try await actor.contextSnapshot()
+                    (ctx, generationToken) = try await actor.borrowForGeneration()
                 } catch {
                     continuation.finish(throwing: error)
                     return
+                }
+
+                // Emit generationStarted only after successful borrow so
+                // requestID is only surfaced when we know we have a context.
+                let handle: ModelHandle?
+                if let m = await actor.loadedModel { handle = ModelHandle(from: m) }
+                else { handle = nil }
+
+                if let handle {
+                    await telemetry.emit(.generationStarted(requestID: requestID, handle: handle))
                 }
 
                 let renderedPrompt = ChatTemplate.render(prompt)
@@ -126,10 +196,18 @@ final class LlamaCppRuntime: LocalLLMRuntime, @unchecked Sendable {
                     )
 
                     for try await piece in stream {
-                        if Task.isCancelled {
+                        // --- Cancellation check (unload OR Task cancel) ---
+                        // Checked BEFORE yielding to ensure:
+                        // (a) No token is sent to caller after unload().
+                        // (b) At most one extra token decode (the one in flight
+                        //     when the cancel flag was set) before we stop.
+                        if Task.isCancelled || generationToken.isCancelled {
                             let stats = Self.makeStats(tokens: tokens, started: started)
                             continuation.yield(.finished(reason: .cancelled, stats: stats))
                             continuation.finish()
+                            await telemetry.emit(.generationCancelled(
+                                requestID: requestID, partialStats: stats
+                            ))
                             return
                         }
 
@@ -137,7 +215,8 @@ final class LlamaCppRuntime: LocalLLMRuntime, @unchecked Sendable {
                         if firstTokenDate == nil {
                             firstTokenDate = Date()
                             let ttftMs = Int(firstTokenDate!.timeIntervalSince(started) * 1_000)
-                            log.debug("First-token latency: \(ttftMs)ms")
+                            log.debug("TTFT: \(ttftMs)ms (request \(requestID, privacy: .public))")
+                            await telemetry.emit(.firstToken(requestID: requestID, latencyMs: ttftMs))
                             #if DEBUG
                             print("[LlamaCppRuntime] TTFT: \(ttftMs)ms")
                             #endif
@@ -149,16 +228,19 @@ final class LlamaCppRuntime: LocalLLMRuntime, @unchecked Sendable {
 
                     let stats = Self.makeStats(tokens: tokens, started: started)
                     log.info(
-                        "Generation done: \(stats.tokensGenerated) tokens @ " +
-                        "\(String(format: "%.1f", stats.tokensPerSecond), privacy: .public) t/s"
+                        "Done: \(stats.tokensGenerated) tokens " +
+                        "@ \(String(format: "%.1f", stats.tokensPerSecond), privacy: .public) t/s"
                     )
                     #if DEBUG
                     print(
                         "[LlamaCppRuntime] \(stats.tokensGenerated) tokens " +
                         "@ \(String(format: "%.1f", stats.tokensPerSecond)) t/s " +
-                        "(\(stats.totalDurationMs)ms total)"
+                        "(\(stats.totalDurationMs)ms)"
                     )
                     #endif
+                    await telemetry.emit(.generationFinished(
+                        requestID: requestID, stats: stats, reason: .stop
+                    ))
                     continuation.yield(.finished(reason: .stop, stats: stats))
                     continuation.finish()
 
@@ -173,29 +255,69 @@ final class LlamaCppRuntime: LocalLLMRuntime, @unchecked Sendable {
         }
     }
 
-    // MARK: - Memory pressure
+    // MARK: - Lifecycle hooks
 
-    /// Unloads the model to reclaim memory.
+    /// Unloads the model in response to a memory-pressure notification.
     ///
-    /// Call this when the app moves to the background or receives a memory
-    /// warning. Wire into the App lifecycle in `HomeHubApp.swift`:
+    /// Call this from a `UIApplication.didReceiveMemoryWarningNotification`
+    /// observer. Respects `unloadPolicy`: no-op when policy is `.manual`.
     ///
+    /// Wire into the App lifecycle in `HomeHubApp.swift`:
     /// ```swift
     /// .onReceive(NotificationCenter.default.publisher(
     ///     for: UIApplication.didReceiveMemoryWarningNotification)) { _ in
-    ///     Task { await container.runtimeManager.unload() }
+    ///     Task { await container.runtimeManager.runtime.handleMemoryPressure() }
     /// }
     /// ```
-    ///
-    /// TODO: Integrate with `ScenePhase.background` via `HomeHubApp` so the
-    /// model is automatically unloaded when the app is backgrounded, freeing
-    /// memory for other apps on the device.
+    /// TODO: Wire into `HomeHubApp` once memory-pressure tests on device
+    /// confirm the correct UX (reload prompt vs. silent background reload).
     func handleMemoryPressure() async {
-        log.warning("Memory pressure received — unloading model.")
-        await unload()
+        guard unloadPolicy == .onBackgroundOrMemoryPressure else { return }
+        await telemetry.emit(.memoryPressureReceived)
+        log.warning("Memory pressure — unloading model.")
+        await unload(reason: .memoryPressure)
+    }
+
+    /// Unloads the model when the app enters the background.
+    ///
+    /// Call this from a `ScenePhase.background` observer in `HomeHubApp`:
+    /// ```swift
+    /// .onChange(of: scenePhase) { phase in
+    ///     if phase == .background {
+    ///         Task { await container.runtimeManager.runtime.handleBackground() }
+    ///     }
+    /// }
+    /// ```
+    /// TODO: Wire into `HomeHubApp` and confirm reload-on-foreground UX.
+    func handleBackground() async {
+        guard unloadPolicy != .manual else { return }
+        log.info("App backgrounded — unloading model per policy '\(String(describing: unloadPolicy))'.")
+        await unload(reason: .appBackground)
+    }
+
+    // MARK: - Authoritative async model access
+
+    /// Returns the authoritative loaded model directly from the actor.
+    ///
+    /// Prefer this over `loadedModel` in async contexts where you need a
+    /// guaranteed-consistent snapshot — for example, immediately before
+    /// starting a generation to avoid a race with a concurrent `unload()`.
+    func currentModel() async -> LocalModel? {
+        await runtimeActor.loadedModel
     }
 
     // MARK: - Private helpers
+
+    private func unload(reason: UnloadReason) async {
+        guard let currentModel = _loadedModel else { return }
+        let handle = ModelHandle(from: currentModel)
+
+        await runtimeActor.unload()
+        _loadedModel = nil
+
+        await telemetry.emit(.modelUnloaded(handle: handle, reason: reason))
+        log.info("Model unloaded. Reason: \(reason.description, privacy: .public)")
+    }
 
     private static func makeStats(tokens: Int, started: Date) -> RuntimeStats {
         let elapsed = max(Date().timeIntervalSince(started), 0.001)
