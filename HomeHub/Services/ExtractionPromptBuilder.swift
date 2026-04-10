@@ -51,6 +51,8 @@ enum ExtractionPromptBuilder {
     the conversation itself.
     - Keep each item concise — one sentence maximum.
     - Assign a confidence between 0.0 and 1.0 for each item.
+    - Extract at most 5 items total (facts + episodes combined). \
+    Prefer the highest-confidence, most durable items; omit the rest.
     - If nothing is worth extracting, return empty arrays.
     - Return ONLY valid JSON. No prose, no markdown fencing, no \
     explanation outside the JSON object.

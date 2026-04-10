@@ -18,6 +18,18 @@ final class RuntimeManager: ObservableObject {
 
     let runtime: any LocalLLMRuntime
 
+    /// Structured telemetry channel for the active runtime.
+    ///
+    /// Provides a live `AsyncStream<RuntimeTelemetryEvent>` covering load
+    /// times, first-token latency, tokens/sec, cancellation, and memory
+    /// pressure. Subscribe from any async context:
+    ///
+    /// ```swift
+    /// let (stream, id) = await runtimeManager.telemetry.subscribe()
+    /// Task { for await event in stream { handle(event) } }
+    /// ```
+    var telemetry: RuntimeTelemetry { runtime.telemetry }
+
     init(runtime: any LocalLLMRuntime) {
         self.runtime = runtime
     }
