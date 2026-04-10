@@ -101,12 +101,11 @@ final class ModelDownloadService: ObservableObject {
                 }
             }
 
-            // Per-download session: Wi-Fi only + 2-hour resource timeout for large GGUF files.
+            // Per-download session: 2-hour resource timeout for large GGUF files.
             // Using a dedicated session (not URLSession.shared) keeps configuration isolated
             // and ensures finishTasksAndInvalidate() cleans up cleanly on early exit.
             let config = URLSessionConfiguration.default
-            config.allowsCellularAccess = false          // Wi-Fi only — models are 2-5 GB
-            config.timeoutIntervalForResource = 7_200    // 2 h; slow Wi-Fi + large files
+            config.timeoutIntervalForResource = 7_200    // 2 h — large models on slow connections
             let session = URLSession(configuration: config)
             defer { session.finishTasksAndInvalidate() }
 
@@ -168,10 +167,8 @@ final class ModelDownloadService: ObservableObject {
             switch urlError.code {
             case .notConnectedToInternet, .networkConnectionLost:
                 reason = urlError.downloadTaskResumeData != nil
-                    ? "Download paused. Reconnect to Wi-Fi to continue."
-                    : "No internet connection. Connect to Wi-Fi and try again."
-            case .dataNotAllowed:
-                reason = "Wi-Fi required — models are downloaded on Wi-Fi only."
+                    ? "Download paused. Reconnect to continue."
+                    : "No internet connection. Try again when connected."
             default:
                 reason = urlError.localizedDescription
             }
