@@ -29,6 +29,9 @@ final class ModelDownloadService: ObservableObject {
     init(localModels: LocalModelService, catalog: ModelCatalogService) {
         self.localModels = localModels
         self.catalog = catalog
+        #if HOMEHUB_REAL_RUNTIME
+        setupCoordinatorCallbacks()
+        #endif
     }
 
     func isDownloading(_ modelID: String) -> Bool {
@@ -63,7 +66,9 @@ final class ModelDownloadService: ObservableObject {
         tasks[modelID] = nil
         active[modelID] = nil
         #if HOMEHUB_REAL_RUNTIME
-        // User chose to cancel — wipe resume data so next attempt starts fresh.
+        // Ask the coordinator to cancel the URLSession task and store
+        // resume data; then wipe it so the next tap starts fresh.
+        BackgroundDownloadCoordinator.shared.cancelDownload(modelID: modelID)
         clearResumeData(for: modelID)
         #endif
         catalog.setInstallState(.notInstalled, for: modelID)
@@ -75,78 +80,79 @@ final class ModelDownloadService: ObservableObject {
 
     enum DownloadError: LocalizedError {
         case checksumMismatch(expected: String, actual: String)
-        case invalidResponse(statusCode: Int)
         case fileMoveFailed(String)
 
         var errorDescription: String? {
             switch self {
             case .checksumMismatch(let expected, let actual):
                 return "SHA-256 mismatch: expected \(expected.prefix(12))…, got \(actual.prefix(12))…"
-            case .invalidResponse(let code):
-                return "Server returned HTTP \(code)"
             case .fileMoveFailed(let msg):
                 return "Failed to move downloaded file: \(msg)"
             }
         }
     }
 
+    /// Wire coordinator callbacks once at init. The coordinator routes
+    /// events back here by model ID so multiple downloads work correctly.
+    private func setupCoordinatorCallbacks() {
+        let coordinator = BackgroundDownloadCoordinator.shared
+        coordinator.onProgress = { [weak self] id, fraction in
+            guard let self else { return }
+            self.active[id]?.progress = fraction
+            self.catalog.setInstallState(.downloading(progress: fraction), for: id)
+        }
+        coordinator.onCompleted = { [weak self] id, tempURL in
+            guard let self else { return }
+            // Checksum + file move may be slow — keep off the calling Task.
+            Task { await self.finalizeDownload(modelID: id, tempURL: tempURL) }
+        }
+        coordinator.onFailed = { [weak self] id, error, resumeData in
+            guard let self else { return }
+            self.handleDownloadError(modelID: id, error: error, resumeData: resumeData)
+        }
+    }
+
+    /// Kick off a background URLSession download. Returns immediately; all
+    /// progress/completion callbacks arrive via `setupCoordinatorCallbacks`.
     private func realDownload(model: LocalModel) async {
         let modelID = model.id
+        let localURL = await localModels.localURL(for: modelID)
+
+        // Ensure the destination directory exists before the download lands.
+        try? FileManager.default.createDirectory(
+            at: localURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+
+        let coordinator = BackgroundDownloadCoordinator.shared
+        if let resumeData = loadResumeData(for: modelID) {
+            clearResumeData(for: modelID)
+            coordinator.startDownload(modelID: modelID, resumeData: resumeData)
+        } else {
+            coordinator.startDownload(modelID: modelID, url: model.downloadURL)
+        }
+        // Download now runs independently in the background session.
+        // This Task exits immediately; state is updated via coordinator callbacks.
+    }
+
+    /// Validate checksum (off the main thread) and move the file to its
+    /// final location. Called on @MainActor via the coordinator callback.
+    @MainActor
+    private func finalizeDownload(modelID: String, tempURL: URL) async {
+        let localURL = await localModels.localURL(for: modelID)
+
+        // Find the corresponding model for SHA-256 validation.
+        let model = catalog.models.first { $0.id == modelID }
 
         do {
-            let localURL = await localModels.localURL(for: modelID)
-
-            try FileManager.default.createDirectory(
-                at: localURL.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-
-            let progressDelegate = DownloadProgressDelegate { [weak self] fraction in
-                Task { @MainActor [weak self] in
-                    guard let self, self.active[modelID] != nil else { return }
-                    self.active[modelID]?.progress = fraction
-                    self.catalog.setInstallState(.downloading(progress: fraction), for: modelID)
-                }
-            }
-
-            // Per-download session: 2-hour resource timeout for large GGUF files.
-            // Using a dedicated session (not URLSession.shared) keeps configuration isolated
-            // and ensures finishTasksAndInvalidate() cleans up cleanly on early exit.
-            let config = URLSessionConfiguration.default
-            config.timeoutIntervalForResource = 7_200    // 2 h — large models on slow connections
-            let session = URLSession(configuration: config)
-            defer { session.finishTasksAndInvalidate() }
-
-            let tempURL: URL
-            let response: URLResponse
-
-            // Resume an interrupted download when the server supports range requests.
-            if let resumeData = loadResumeData(for: modelID) {
-                (tempURL, response) = try await session.download(
-                    resumingWith: resumeData,
-                    delegate: progressDelegate
-                )
-                clearResumeData(for: modelID)
-            } else {
-                (tempURL, response) = try await session.download(
-                    from: model.downloadURL,
-                    delegate: progressDelegate
-                )
-            }
-
-            guard !Task.isCancelled, active[modelID]?.isCancelled != true else { return }
-
-            if let http = response as? HTTPURLResponse,
-               !(200..<300).contains(http.statusCode) {
-                throw DownloadError.invalidResponse(statusCode: http.statusCode)
-            }
-
-            if let expectedHash = model.sha256 {
-                let actualHash = try sha256Hash(of: tempURL)
+            if let expectedHash = model?.sha256 {
+                // SHA-256 of a 7 GB file is slow — detach from MainActor.
+                let actualHash = try await Task.detached(priority: .userInitiated) {
+                    try ModelDownloadService.sha256Hash(of: tempURL)
+                }.value
                 guard actualHash.lowercased() == expectedHash.lowercased() else {
                     throw DownloadError.checksumMismatch(
-                        expected: expectedHash,
-                        actual: actualHash
+                        expected: expectedHash, actual: actualHash
                     )
                 }
             }
@@ -161,50 +167,47 @@ final class ModelDownloadService: ObservableObject {
             }
 
             catalog.setInstallState(.installed(localURL: localURL), for: modelID)
-            active[modelID] = nil
-            tasks[modelID] = nil
+        } catch {
+            try? FileManager.default.removeItem(at: tempURL)
+            catalog.setInstallState(.failed(reason: error.localizedDescription), for: modelID)
+        }
+        active[modelID] = nil
+        tasks[modelID] = nil
+    }
 
-        } catch is CancellationError {
-            // User-initiated cancel — resume data already cleared by cancel().
-        } catch let urlError as URLError {
-            // Persist resume data so we can continue where we left off on retry.
-            if let data = urlError.downloadTaskResumeData {
-                saveResumeData(data, for: modelID)
-            }
-            let reason: String
+    @MainActor
+    private func handleDownloadError(modelID: String, error: Error, resumeData: Data?) {
+        if let data = resumeData {
+            saveResumeData(data, for: modelID)
+        }
+        let reason: String
+        if let urlError = error as? URLError {
             switch urlError.code {
             case .notConnectedToInternet, .networkConnectionLost:
-                reason = urlError.downloadTaskResumeData != nil
+                reason = resumeData != nil
                     ? "Download paused. Reconnect to continue."
                     : "No internet connection. Try again when connected."
             default:
                 reason = urlError.localizedDescription
             }
-            catalog.setInstallState(.failed(reason: reason), for: modelID)
-            active[modelID] = nil
-            tasks[modelID] = nil
-        } catch {
-            catalog.setInstallState(.failed(reason: error.localizedDescription), for: modelID)
-            active[modelID] = nil
-            tasks[modelID] = nil
+        } else {
+            reason = error.localizedDescription
         }
+        catalog.setInstallState(.failed(reason: reason), for: modelID)
+        active[modelID] = nil
+        tasks[modelID] = nil
     }
 
     // MARK: - Resume Data
 
-    /// Returns resume data saved from a previous interrupted download, if any.
     private func loadResumeData(for modelID: String) -> Data? {
         UserDefaults.standard.data(forKey: resumeDataKey(for: modelID))
     }
 
-    /// Persists resume data to UserDefaults so interrupted downloads can continue
-    /// after an app restart or network interruption.
     private func saveResumeData(_ data: Data, for modelID: String) {
         UserDefaults.standard.set(data, forKey: resumeDataKey(for: modelID))
     }
 
-    /// Removes stored resume data. Called on user-initiated cancel or successful
-    /// download completion.
     func clearResumeData(for modelID: String) {
         UserDefaults.standard.removeObject(forKey: resumeDataKey(for: modelID))
     }
@@ -213,22 +216,19 @@ final class ModelDownloadService: ObservableObject {
         "com.homehub.app.resumeData.\(modelID)"
     }
 
-    /// Computes SHA-256 hash of a file using streaming 1 MB reads.
-    private func sha256Hash(of url: URL) throws -> String {
+    /// Computes SHA-256 of a file using 1 MB streaming reads.
+    /// `nonisolated` so it can run on `Task.detached` without isolation issues.
+    static func sha256Hash(of url: URL) throws -> String {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
-
         var hasher = SHA256()
-        let chunkSize = 1_024 * 1_024  // 1 MB
-
+        let chunkSize = 1_024 * 1_024
         while true {
             let data = handle.readData(ofLength: chunkSize)
             if data.isEmpty { break }
             hasher.update(data: data)
         }
-
-        let digest = hasher.finalize()
-        return digest.map { String(format: "%02x", $0) }.joined()
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
 #endif
@@ -268,40 +268,3 @@ final class ModelDownloadService: ObservableObject {
     }
 }
 
-// MARK: - URLSession Download Progress Delegate
-
-#if HOMEHUB_REAL_RUNTIME
-
-/// Lightweight delegate that forwards download progress to a closure.
-/// Each `ModelDownloadService.start()` creates its own delegate instance
-/// so progress is tracked per-download.
-private final class DownloadProgressDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
-
-    private let onProgress: @Sendable (Double) -> Void
-
-    init(onProgress: @escaping @Sendable (Double) -> Void) {
-        self.onProgress = onProgress
-    }
-
-    func urlSession(
-        _ session: URLSession,
-        downloadTask: URLSessionDownloadTask,
-        didWriteData bytesWritten: Int64,
-        totalBytesWritten: Int64,
-        totalBytesExpectedToWrite: Int64
-    ) {
-        guard totalBytesExpectedToWrite > 0 else { return }
-        let fraction = Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)
-        onProgress(min(fraction, 1.0))
-    }
-
-    func urlSession(
-        _ session: URLSession,
-        downloadTask: URLSessionDownloadTask,
-        didFinishDownloadingTo location: URL
-    ) {
-        // Handled by the async URLSession.download(from:delegate:) return value
-    }
-}
-
-#endif

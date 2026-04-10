@@ -13,6 +13,13 @@ struct MessageBubbleView: View {
             VStack(alignment: .leading, spacing: 4) {
                 if message.content.isEmpty && message.status == .streaming {
                     TypingIndicator()
+                } else if message.role == .assistant {
+                    // Assistant output is rendered as markdown (bold, italic,
+                    // code blocks, inline code, lists). User messages stay plain.
+                    MarkdownContentView(
+                        content: message.content,
+                        textColor: textColor
+                    )
                 } else {
                     Text(message.content)
                         .font(HHTheme.body)

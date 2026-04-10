@@ -11,6 +11,18 @@ struct ModelsView: View {
     /// Model whose detail sheet is open.
     @State private var infoTarget: LocalModel?
 
+    /// Available device storage in bytes. Queried once per alert presentation.
+    private var availableBytes: Int64 {
+        let url = URL(fileURLWithPath: NSHomeDirectory())
+        let v = try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+        return v?.volumeAvailableCapacityForImportantUsage.map(Int64.init) ?? 0
+    }
+
+    private func hasSufficientSpace(for model: LocalModel) -> Bool {
+        // Require 10% headroom over the raw model size.
+        availableBytes >= Int64(Double(model.sizeBytes) * 1.1)
+    }
+
     var body: some View {
         NavigationStack {
             List {
@@ -52,15 +64,27 @@ struct ModelsView: View {
                 )
             ) {
                 if let model = downloadTarget {
-                    Button("Download \(model.sizeFormatted)") {
-                        downloads.start(model)
-                        downloadTarget = nil
+                    if hasSufficientSpace(for: model) {
+                        Button("Download \(model.sizeFormatted)") {
+                            downloads.start(model)
+                            downloadTarget = nil
+                        }
                     }
                     Button("Cancel", role: .cancel) { downloadTarget = nil }
                 }
             } message: {
                 if let model = downloadTarget {
-                    Text("\(model.sizeFormatted) will be downloaded. The file will be stored on this device and uses device storage.")
+                    if hasSufficientSpace(for: model) {
+                        Text("\(model.sizeFormatted) will be downloaded. The file will be stored on this device.")
+                    } else {
+                        let needed = ByteCountFormatter.string(
+                            fromByteCount: model.sizeBytes, countStyle: .file
+                        )
+                        let free = ByteCountFormatter.string(
+                            fromByteCount: availableBytes, countStyle: .file
+                        )
+                        Text("Not enough storage. Need \(needed) but only \(free) available. Free up space and try again.")
+                    }
                 }
             }
         }

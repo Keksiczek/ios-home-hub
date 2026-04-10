@@ -2,6 +2,7 @@ import SwiftUI
 
 @main
 struct HomeHubApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var container = AppContainer.live()
     @Environment(\.scenePhase) private var scenePhase
 

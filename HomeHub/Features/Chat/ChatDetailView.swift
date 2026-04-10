@@ -5,6 +5,8 @@ struct ChatDetailView: View {
     @EnvironmentObject private var conversations: ConversationService
     @EnvironmentObject private var runtime: RuntimeManager
     @State private var draft: String = ""
+    @State private var showingRename = false
+    @State private var renameText: String = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -52,11 +54,31 @@ struct ChatDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                ShareLink(item: exportText) {
-                    Image(systemName: "square.and.arrow.up")
+                Menu {
+                    Button {
+                        renameText = conversationTitle
+                        showingRename = true
+                    } label: {
+                        Label("Rename…", systemImage: "pencil")
+                    }
+
+                    ShareLink(item: exportText) {
+                        Label("Export", systemImage: "square.and.arrow.up")
+                    }
+                    .disabled(messages.isEmpty)
+                } label: {
+                    Image(systemName: "ellipsis.circle")
                 }
-                .disabled(messages.isEmpty)
             }
+        }
+        .alert("Rename conversation", isPresented: $showingRename) {
+            TextField("Title", text: $renameText)
+            Button("Rename") {
+                let t = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !t.isEmpty else { return }
+                Task { await conversations.rename(conversationID: conversationID, to: t) }
+            }
+            Button("Cancel", role: .cancel) {}
         }
         .task {
             await conversations.loadMessages(for: conversationID)
