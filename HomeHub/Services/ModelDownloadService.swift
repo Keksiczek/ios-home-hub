@@ -35,6 +35,14 @@ final class ModelDownloadService: ObservableObject {
         active[modelID] != nil
     }
 
+    /// Returns `true` when a previous download was interrupted and resume
+    /// data is available. The UI shows a "Paused" badge in this state.
+    func hasResumeData(for modelID: String) -> Bool {
+        UserDefaults.standard.data(
+            forKey: "com.homehub.app.resumeData.\(modelID)"
+        ) != nil
+    }
+
     func start(_ model: LocalModel) {
         guard active[model.id] == nil else { return }
         active[model.id] = DownloadState(modelID: model.id, progress: 0, isCancelled: false)

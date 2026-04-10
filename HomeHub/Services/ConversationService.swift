@@ -16,8 +16,10 @@ final class ConversationService: ObservableObject {
     private let memory: MemoryService
     private let settings: SettingsService
     private let personalization: PersonalizationService
+    private let summarizer: SummarizationService
 
     private var activeStreams: [UUID: Task<Void, Never>] = [:]
+    private var summaryByConversation: [UUID: ConversationSummary] = [:]
 
     init(
         store: any Store,
@@ -33,6 +35,7 @@ final class ConversationService: ObservableObject {
         self.memory = memory
         self.settings = settings
         self.personalization = personalization
+        self.summarizer = SummarizationService(runtime: runtime)
     }
 
     // MARK: - Loading
@@ -79,6 +82,7 @@ final class ConversationService: ObservableObject {
         conversations.removeAll { $0.id == id }
         messagesByConversation[id] = nil
         streamingConversationIDs.remove(id)
+        summaryByConversation[id] = nil
         try? await store.delete(conversationID: id)
     }
 
@@ -152,6 +156,13 @@ final class ConversationService: ObservableObject {
 
         var list = messagesByConversation[conversationID] ?? []
 
+        // Capture everything that came BEFORE the current user turn.
+        // For fresh sends this is the entire existing history.
+        // For regeneration the list already ends with the target user message, so drop it.
+        // This snapshot is the source of truth for the history window and summarisation;
+        // it must NOT include the current user input (that goes into package.userInput).
+        let priorMessages = skipUserMessage ? Array(list.dropLast()) : list
+
         // Only add a new user message for fresh sends, not regeneration.
         let userMessage: Message?
         if !skipUserMessage {
@@ -174,10 +185,36 @@ final class ConversationService: ObservableObject {
         messagesByConversation[conversationID] = list
         try? await store.save(message: assistantMessage)
 
+        // Summarisation trigger: generate a summary of older context once the
+        // conversation grows beyond the history window and the estimated context
+        // fill crosses 60%. The summary is injected into the system prompt so
+        // older turns are never silently dropped. Generated at most once per
+        // conversation (stored in summaryByConversation).
+        let contextLength = runtime.activeModel?.contextLength ?? 4_096
+        let totalChars = priorMessages.reduce(0) { $0 + $1.content.count }
+        let estimatedFill = Double(totalChars / 4) / Double(contextLength)
+
+        var summaryText: String? = summaryByConversation[conversationID]?.summary
+        if priorMessages.count > 20 && estimatedFill > 0.6 && summaryByConversation[conversationID] == nil {
+            // Summarise the older portion; keep the last 10 messages intact in
+            // the history window so recent context stays verbatim.
+            let olderMessages = Array(priorMessages.dropLast(10))
+            if let generated = await summarizer.summarize(messages: olderMessages) {
+                let summary = ConversationSummary(
+                    conversationID: conversationID,
+                    summary: generated,
+                    coversMessageIDs: olderMessages.map(\.id),
+                    generatedAt: .now
+                )
+                summaryByConversation[conversationID] = summary
+                summaryText = generated
+            }
+        }
+
         // Build prompt context with layered memory.
         let facts = await memory.relevantFacts(for: userInput, limit: 8)
         let episodes = await memory.relevantEpisodes(for: userInput, limit: 4)
-        let historyWindow = Array(list.dropLast().suffix(20))
+        let historyWindow = Array(priorMessages.suffix(20))
         let package = PromptContextPackage(
             assistant: personalization.assistantProfile,
             user: personalization.userProfile,
@@ -185,7 +222,8 @@ final class ConversationService: ObservableObject {
             episodes: episodes,
             recentMessages: historyWindow,
             userInput: userInput,
-            settings: settings.current
+            settings: settings.current,
+            conversationSummary: summaryText
         )
         let runtimePrompt = prompts.build(from: package)
         let parameters = RuntimeParameters(

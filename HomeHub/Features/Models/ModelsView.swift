@@ -8,6 +8,8 @@ struct ModelsView: View {
 
     /// Model pending download confirmation (shown in alert).
     @State private var downloadTarget: LocalModel?
+    /// Model whose detail sheet is open.
+    @State private var infoTarget: LocalModel?
 
     var body: some View {
         NavigationStack {
@@ -18,6 +20,7 @@ struct ModelsView: View {
                             model: model,
                             isLoaded: runtime.activeModel?.id == model.id,
                             isLoading: runtime.state == .loading(modelID: model.id),
+                            hasResumeData: downloads.hasResumeData(for: model.id),
                             onDownload: { downloadTarget = model },
                             onCancelDownload: { downloads.cancel(model.id) },
                             onLoad: {
@@ -26,7 +29,8 @@ struct ModelsView: View {
                                     await settings.set(\.selectedModelID, to: model.id)
                                 }
                             },
-                            onUnload: { Task { await runtime.unload() } }
+                            onUnload: { Task { await runtime.unload() } },
+                            onInfo: { infoTarget = model }
                         )
                     }
                 } header: {
@@ -37,6 +41,9 @@ struct ModelsView: View {
             }
             .listStyle(.insetGrouped)
             .navigationTitle("Models")
+            .sheet(item: $infoTarget) { model in
+                ModelInfoSheet(model: model)
+            }
             .alert(
                 "Download \(downloadTarget?.displayName ?? "")?",
                 isPresented: Binding(
@@ -64,28 +71,46 @@ private struct ModelRow: View {
     let model: LocalModel
     let isLoaded: Bool
     let isLoading: Bool
+    let hasResumeData: Bool
     let onDownload: () -> Void
     let onCancelDownload: () -> Void
     let onLoad: () -> Void
     let onUnload: () -> Void
+    let onInfo: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: HHTheme.spaceM) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(model.displayName)
-                    .font(HHTheme.headline)
-                Text("\(model.family) · \(model.parameterCount) · \(model.quantization) · \(model.sizeFormatted)")
-                    .font(HHTheme.footnote)
-                    .foregroundStyle(HHTheme.textSecondary)
-                Text("Context: \(model.contextLength) tokens · \(model.license)")
-                    .font(HHTheme.caption)
-                    .foregroundStyle(HHTheme.textSecondary)
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(model.displayName)
+                        .font(HHTheme.headline)
+                    Text("\(model.family) · \(model.parameterCount) · \(model.quantization) · \(model.sizeFormatted)")
+                        .font(HHTheme.footnote)
+                        .foregroundStyle(HHTheme.textSecondary)
+                    Text("Context: \(model.contextLength) tokens · \(model.license)")
+                        .font(HHTheme.caption)
+                        .foregroundStyle(HHTheme.textSecondary)
+                }
+                Spacer()
+                Button(action: onInfo) {
+                    Image(systemName: "info.circle")
+                        .foregroundStyle(HHTheme.textSecondary)
+                        .imageScale(.medium)
+                }
+                .buttonStyle(.plain)
             }
 
             switch model.installState {
             case .notInstalled:
-                Button("Download", action: onDownload)
-                    .buttonStyle(HHSecondaryButtonStyle())
+                HStack(spacing: HHTheme.spaceS) {
+                    Button("Download", action: onDownload)
+                        .buttonStyle(HHSecondaryButtonStyle())
+                    if hasResumeData {
+                        Label("Paused", systemImage: "pause.circle.fill")
+                            .font(HHTheme.caption)
+                            .foregroundStyle(HHTheme.warning)
+                    }
+                }
 
             case .downloading(let progress):
                 VStack(alignment: .leading, spacing: 6) {
@@ -121,8 +146,15 @@ private struct ModelRow: View {
                     Label(reason, systemImage: "exclamationmark.triangle.fill")
                         .font(HHTheme.caption)
                         .foregroundStyle(HHTheme.warning)
-                    Button("Retry", action: onDownload)
-                        .buttonStyle(HHSecondaryButtonStyle())
+                    HStack(spacing: HHTheme.spaceS) {
+                        Button("Retry", action: onDownload)
+                            .buttonStyle(HHSecondaryButtonStyle())
+                        if hasResumeData {
+                            Label("Paused", systemImage: "pause.circle.fill")
+                                .font(HHTheme.caption)
+                                .foregroundStyle(HHTheme.warning)
+                        }
+                    }
                 }
             }
         }
