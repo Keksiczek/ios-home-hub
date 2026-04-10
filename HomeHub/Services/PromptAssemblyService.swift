@@ -65,18 +65,18 @@ final class PromptAssemblyService {
             chunks.append("About the user:\n" + userLines.joined(separator: "\n"))
         }
 
-        // L1. Durable facts
+        // L1. Durable facts — conservative cap to stay within context budget.
         if !package.facts.isEmpty {
-            let factLines = package.facts.prefix(12).map { "- \($0.content)" }
+            let factLines = package.facts.prefix(8).map { "- \($0.content)" }
             chunks.append("""
             Remembered facts (user-controlled, may be incomplete):
             \(factLines.joined(separator: "\n"))
             """)
         }
 
-        // L2. Episodic summaries
+        // L2. Episodic summaries — kept small; episodes are verbose and consume context.
         if !package.episodes.isEmpty {
-            let episodeLines = package.episodes.prefix(6).map { "- \($0.summary)" }
+            let episodeLines = package.episodes.prefix(3).map { "- \($0.summary)" }
             chunks.append("""
             Recent context (episodic, may be outdated):
             \(episodeLines.joined(separator: "\n"))
