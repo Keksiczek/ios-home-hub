@@ -6,6 +6,9 @@ struct ModelsView: View {
     @EnvironmentObject private var runtime: RuntimeManager
     @EnvironmentObject private var settings: SettingsService
 
+    /// Model pending download confirmation (shown in alert).
+    @State private var downloadTarget: LocalModel?
+
     var body: some View {
         NavigationStack {
             List {
@@ -15,7 +18,7 @@ struct ModelsView: View {
                             model: model,
                             isLoaded: runtime.activeModel?.id == model.id,
                             isLoading: runtime.state == .loading(modelID: model.id),
-                            onDownload: { downloads.start(model) },
+                            onDownload: { downloadTarget = model },
                             onCancelDownload: { downloads.cancel(model.id) },
                             onLoad: {
                                 Task {
@@ -34,6 +37,25 @@ struct ModelsView: View {
             }
             .listStyle(.insetGrouped)
             .navigationTitle("Models")
+            .alert(
+                "Download \(downloadTarget?.displayName ?? "")?",
+                isPresented: Binding(
+                    get: { downloadTarget != nil },
+                    set: { if !$0 { downloadTarget = nil } }
+                )
+            ) {
+                if let model = downloadTarget {
+                    Button("Download \(model.sizeFormatted)") {
+                        downloads.start(model)
+                        downloadTarget = nil
+                    }
+                    Button("Cancel", role: .cancel) { downloadTarget = nil }
+                }
+            } message: {
+                if let model = downloadTarget {
+                    Text("\(model.sizeFormatted) will be downloaded. The file will be stored on this device and uses device storage.")
+                }
+            }
         }
     }
 }
@@ -64,6 +86,7 @@ private struct ModelRow: View {
             case .notInstalled:
                 Button("Download", action: onDownload)
                     .buttonStyle(HHSecondaryButtonStyle())
+
             case .downloading(let progress):
                 VStack(alignment: .leading, spacing: 6) {
                     ProgressView(value: progress).tint(HHTheme.accent)
@@ -77,6 +100,7 @@ private struct ModelRow: View {
                             .tint(HHTheme.danger)
                     }
                 }
+
             case .installed:
                 HStack(spacing: HHTheme.spaceS) {
                     Button(isLoaded ? "Unload" : "Load") {
@@ -87,13 +111,19 @@ private struct ModelRow: View {
                         ProgressView().controlSize(.small)
                     }
                 }
+
             case .loaded:
                 Button("Unload", action: onUnload)
                     .buttonStyle(HHSecondaryButtonStyle())
+
             case .failed(let reason):
-                Label(reason, systemImage: "exclamationmark.triangle.fill")
-                    .font(HHTheme.caption)
-                    .foregroundStyle(HHTheme.warning)
+                VStack(alignment: .leading, spacing: 6) {
+                    Label(reason, systemImage: "exclamationmark.triangle.fill")
+                        .font(HHTheme.caption)
+                        .foregroundStyle(HHTheme.warning)
+                    Button("Retry", action: onDownload)
+                        .buttonStyle(HHSecondaryButtonStyle())
+                }
             }
         }
         .padding(.vertical, 6)

@@ -100,7 +100,50 @@ final class ConversationService: ObservableObject {
         streamingConversationIDs.remove(conversationID)
     }
 
-    private func performSend(userInput: String, in conversationID: UUID) async {
+    /// Drops the last assistant reply and re-runs generation from the
+    /// preceding user message. No-op if a stream is already active.
+    func regenerate(in conversationID: UUID) {
+        guard activeStreams[conversationID] == nil else { return }
+        var list = messagesByConversation[conversationID] ?? []
+
+        guard let lastAssistantIdx = list.lastIndex(where: { $0.role == .assistant }),
+              lastAssistantIdx > 0,
+              list[lastAssistantIdx - 1].role == .user else { return }
+
+        let userInput = list[lastAssistantIdx - 1].content
+        list.remove(at: lastAssistantIdx)
+        messagesByConversation[conversationID] = list
+
+        activeStreams[conversationID] = Task { [weak self] in
+            await self?.performSend(
+                userInput: userInput,
+                in: conversationID,
+                skipUserMessage: true
+            )
+        }
+    }
+
+    // MARK: - Internals
+
+    /// Returns the appropriate stop sequences for the currently loaded model.
+    /// These are checked at the text level in addition to the EOS token check
+    /// inside llama.cpp, providing double-stop protection for models that use
+    /// a turn-ending token distinct from their vocabulary EOS.
+    private func stopSequences(for model: LocalModel?) -> [String] {
+        switch model?.family.lowercased() {
+        case "gemma3", "gemma2": return ["<end_of_turn>"]
+        case "llama":            return ["<|eot_id|>"]
+        default:                 return []
+        }
+    }
+
+    /// - Parameter skipUserMessage: `true` when called from `regenerate()` —
+    ///   the user message is already in the list, don't add it again.
+    private func performSend(
+        userInput: String,
+        in conversationID: UUID,
+        skipUserMessage: Bool = false
+    ) async {
         streamingConversationIDs.insert(conversationID)
         defer {
             streamingConversationIDs.remove(conversationID)
@@ -109,22 +152,27 @@ final class ConversationService: ObservableObject {
 
         var list = messagesByConversation[conversationID] ?? []
 
-        let userMessage = Message.user(userInput, in: conversationID)
-        list.append(userMessage)
+        // Only add a new user message for fresh sends, not regeneration.
+        let userMessage: Message?
+        if !skipUserMessage {
+            let msg = Message.user(userInput, in: conversationID)
+            list.append(msg)
+            userMessage = msg
+            try? await store.save(message: msg)
+
+            if let idx = conversations.firstIndex(where: { $0.id == conversationID }) {
+                conversations[idx].lastMessagePreview = userInput
+                conversations[idx].updatedAt = .now
+                try? await store.save(conversation: conversations[idx])
+            }
+        } else {
+            userMessage = nil
+        }
 
         var assistantMessage = Message.assistantPlaceholder(in: conversationID)
         list.append(assistantMessage)
         messagesByConversation[conversationID] = list
-
-        try? await store.save(message: userMessage)
         try? await store.save(message: assistantMessage)
-
-        // Touch conversation preview + timestamp.
-        if let idx = conversations.firstIndex(where: { $0.id == conversationID }) {
-            conversations[idx].lastMessagePreview = userInput
-            conversations[idx].updatedAt = .now
-            try? await store.save(conversation: conversations[idx])
-        }
 
         // Build prompt context with layered memory.
         let facts = await memory.relevantFacts(for: userInput, limit: 8)
@@ -144,7 +192,7 @@ final class ConversationService: ObservableObject {
             maxTokens: settings.current.maxResponseTokens,
             temperature: settings.current.temperature,
             topP: settings.current.topP,
-            stopSequences: []
+            stopSequences: stopSequences(for: runtime.activeModel)
         )
 
         do {
@@ -171,9 +219,19 @@ final class ConversationService: ObservableObject {
             try? await store.save(message: assistantMessage)
         }
 
-        // Fire-and-forget memory consideration on the user turn.
-        Task { [memory, userMessage] in
-            await memory.consider(message: userMessage)
+        // Auto-title: rename "New chat" from first user message content.
+        if let msg = userMessage {
+            let isFirstMessage = list.filter({ $0.role == .user }).count == 1
+            if isFirstMessage,
+               let idx = conversations.firstIndex(where: { $0.id == conversationID }),
+               conversations[idx].title == "New chat" {
+                let title = String(userInput.prefix(60))
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                await rename(conversationID: conversationID, to: title.isEmpty ? "Chat" : title)
+            }
+
+            // Fire-and-forget memory consideration on the user turn.
+            Task { [memory] in await memory.consider(message: msg) }
         }
     }
 

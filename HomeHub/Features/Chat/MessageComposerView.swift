@@ -5,11 +5,26 @@ struct MessageComposerView: View {
     @Binding var draft: String
     let isStreaming: Bool
     let canSend: Bool
+    /// Estimated fraction of the context window used (0.0–1.0).
+    /// Drives a subtle colour bar shown above the input once usage exceeds 50%.
+    let tokenFill: Double
     let onSend: () -> Void
     let onCancel: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
+            // Context usage bar — visible only when context is getting full
+            if tokenFill > 0.5 {
+                GeometryReader { geo in
+                    Rectangle()
+                        .fill(contextBarColor)
+                        .frame(width: geo.size.width * tokenFill)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .animation(.easeInOut(duration: 0.3), value: tokenFill)
+                }
+                .frame(height: 2)
+            }
+
             Divider().overlay(HHTheme.stroke)
 
             HStack(alignment: .bottom, spacing: HHTheme.spaceM) {
@@ -50,5 +65,11 @@ struct MessageComposerView: View {
             .padding(.vertical, HHTheme.spaceM)
         }
         .background(HHTheme.canvas)
+    }
+
+    private var contextBarColor: Color {
+        if tokenFill > 0.9 { return HHTheme.danger }
+        if tokenFill > 0.75 { return HHTheme.warning }
+        return HHTheme.accent.opacity(0.6)
     }
 }
