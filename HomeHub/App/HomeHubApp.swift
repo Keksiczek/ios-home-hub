@@ -19,7 +19,7 @@ struct HomeHubApp: App {
                 .environmentObject(container.conversationService)
                 .environmentObject(container.onboardingService)
                 .tint(HHTheme.accent)
-                .preferredColorScheme(nil)
+                .preferredColorScheme(container.settingsService.current.theme.colorScheme)
                 .onReceive(NotificationCenter.default.publisher(
                     for: UIApplication.didReceiveMemoryWarningNotification
                 )) { _ in

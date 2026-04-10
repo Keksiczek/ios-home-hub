@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 
 struct AppSettings: Codable, Equatable {
     var memoryEnabled: Bool
@@ -38,6 +39,16 @@ enum AppTheme: String, Codable, CaseIterable, Identifiable {
         case .system: return "Match system"
         case .light:  return "Light"
         case .dark:   return "Dark"
+        }
+    }
+
+    /// Maps to SwiftUI's `preferredColorScheme(_:)`.
+    /// `nil` means "follow the system setting".
+    var colorScheme: ColorScheme? {
+        switch self {
+        case .system: return nil
+        case .light:  return .light
+        case .dark:   return .dark
         }
     }
 }

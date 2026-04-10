@@ -159,7 +159,12 @@ struct SettingsView: View {
             }
             Toggle("Haptics", isOn: Binding(
                 get: { settings.current.haptics },
-                set: { Task { await settings.set(\.haptics, to: $0) } }
+                set: { newValue in
+                    // Fire haptic on the new value so the user feels the
+                    // toggle turning on (or gets silence when turning off).
+                    HHHaptics.impact(.medium, enabled: newValue)
+                    Task { await settings.set(\.haptics, to: newValue) }
+                }
             ))
         }
     }

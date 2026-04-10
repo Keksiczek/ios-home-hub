@@ -3,6 +3,7 @@ import SwiftUI
 struct ChatListView: View {
     @EnvironmentObject private var conversations: ConversationService
     @EnvironmentObject private var runtime: RuntimeManager
+    @EnvironmentObject private var settings: SettingsService
 
     var body: some View {
         NavigationStack {
@@ -51,10 +52,12 @@ struct ChatListView: View {
     }
 
     private func startNewChat() async {
+        HHHaptics.impact(.medium, enabled: settings.current.haptics)
         _ = await conversations.createConversation()
     }
 
     private func delete(at offsets: IndexSet) {
+        HHHaptics.notification(.warning, enabled: settings.current.haptics)
         let targets = offsets.map { conversations.conversations[$0] }
         for convo in targets {
             Task { await conversations.deleteConversation(convo.id) }

@@ -2,6 +2,7 @@ import SwiftUI
 
 struct MainTabView: View {
     @EnvironmentObject private var appState: AppState
+    @EnvironmentObject private var settings: SettingsService
 
     var body: some View {
         TabView(selection: $appState.selectedTab) {
@@ -20,6 +21,9 @@ struct MainTabView: View {
             SettingsView()
                 .tabItem { Label("Settings", systemImage: "gearshape") }
                 .tag(MainTab.settings)
+        }
+        .onChange(of: appState.selectedTab) { _, _ in
+            HHHaptics.selection(enabled: settings.current.haptics)
         }
     }
 }

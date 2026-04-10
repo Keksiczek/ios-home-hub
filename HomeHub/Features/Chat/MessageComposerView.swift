@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct MessageComposerView: View {
+    @EnvironmentObject private var settings: SettingsService
     @Binding var draft: String
     let isStreaming: Bool
     let canSend: Bool
@@ -23,14 +24,20 @@ struct MessageComposerView: View {
                     )
 
                 if isStreaming {
-                    Button(action: onCancel) {
+                    Button {
+                        HHHaptics.impact(.medium, enabled: settings.current.haptics)
+                        onCancel()
+                    } label: {
                         Image(systemName: "stop.circle.fill")
                             .font(.system(size: 34))
                             .foregroundStyle(HHTheme.danger)
                     }
                     .accessibilityLabel("Stop")
                 } else {
-                    Button(action: onSend) {
+                    Button {
+                        HHHaptics.impact(.light, enabled: settings.current.haptics)
+                        onSend()
+                    } label: {
                         Image(systemName: "arrow.up.circle.fill")
                             .font(.system(size: 34))
                             .foregroundStyle(canSend ? HHTheme.accent : HHTheme.textSecondary.opacity(0.3))

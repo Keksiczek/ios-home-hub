@@ -21,15 +21,18 @@ final class MemoryService: ObservableObject {
     private let store: any Store
     private let settings: SettingsService
     private let extractor: MemoryExtractionService
+    private let embeddings: EmbeddingService
 
     init(
         store: any Store,
         settings: SettingsService,
-        extractor: MemoryExtractionService
+        extractor: MemoryExtractionService,
+        embeddings: EmbeddingService = EmbeddingService()
     ) {
         self.store = store
         self.settings = settings
         self.extractor = extractor
+        self.embeddings = embeddings
     }
 
     func load() async {
@@ -45,6 +48,7 @@ final class MemoryService: ObservableObject {
 
     func add(_ fact: MemoryFact) async {
         if let idx = facts.firstIndex(where: { $0.id == fact.id }) {
+            await embeddings.invalidateCache(for: facts[idx].content)
             facts[idx] = fact
         } else {
             facts.append(fact)
@@ -57,6 +61,9 @@ final class MemoryService: ObservableObject {
     }
 
     func delete(_ id: UUID) async {
+        if let fact = facts.first(where: { $0.id == id }) {
+            await embeddings.invalidateCache(for: fact.content)
+        }
         facts.removeAll { $0.id == id }
         try? await store.deleteMemoryFact(id: id)
     }
@@ -107,22 +114,42 @@ final class MemoryService: ObservableObject {
         facts.removeAll()
         episodes.removeAll()
         candidates.removeAll()
+        await embeddings.invalidateCache()
     }
 
     // MARK: - Retrieval
 
     /// Returns facts relevant to the current user input.
     ///
-    /// v1 Simplification: pinned first, then cheap keyword overlap.
-    /// Future: on-device embedding (NLContextualEmbedding on A18 /
-    /// M-series) + cosine similarity with a small LRU cache.
+    /// Scoring strategy (in priority order):
+    /// 1. **Semantic** — NLContextualEmbedding cosine similarity when
+    ///    available (A18 Pro / M-series with downloaded assets).
+    /// 2. **Keyword** — cheap word-overlap fallback on older hardware
+    ///    or before embedding assets are downloaded.
+    ///
+    /// Pinned facts always get a 1.0 base score bonus.
     func relevantFacts(for input: String, limit: Int) async -> [MemoryFact] {
         guard settings.current.memoryEnabled else { return [] }
-        let normalized = input.lowercased()
 
-        let scored: [(MemoryFact, Double)] = facts
-            .filter { !$0.disabled }
-            .map { fact in
+        let activeFacts = facts.filter { !$0.disabled }
+        guard !activeFacts.isEmpty else { return [] }
+
+        // Try semantic scoring first
+        let semanticScores = await embeddings.batchSimilarity(
+            query: input,
+            candidates: activeFacts.map(\.content)
+        )
+
+        let scored: [(MemoryFact, Double)]
+        if let semanticScores {
+            scored = zip(activeFacts, semanticScores).map { fact, sim in
+                let pinBonus = fact.pinned ? 1.0 : 0.0
+                return (fact, max(sim, 0) + pinBonus)
+            }
+        } else {
+            // Keyword fallback
+            let normalized = input.lowercased()
+            scored = activeFacts.map { fact in
                 var score = fact.pinned ? 1.0 : 0.0
                 let words = fact.content
                     .lowercased()
@@ -132,6 +159,7 @@ final class MemoryService: ObservableObject {
                 }
                 return (fact, score)
             }
+        }
 
         return scored
             .sorted { $0.1 > $1.1 }
@@ -141,23 +169,26 @@ final class MemoryService: ObservableObject {
 
     /// Returns episodes relevant to the current user input.
     ///
-    /// Scoring: keyword overlap on summary text, boosted by recency.
+    /// Scoring: semantic similarity (NLContextualEmbedding) with recency
+    /// boost, falling back to keyword overlap on unsupported hardware.
     func relevantEpisodes(for input: String, limit: Int) async -> [MemoryEpisode] {
         guard settings.current.memoryEnabled else { return [] }
-        let normalized = input.lowercased()
         let now = Date.now
 
-        let scored: [(MemoryEpisode, Double)] = episodes
-            .filter { $0.approved && !$0.disabled }
-            .map { episode in
-                var score = 0.0
-                let words = episode.summary
-                    .lowercased()
-                    .split(whereSeparator: { !$0.isLetter })
-                for word in words where word.count > 3 && normalized.contains(word) {
-                    score += 0.2
-                }
-                // Recency boost: episodes from the last 7 days get a bonus.
+        let activeEpisodes = episodes.filter { $0.approved && !$0.disabled }
+        guard !activeEpisodes.isEmpty else { return [] }
+
+        // Try semantic scoring first
+        let semanticScores = await embeddings.batchSimilarity(
+            query: input,
+            candidates: activeEpisodes.map(\.summary)
+        )
+
+        let scored: [(MemoryEpisode, Double)]
+        if let semanticScores {
+            scored = zip(activeEpisodes, semanticScores).map { episode, sim in
+                var score = max(sim, 0)
+                // Recency boost
                 let age = now.timeIntervalSince(episode.createdAt)
                 let sevenDays: TimeInterval = 7 * 24 * 3600
                 if age < sevenDays {
@@ -165,6 +196,25 @@ final class MemoryService: ObservableObject {
                 }
                 return (episode, score)
             }
+        } else {
+            // Keyword fallback
+            let normalized = input.lowercased()
+            scored = activeEpisodes.map { episode in
+                var score = 0.0
+                let words = episode.summary
+                    .lowercased()
+                    .split(whereSeparator: { !$0.isLetter })
+                for word in words where word.count > 3 && normalized.contains(word) {
+                    score += 0.2
+                }
+                let age = now.timeIntervalSince(episode.createdAt)
+                let sevenDays: TimeInterval = 7 * 24 * 3600
+                if age < sevenDays {
+                    score += 0.3 * max(0, 1.0 - age / sevenDays)
+                }
+                return (episode, score)
+            }
+        }
 
         return scored
             .filter { $0.1 > 0 }
