@@ -165,6 +165,7 @@ final class ConversationService: ObservableObject {
         userInput: String,
         in conversationID: UUID,
         attachments: [Message.Attachment]? = nil,
+        isWebSearchEnabled: Bool = false,
         skipUserMessage: Bool = false
     ) async {
         streamingConversationIDs.insert(conversationID)
@@ -257,6 +258,7 @@ final class ConversationService: ObservableObject {
             topExcerpts.append(webSnippet)
         }
         
+        let skillInstructions = await SkillManager.shared.buildSystemInstructions()
         let package = PromptContextPackage(
             assistant: personalization.assistantProfile,
             user: personalization.userProfile,
@@ -267,7 +269,7 @@ final class ConversationService: ObservableObject {
             settings: settings.current,
             conversationSummary: summaryText,
             fileExcerpts: topExcerpts,
-            skillInstructions: SkillManager.shared.buildSystemInstructions()
+            skillInstructions: skillInstructions
         )
         let parameters = RuntimeParameters(
             maxTokens: settings.current.maxResponseTokens,
