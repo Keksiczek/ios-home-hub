@@ -92,7 +92,13 @@ actor HomeKitManagerDelegateProxy: NSObject, HMHomeManagerDelegate {
         }
     }
     
-    func homeManagerDidUpdateHomes(_ manager: HMHomeManager) {
+    nonisolated func homeManagerDidUpdateHomes(_ manager: HMHomeManager) {
+        Task {
+            await self.didUpdateHomes(manager)
+        }
+    }
+
+    private func didUpdateHomes(_ manager: HMHomeManager) {
         self.cachedManager = manager
         self.isReady = true
         let pending = continuations

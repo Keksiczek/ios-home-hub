@@ -34,5 +34,15 @@ struct HomeHubShortcuts: AppShortcutsProvider {
             shortTitle: "New Chat",
             systemImageName: "bubble.left.and.bubble.right"
         )
+
+        AppShortcut(
+            intent: AskAssistantIntent(),
+            phrases: [
+                "Zeptej se asistenta \(.applicationName)",
+                "Pošli zprávu asistentovi \(.applicationName)"
+            ],
+            shortTitle: "Zeptat se asistenta",
+            systemImageName: "brain"
+        )
     }
 }

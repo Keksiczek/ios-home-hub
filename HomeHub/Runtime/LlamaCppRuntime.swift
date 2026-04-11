@@ -229,8 +229,7 @@ final class LlamaCppRuntime: LocalLLMRuntime, @unchecked Sendable {
 
                     let stats = Self.makeStats(tokens: tokens, started: started)
                     log.info(
-                        "Done: \(stats.tokensGenerated) tokens " +
-                        "@ \(String(format: "%.1f", stats.tokensPerSecond), privacy: .public) t/s"
+                        "Done: \(stats.tokensGenerated) tokens @ \(String(format: "%.1f", stats.tokensPerSecond), privacy: .public) t/s"
                     )
                     #if DEBUG
                     print(
@@ -273,7 +272,7 @@ final class LlamaCppRuntime: LocalLLMRuntime, @unchecked Sendable {
     /// TODO: Wire into `HomeHubApp` once memory-pressure tests on device
     /// confirm the correct UX (reload prompt vs. silent background reload).
     func handleMemoryPressure() async {
-        guard unloadPolicy == .onBackgroundOrMemoryPressure else { return }
+        guard self.unloadPolicy == .onBackgroundOrMemoryPressure else { return }
         await telemetry.emit(.memoryPressureReceived)
         log.warning("Memory pressure — unloading model.")
         await unload(reason: .memoryPressure)
@@ -291,8 +290,8 @@ final class LlamaCppRuntime: LocalLLMRuntime, @unchecked Sendable {
     /// ```
     /// TODO: Wire into `HomeHubApp` and confirm reload-on-foreground UX.
     func handleBackground() async {
-        guard unloadPolicy != .manual else { return }
-        log.info("App backgrounded — unloading model per policy '\(String(describing: unloadPolicy))'.")
+        guard self.unloadPolicy != .manual else { return }
+        log.info("App backgrounded — unloading model per policy '\(String(describing: self.unloadPolicy))'.")
         await unload(reason: .appBackground)
     }
 

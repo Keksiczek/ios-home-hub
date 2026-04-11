@@ -39,18 +39,3 @@ struct AskAssistantIntent: AppIntent {
     }
 }
 
-/// Exposes the intent to Siri/Shortcuts without requiring the user to set it up manually.
-@available(iOS 16.0, *)
-struct HomeHubShortcuts: AppShortcutsProvider {
-    static var appShortcuts: [AppShortcut] {
-        AppShortcut(
-            intent: AskAssistantIntent(),
-            phrases: [
-                "Zeptej se asistenta \(.applicationName)",
-                "Pošli zprávu asistentovi \(.applicationName)"
-            ],
-            shortTitle: "Zeptat se asistenta",
-            systemImageName: "brain"
-        )
-    }
-}
