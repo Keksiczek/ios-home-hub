@@ -27,9 +27,15 @@ let package = Package(
     products: [
         .library(name: "HomeHub", targets: ["HomeHub"])
     ],
+    dependencies: [
+        .package(url: "https://github.com/argmaxinc/WhisperKit", exact: "0.9.3")
+    ],
     targets: [
         .target(
             name: "HomeHub",
+            dependencies: [
+                .product(name: "WhisperKit", package: "WhisperKit")
+            ],
             path: "HomeHub",
             exclude: [
                 "App/HomeHubApp.swift",

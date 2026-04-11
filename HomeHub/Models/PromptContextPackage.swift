@@ -20,6 +20,10 @@ struct PromptContextPackage {
     /// and there are messages outside the 20-message window. Injected into
     /// the system prompt so older context isn't silently dropped.
     var conversationSummary: String? = nil
+    /// Text extracted from attached documents in the current turn.
+    var fileExcerpts: [String] = []
+    /// Instructions derived from active skills to be injected into the system prompt.
+    var skillInstructions: String? = nil
 }
 
 /// A snapshot of the user's personalization state at a point in

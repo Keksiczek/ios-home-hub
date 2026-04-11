@@ -14,12 +14,8 @@ struct MessageBubbleView: View {
                 if message.content.isEmpty && message.status == .streaming {
                     TypingIndicator()
                 } else if message.role == .assistant {
-                    // Assistant output is rendered as markdown (bold, italic,
-                    // code blocks, inline code, lists). User messages stay plain.
-                    MarkdownContentView(
-                        content: message.content,
-                        textColor: textColor
-                    )
+                    // Generative UI support — intercepts <Widget:...> and falls back to markdown
+                    WidgetRenderer(rawContent: message.content)
                 } else {
                     Text(message.content)
                         .font(HHTheme.body)

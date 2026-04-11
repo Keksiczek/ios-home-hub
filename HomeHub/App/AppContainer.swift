@@ -30,6 +30,7 @@ final class AppContainer: ObservableObject {
     let runtimeManager: RuntimeManager
     let conversationService: ConversationService
     let onboardingService: OnboardingService
+    let widgetActionHandler: WidgetActionHandler
 
     private init(
         appState: AppState,
@@ -48,6 +49,7 @@ final class AppContainer: ObservableObject {
         let catalog = ModelCatalogService()
         let localModels = LocalModelService()
         let downloads = ModelDownloadService(localModels: localModels, catalog: catalog)
+        let embedding = EmbeddingService()
         let extractor = MemoryExtractionService(runtime: runtime)
         let memory = MemoryService(store: store, settings: settings, extractor: extractor)
         let prompts = PromptAssemblyService()
@@ -58,7 +60,8 @@ final class AppContainer: ObservableObject {
             prompts: prompts,
             memory: memory,
             settings: settings,
-            personalization: personalization
+            personalization: personalization,
+            embeddingService: embedding
         )
         let onboarding = OnboardingService(
             store: store,
@@ -78,6 +81,7 @@ final class AppContainer: ObservableObject {
         self.runtimeManager = runtimeManager
         self.conversationService = conversations
         self.onboardingService = onboarding
+        self.widgetActionHandler = WidgetActionHandler()
     }
 
     /// Loads persisted state, decides onboarding vs ready, and
@@ -96,6 +100,13 @@ final class AppContainer: ObservableObject {
         } else {
             appState.phase = .onboarding
         }
+
+        // Sync current state to the home/lock screen widget.
+        WidgetBridge.updateWidget(
+            facts: memoryService.facts,
+            conversations: conversationService.conversations,
+            lastAssistantMessage: nil
+        )
     }
 
     /// Attempts to load the model the user last selected. Called on
@@ -150,6 +161,8 @@ final class AppContainer: ObservableObject {
     ///   is integrated.
     /// - To use the real llama.cpp runtime, add `HOMEHUB_REAL_RUNTIME`
     ///   to Swift Active Compilation Conditions in Xcode build settings.
+    static let shared = AppContainer.live()
+
     static func live() -> AppContainer {
         let runtime: any LocalLLMRuntime
         #if HOMEHUB_REAL_RUNTIME
@@ -157,9 +170,17 @@ final class AppContainer: ObservableObject {
         #else
         runtime = MockLocalRuntime()
         #endif
+
+        let store: any Store
+        #if HOMEHUB_SWIFTDATA
+        store = SwiftDataStore()
+        #else
+        store = FileStore()
+        #endif
+
         return AppContainer(
             appState: AppState(),
-            store: FileStore(),
+            store: store,
             runtime: runtime
         )
     }

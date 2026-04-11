@@ -13,14 +13,23 @@ actor FileStore: Store {
     private let decoder: JSONDecoder
 
     init() {
-        let support = try! FileManager.default.url(
+        let fileManager = FileManager.default
+        let localSupport = try! fileManager.url(
             for: .applicationSupportDirectory,
             in: .userDomainMask,
             appropriateFor: nil,
             create: true
         )
-        self.rootURL = support.appendingPathComponent("HomeHub", isDirectory: true)
-        try? FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        
+        // Attempt to get the ubiquitous container for iCloud sync.
+        // Fallback to local application support if iCloud is unavailable.
+        if let ubiquityURL = fileManager.url(forUbiquityContainerIdentifier: nil) {
+            self.rootURL = ubiquityURL.appendingPathComponent("Documents").appendingPathComponent("HomeHub", isDirectory: true)
+        } else {
+            self.rootURL = localSupport.appendingPathComponent("HomeHub", isDirectory: true)
+        }
+        
+        try? fileManager.createDirectory(at: rootURL, withIntermediateDirectories: true)
 
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601

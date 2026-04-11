@@ -8,6 +8,13 @@ struct Message: Identifiable, Codable, Equatable, Hashable {
     var createdAt: Date
     var status: Status
     var tokenCount: Int?
+    var attachments: [Attachment]?
+
+    struct Attachment: Codable, Equatable, Hashable, Identifiable {
+        let id: UUID
+        let filename: String
+        let extractedText: String
+    }
 
     enum Role: String, Codable, Hashable {
         case system
@@ -23,7 +30,7 @@ struct Message: Identifiable, Codable, Equatable, Hashable {
         case cancelled
     }
 
-    static func user(_ text: String, in conversationID: UUID) -> Message {
+    static func user(_ text: String, in conversationID: UUID, attachments: [Attachment]? = nil) -> Message {
         Message(
             id: UUID(),
             conversationID: conversationID,
@@ -31,7 +38,8 @@ struct Message: Identifiable, Codable, Equatable, Hashable {
             content: text,
             createdAt: .now,
             status: .complete,
-            tokenCount: nil
+            tokenCount: nil,
+            attachments: attachments
         )
     }
 
@@ -43,7 +51,8 @@ struct Message: Identifiable, Codable, Equatable, Hashable {
             content: "",
             createdAt: .now,
             status: .streaming,
-            tokenCount: nil
+            tokenCount: nil,
+            attachments: nil
         )
     }
 }

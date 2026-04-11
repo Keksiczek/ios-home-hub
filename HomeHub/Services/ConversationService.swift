@@ -17,6 +17,7 @@ final class ConversationService: ObservableObject {
     private let settings: SettingsService
     private let personalization: PersonalizationService
     private let summarizer: SummarizationService
+    private let embeddingService: EmbeddingService
 
     private var activeStreams: [UUID: Task<Void, Never>] = [:]
     private var summaryByConversation: [UUID: ConversationSummary] = [:]
@@ -27,7 +28,8 @@ final class ConversationService: ObservableObject {
         prompts: PromptAssemblyService,
         memory: MemoryService,
         settings: SettingsService,
-        personalization: PersonalizationService
+        personalization: PersonalizationService,
+        embeddingService: EmbeddingService = EmbeddingService()
     ) {
         self.store = store
         self.runtime = runtime
@@ -36,6 +38,7 @@ final class ConversationService: ObservableObject {
         self.settings = settings
         self.personalization = personalization
         self.summarizer = SummarizationService(runtime: runtime)
+        self.embeddingService = embeddingService
     }
 
     // MARK: - Loading
@@ -88,14 +91,27 @@ final class ConversationService: ObservableObject {
 
     // MARK: - Send
 
-    func send(userInput: String, in conversationID: UUID) {
+    func send(userInput: String, in conversationID: UUID, attachments: [Message.Attachment]? = nil, isWebSearchEnabled: Bool = false) {
         let trimmed = userInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty || (attachments?.isEmpty == false) else { return }
         guard activeStreams[conversationID] == nil else { return }
 
         activeStreams[conversationID] = Task { [weak self] in
-            await self?.performSend(userInput: trimmed, in: conversationID)
+            await self?.performSend(userInput: trimmed, in: conversationID, attachments: attachments, isWebSearchEnabled: isWebSearchEnabled)
         }
+    }
+
+    /// Odeslání zprávy se synchronním čekáním na výsledek (vhodné pro App Intents a widgety)
+    func sendAndWait(userInput: String, in conversationID: UUID, attachments: [Message.Attachment]? = nil, isWebSearchEnabled: Bool = false) async {
+        let trimmed = userInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty || (attachments?.isEmpty == false) else { return }
+        guard activeStreams[conversationID] == nil else { return }
+
+        let task = Task { [weak self] in
+            await self?.performSend(userInput: trimmed, in: conversationID, attachments: attachments, isWebSearchEnabled: isWebSearchEnabled)
+        }
+        activeStreams[conversationID] = task
+        await task.value
     }
 
     func cancelStream(in conversationID: UUID) {
@@ -115,6 +131,7 @@ final class ConversationService: ObservableObject {
               list[lastAssistantIdx - 1].role == .user else { return }
 
         let userInput = list[lastAssistantIdx - 1].content
+        let attachments = list[lastAssistantIdx - 1].attachments
         list.remove(at: lastAssistantIdx)
         messagesByConversation[conversationID] = list
 
@@ -122,6 +139,7 @@ final class ConversationService: ObservableObject {
             await self?.performSend(
                 userInput: userInput,
                 in: conversationID,
+                attachments: attachments,
                 skipUserMessage: true
             )
         }
@@ -146,6 +164,7 @@ final class ConversationService: ObservableObject {
     private func performSend(
         userInput: String,
         in conversationID: UUID,
+        attachments: [Message.Attachment]? = nil,
         skipUserMessage: Bool = false
     ) async {
         streamingConversationIDs.insert(conversationID)
@@ -166,18 +185,18 @@ final class ConversationService: ObservableObject {
         // Only add a new user message for fresh sends, not regeneration.
         let userMessage: Message?
         if !skipUserMessage {
-            let msg = Message.user(userInput, in: conversationID)
+            let msg = Message.user(userInput, in: conversationID, attachments: attachments)
             list.append(msg)
             userMessage = msg
             try? await store.save(message: msg)
 
             if let idx = conversations.firstIndex(where: { $0.id == conversationID }) {
-                conversations[idx].lastMessagePreview = userInput
+                conversations[idx].lastMessagePreview = userInput.isEmpty ? "📎 \(attachments?.count ?? 0) file(s)" : userInput
                 conversations[idx].updatedAt = .now
                 try? await store.save(conversation: conversations[idx])
             }
         } else {
-            userMessage = nil
+            userMessage = list.last(where: { $0.role == .user })
         }
 
         var assistantMessage = Message.assistantPlaceholder(in: conversationID)
@@ -210,11 +229,34 @@ final class ConversationService: ObservableObject {
                 summaryText = generated
             }
         }
-
+        
         // Build prompt context with layered memory.
         let facts = await memory.relevantFacts(for: userInput, limit: 8)
         let episodes = await memory.relevantEpisodes(for: userInput, limit: 4)
         let historyWindow = Array(priorMessages.suffix(20))
+        
+        // Chunk and filter attachments using embeddings
+        var topExcerpts: [String] = []
+        if let attachments = attachments, !attachments.isEmpty {
+            for attachment in attachments {
+                let chunks = DocumentReaderService.chunk(text: attachment.extractedText)
+                if chunks.count <= 3 {
+                    topExcerpts.append(contentsOf: chunks)
+                } else if let scores = await embeddingService.batchSimilarity(query: userInput, candidates: chunks) {
+                    let scored = zip(chunks, scores).sorted { $0.1 > $1.1 }
+                    let top = scored.prefix(3).map { $0.0 }
+                    topExcerpts.append(contentsOf: top)
+                } else {
+                    topExcerpts.append(contentsOf: chunks.prefix(3))
+                }
+            }
+        }
+        
+        // Web Search processing
+        if isWebSearchEnabled, let webSnippet = try? await WebSearchService.search(query: userInput) {
+            topExcerpts.append(webSnippet)
+        }
+        
         let package = PromptContextPackage(
             assistant: personalization.assistantProfile,
             user: personalization.userProfile,
@@ -223,9 +265,10 @@ final class ConversationService: ObservableObject {
             recentMessages: historyWindow,
             userInput: userInput,
             settings: settings.current,
-            conversationSummary: summaryText
+            conversationSummary: summaryText,
+            fileExcerpts: topExcerpts,
+            skillInstructions: SkillManager.shared.buildSystemInstructions()
         )
-        let runtimePrompt = prompts.build(from: package)
         let parameters = RuntimeParameters(
             maxTokens: settings.current.maxResponseTokens,
             temperature: settings.current.temperature,
@@ -233,28 +276,74 @@ final class ConversationService: ObservableObject {
             stopSequences: stopSequences(for: runtime.activeModel)
         )
 
-        do {
-            let stream = runtime.generate(prompt: runtimePrompt, parameters: parameters)
-            for try await event in stream {
-                switch event {
-                case .token(let piece):
-                    assistantMessage.content += piece
+        var maxLoops = 3
+        var currentLoop = 0
+        var loopPackage = package
+        
+        while currentLoop < maxLoops {
+            currentLoop += 1
+            
+            let runtimePrompt = prompts.build(from: loopPackage)
+            assistantMessage.status = .streaming
+            
+            do {
+                let stream = runtime.generate(prompt: runtimePrompt, parameters: parameters)
+                for try await event in stream {
+                    switch event {
+                    case .token(let piece):
+                        assistantMessage.content += piece
+                        updateMessage(assistantMessage, in: conversationID)
+                    case .finished(let reason, _):
+                        assistantMessage.status = (reason == .cancelled) ? .cancelled : .complete
+                        updateMessage(assistantMessage, in: conversationID)
+                        try? await store.save(message: assistantMessage)
+                    }
+                }
+            } catch {
+                assistantMessage.status = .failed
+                if assistantMessage.content.isEmpty {
+                    assistantMessage.content = "⚠︎ \(error.localizedDescription)"
+                } else {
+                    assistantMessage.content += "\n\n⚠︎ \(error.localizedDescription)"
+                }
+                updateMessage(assistantMessage, in: conversationID)
+                try? await store.save(message: assistantMessage)
+                break
+            }
+            
+            // Check for Agentic Action
+            if assistantMessage.status == .complete {
+                if let actionCommand = await SkillManager.shared.parseAction(from: assistantMessage.content) {
+                    // Show temporary UI indicator
+                    let originalContent = assistantMessage.content
+                    assistantMessage.content = originalContent + "\n\n*(Agent používá skill: \(actionCommand.skillName)...)*"
                     updateMessage(assistantMessage, in: conversationID)
-                case .finished(let reason, _):
-                    assistantMessage.status = (reason == .cancelled) ? .cancelled : .complete
+                    
+                    // Execute native skill
+                    let result = await SkillManager.shared.execute(actionCommand)
+                    
+                    // Seed the context for the next loop so LLM sees what it did and what came back
+                    let actionMsg = Message.assistantPlaceholder(in: conversationID)
+                    var actionMsgCopy = actionMsg
+                    actionMsgCopy.content = originalContent
+                    actionMsgCopy.status = .complete
+                    
+                    let obsMsg = Message.user("<Observation>\n\(result)\n</Observation>", in: conversationID)
+                    
+                    loopPackage.recentMessages.append(actionMsgCopy)
+                    loopPackage.recentMessages.append(obsMsg)
+                    
+                    // Reset message state for the final response stream
+                    assistantMessage.content = ""
+                    assistantMessage.status = .streaming
                     updateMessage(assistantMessage, in: conversationID)
-                    try? await store.save(message: assistantMessage)
+                    
+                    continue
                 }
             }
-        } catch {
-            assistantMessage.status = .failed
-            if assistantMessage.content.isEmpty {
-                assistantMessage.content = "⚠︎ \(error.localizedDescription)"
-            } else {
-                assistantMessage.content += "\n\n⚠︎ \(error.localizedDescription)"
-            }
-            updateMessage(assistantMessage, in: conversationID)
-            try? await store.save(message: assistantMessage)
+            
+            // If no action was needed, break and finish turn
+            break
         }
 
         // Auto-title: rename "New chat" from first user message content.
@@ -271,6 +360,13 @@ final class ConversationService: ObservableObject {
             // Fire-and-forget memory consideration on the user turn.
             Task { [memory] in await memory.consider(message: msg) }
         }
+
+        // Update the home/lock screen widget with latest state.
+        WidgetBridge.updateWidget(
+            facts: memory.facts,
+            conversations: conversations,
+            lastAssistantMessage: assistantMessage.content.isEmpty ? nil : String(assistantMessage.content.prefix(200))
+        )
     }
 
     private func updateMessage(_ message: Message, in conversationID: UUID) {

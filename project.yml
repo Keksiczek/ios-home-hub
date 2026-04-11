@@ -46,11 +46,20 @@ targets:
           UIInterfaceOrientationPortraitUpsideDown
           UIInterfaceOrientationLandscapeLeft
           UIInterfaceOrientationLandscapeRight
+        NSCameraUsageDescription: "Potřebujeme kameru k vizuálnímu vstupu chatu."
+        NSMicrophoneUsageDescription: "Potřebujeme mikrofon pro možnost hlasové konverzace offline."
+        NSSpeechRecognitionUsageDescription: "Nativní rozpoznávání hovoru pro diktování přes Apple infrastrukturu beze slov mimo zařízení."
+        NSCalendarsUsageDescription: "Aby ti asistent mohl organizovat paměť a denní agendu."
+        NSCalendarsFullAccessUsageDescription: "Získávání a modifikace kalendářových dat lokálním AI."
+        NSHomeKitUsageDescription: "Asistent potřebuje přístup k domácnosti pro ovládání světel, zásuveek a čtení ze senzorů."
+        NSRemindersFullAccessUsageDescription: "Asistent potřebuje přístup k připomínkám pro vytváření a čtení úkolů."
         SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited)"
         # Uncomment to use the real llama.cpp runtime:
         # SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) HOMEHUB_REAL_RUNTIME"
         # SWIFT_OBJC_BRIDGING_HEADER: "HomeHub/Runtime/Bridge/HomeHub-Bridging-Header.h"
         # GCC_PREPROCESSOR_DEFINITIONS: "$(inherited) HOMEHUB_REAL_RUNTIME=1"
+        # Uncomment to use SwiftData instead of JSON FileStore:
+        # SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) HOMEHUB_SWIFTDATA"
     preCompileScripts: []
     postCompileScripts: []
 
@@ -66,3 +75,19 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.homehub.tests
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/HomeHub.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/HomeHub"
         BUNDLE_LOADER: "$(TEST_HOST)"
+
+  HomeHubWidget:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: HomeHubWidget
+    dependencies:
+      - target: HomeHub
+        embed: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.homehub.app.widget
+        INFOPLIST_KEY_CFBundleDisplayName: HomeHub
+        INFOPLIST_KEY_NSExtension_NSExtensionPointIdentifier: com.apple.widgetkit-extension
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited)"

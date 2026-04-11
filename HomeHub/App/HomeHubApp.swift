@@ -3,7 +3,7 @@ import SwiftUI
 @main
 struct HomeHubApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @StateObject private var container = AppContainer.live()
+    @StateObject private var container = AppContainer.shared
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
@@ -19,6 +19,7 @@ struct HomeHubApp: App {
                 .environmentObject(container.runtimeManager)
                 .environmentObject(container.conversationService)
                 .environmentObject(container.onboardingService)
+                .environmentObject(container.widgetActionHandler)
                 .tint(HHTheme.accent)
                 .preferredColorScheme(container.settingsService.current.theme.colorScheme)
                 .onReceive(NotificationCenter.default.publisher(

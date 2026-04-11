@@ -6,6 +6,7 @@ struct ChatDetailView: View {
     @EnvironmentObject private var runtime: RuntimeManager
     @State private var draft: String = ""
     @State private var showingRename = false
+    @State private var showingVoiceCall = false
     @State private var renameText: String = ""
 
     var body: some View {
@@ -45,7 +46,9 @@ struct ChatDetailView: View {
                 isStreaming: isStreaming,
                 canSend: canSend,
                 tokenFill: estimatedContextFill,
-                onSend: send,
+                onSend: { attachments, isWebSearchEnabled in
+                    send(attachments: attachments, isWebSearchEnabled: isWebSearchEnabled)
+                },
                 onCancel: cancel
             )
         }
@@ -54,20 +57,29 @@ struct ChatDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Menu {
+                HStack(spacing: 4) {
                     Button {
-                        renameText = conversationTitle
-                        showingRename = true
+                        showingVoiceCall = true
                     } label: {
-                        Label("Rename…", systemImage: "pencil")
+                        Image(systemName: "headphones")
                     }
+                    .disabled(isStreaming)
 
-                    ShareLink(item: exportText) {
-                        Label("Export", systemImage: "square.and.arrow.up")
+                    Menu {
+                        Button {
+                            renameText = conversationTitle
+                            showingRename = true
+                        } label: {
+                            Label("Rename…", systemImage: "pencil")
+                        }
+
+                        ShareLink(item: exportText) {
+                            Label("Export", systemImage: "square.and.arrow.up")
+                        }
+                        .disabled(messages.isEmpty)
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
                     }
-                    .disabled(messages.isEmpty)
-                } label: {
-                    Image(systemName: "ellipsis.circle")
                 }
             }
         }
@@ -79,6 +91,9 @@ struct ChatDetailView: View {
                 Task { await conversations.rename(conversationID: conversationID, to: t) }
             }
             Button("Cancel", role: .cancel) {}
+        }
+        .sheet(isPresented: $showingVoiceCall) {
+            VoiceCallView(conversationID: conversationID)
         }
         .task {
             await conversations.loadMessages(for: conversationID)
@@ -137,10 +152,10 @@ struct ChatDetailView: View {
 
     // MARK: - Actions
 
-    private func send() {
+    private func send(attachments: [Message.Attachment], isWebSearchEnabled: Bool = false) {
         let text = draft
         draft = ""
-        conversations.send(userInput: text, in: conversationID)
+        conversations.send(userInput: text, in: conversationID, attachments: attachments, isWebSearchEnabled: isWebSearchEnabled)
     }
 
     private func cancel() {

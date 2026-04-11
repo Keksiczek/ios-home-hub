@@ -91,6 +91,20 @@ final class PromptAssemblyService {
             """)
         }
 
+        // L3. Source excerpts — injected context from attached files
+        if !package.fileExcerpts.isEmpty {
+            let fileLines = package.fileExcerpts.map { "--- FILE EXCERPT ---\n\($0)\n--- END EXCERPT ---" }
+            chunks.append("""
+            The user attached the following file contents to their message. Use this provided information to answer their prompt, but do not fabricate information if the answer is not in the text:
+            \(fileLines.joined(separator: "\n\n"))
+            """)
+        }
+        
+        // L4. Available Agentic Tools
+        if let skills = package.skillInstructions, !skills.isEmpty {
+            chunks.append(skills)
+        }
+
         // Privacy guardrails
         chunks.append("""
         Never fabricate personal details about the user. If you're \
