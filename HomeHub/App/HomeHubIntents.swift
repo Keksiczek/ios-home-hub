@@ -15,7 +15,7 @@ struct AskAssistantIntent: AppIntent {
         let container = AppContainer.shared
         
         // Ensure services are loaded if running in background
-        if container.appState.phase == .uninitialized {
+        if container.appState.phase == .launching {
             await container.bootstrap()
         }
         

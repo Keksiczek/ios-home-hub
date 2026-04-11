@@ -32,12 +32,7 @@ actor EmbeddingService {
     func loadIfNeeded() async {
         guard isAvailable == nil else { return }
 
-        guard let model = NLContextualEmbedding.contextualEmbedding(
-            forLanguage: .english
-        ) else {
-            isAvailable = false
-            return
-        }
+        let model = NLContextualEmbedding(language: .english)
 
         if model.hasAvailableAssets {
             embedding = model
@@ -46,8 +41,8 @@ actor EmbeddingService {
             // Request async download of embedding assets.
             // Until they arrive, similarity calls return nil.
             isAvailable = false
-            Task.detached(priority: .utility) { [weak model] in
-                try? await model?.requestAssets()
+            Task.detached(priority: .utility) {
+                try? await model.requestAssets()
             }
         }
     }
