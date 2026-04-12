@@ -108,7 +108,7 @@ struct SettingsView: View {
         Section {
             Toggle("Stream responses", isOn: Binding(
                 get: { settings.current.streamingEnabled },
-                set: { Task { await settings.set(\.streamingEnabled, to: $0) } }
+                set: { newValue in Task { await settings.set(\.streamingEnabled, to: newValue) } }
             ))
 
             HStack {
@@ -120,7 +120,7 @@ struct SettingsView: View {
             Slider(
                 value: Binding(
                     get: { Double(settings.current.maxResponseTokens) },
-                    set: { Task { await settings.set(\.maxResponseTokens, to: Int($0)) } }
+                    set: { newValue in Task { await settings.set(\.maxResponseTokens, to: Int(newValue)) } }
                 ),
                 in: 128...2048, step: 64
             )
@@ -134,7 +134,7 @@ struct SettingsView: View {
             Slider(
                 value: Binding(
                     get: { settings.current.temperature },
-                    set: { Task { await settings.set(\.temperature, to: $0) } }
+                    set: { newValue in Task { await settings.set(\.temperature, to: newValue) } }
                 ),
                 in: 0.0...1.5, step: 0.05
             )
@@ -151,7 +151,7 @@ struct SettingsView: View {
         Section("Appearance") {
             Picker("Theme", selection: Binding(
                 get: { settings.current.theme },
-                set: { Task { await settings.set(\.theme, to: $0) } }
+                set: { newValue in Task { await settings.set(\.theme, to: newValue) } }
             )) {
                 ForEach(AppTheme.allCases) { theme in
                     Text(theme.label).tag(theme)
