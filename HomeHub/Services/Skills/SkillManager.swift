@@ -13,12 +13,12 @@ actor SkillManager {
     private var skills: [String: any Skill] = [:]
     
     private init() {
-        // Register default skills
-        register(CalculatorSkill())
-        register(WebSearchSkill())
-        register(CalendarSkill())
-        register(HomeKitSkill())
-        register(RemindersSkill())
+        let defaults: [any Skill] = [
+            CalculatorSkill(), WebSearchSkill(), CalendarSkill(), HomeKitSkill(), RemindersSkill()
+        ]
+        for skill in defaults {
+            skills[skill.name.lowercased()] = skill
+        }
     }
     
     func register(_ skill: any Skill) {

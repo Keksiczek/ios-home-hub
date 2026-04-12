@@ -70,7 +70,6 @@ final class VoiceService: ObservableObject {
         let inputNode = audioEngine.inputNode
         let recordingFormat = inputNode.outputFormat(forBus: 0)
         
-        var silenceTimer: Timer?
         var lastSpeechTime: Date = Date()
         
         inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { [weak self] buffer, _ in
@@ -93,7 +92,6 @@ final class VoiceService: ObservableObject {
                     lastSpeechTime = Date()
                 } else if Date().timeIntervalSince(lastSpeechTime) > 1.5 {
                     // 1.5 seconds of silence detected
-                    silenceTimer?.invalidate()
                     self.stopListening()
                 }
             }
