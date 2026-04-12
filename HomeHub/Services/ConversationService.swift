@@ -97,7 +97,8 @@ final class ConversationService: ObservableObject {
         guard activeStreams[conversationID] == nil else { return }
 
         activeStreams[conversationID] = Task { [weak self] in
-            await self?.performSend(userInput: trimmed, in: conversationID, attachments: attachments, isWebSearchEnabled: isWebSearchEnabled)
+            guard let self else { return }
+            await self.performSend(userInput: trimmed, in: conversationID, attachments: attachments, isWebSearchEnabled: isWebSearchEnabled)
         }
     }
 
@@ -108,7 +109,8 @@ final class ConversationService: ObservableObject {
         guard activeStreams[conversationID] == nil else { return }
 
         let task = Task { [weak self] in
-            await self?.performSend(userInput: trimmed, in: conversationID, attachments: attachments, isWebSearchEnabled: isWebSearchEnabled)
+            guard let self else { return }
+            await self.performSend(userInput: trimmed, in: conversationID, attachments: attachments, isWebSearchEnabled: isWebSearchEnabled)
         }
         activeStreams[conversationID] = task
         await task.value
@@ -136,7 +138,8 @@ final class ConversationService: ObservableObject {
         messagesByConversation[conversationID] = list
 
         activeStreams[conversationID] = Task { [weak self] in
-            await self?.performSend(
+            guard let self else { return }
+            await self.performSend(
                 userInput: userInput,
                 in: conversationID,
                 attachments: attachments,
@@ -278,7 +281,7 @@ final class ConversationService: ObservableObject {
             stopSequences: stopSequences(for: runtime.activeModel)
         )
 
-        var maxLoops = 3
+        let maxLoops = 3
         var currentLoop = 0
         var loopPackage = package
         

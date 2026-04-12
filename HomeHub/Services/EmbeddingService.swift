@@ -32,7 +32,10 @@ actor EmbeddingService {
     func loadIfNeeded() async {
         guard isAvailable == nil else { return }
 
-        let model = NLContextualEmbedding(language: .english)
+        guard let model = NLContextualEmbedding(language: .english) else {
+            isAvailable = false
+            return
+        }
 
         if model.hasAvailableAssets {
             embedding = model
