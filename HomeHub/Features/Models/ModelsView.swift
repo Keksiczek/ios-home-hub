@@ -15,7 +15,7 @@ struct ModelsView: View {
     private var availableBytes: Int64 {
         let url = URL(fileURLWithPath: NSHomeDirectory())
         let v = try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
-        return v?.volumeAvailableCapacityForImportantUsage.map(Int64.init) ?? 0
+        return v?.volumeAvailableCapacityForImportantUsage.map { Int64($0) } ?? 0
     }
 
     private func hasSufficientSpace(for model: LocalModel) -> Bool {
