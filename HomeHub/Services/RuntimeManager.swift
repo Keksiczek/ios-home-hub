@@ -1,0 +1,63 @@
+import Foundation
+import SwiftUI
+
+/// Owns the currently active `LocalLLMRuntime` and exposes its state
+/// to the UI. This is the *only* place in the app that knows about
+/// model loading and unloading; everyone else talks to it.
+@MainActor
+final class RuntimeManager: ObservableObject {
+    enum State: Equatable {
+        case idle
+        case loading(modelID: String)
+        case ready(modelID: String)
+        case failed(reason: String)
+    }
+
+    @Published private(set) var state: State = .idle
+    @Published private(set) var activeModel: LocalModel?
+
+    let runtime: any LocalLLMRuntime
+
+    /// Structured telemetry channel for the active runtime.
+    ///
+    /// Provides a live `AsyncStream<RuntimeTelemetryEvent>` covering load
+    /// times, first-token latency, tokens/sec, cancellation, and memory
+    /// pressure. Subscribe from any async context:
+    ///
+    /// ```swift
+    /// let (stream, id) = await runtimeManager.telemetry.subscribe()
+    /// Task { for await event in stream { handle(event) } }
+    /// ```
+    var telemetry: RuntimeTelemetry { runtime.telemetry }
+
+    init(runtime: any LocalLLMRuntime) {
+        self.runtime = runtime
+    }
+
+    func load(_ model: LocalModel) async {
+        state = .loading(modelID: model.id)
+        do {
+            try await runtime.load(model: model)
+            activeModel = model
+            state = .ready(modelID: model.id)
+        } catch {
+            state = .failed(reason: error.localizedDescription)
+        }
+    }
+
+    func unload() async {
+        await runtime.unload()
+        activeModel = nil
+        state = .idle
+    }
+
+    /// Thin passthrough. Services call this instead of holding a
+    /// direct runtime reference so the manager stays the one place
+    /// that tracks state transitions.
+    func generate(
+        prompt: RuntimePrompt,
+        parameters: RuntimeParameters
+    ) -> AsyncThrowingStream<RuntimeEvent, Error> {
+        runtime.generate(prompt: prompt, parameters: parameters)
+    }
+}
