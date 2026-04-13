@@ -121,6 +121,11 @@ final class LlamaCppRuntime: LocalLLMRuntime, @unchecked Sendable {
             throw RuntimeError.modelNotInstalled
         }
 
+        // Reject stub files and obviously-invalid GGUFs before handing off to
+        // the C++ bridge. A stub created in dev/mock mode ("STUB_MODEL") will be
+        // ~10 bytes and won't have the GGUF magic header.
+        try Self.validateGGUFFile(at: url)
+
         let started = Date()
         do {
             try await runtimeActor.load(model: model, path: url.path)
@@ -326,5 +331,49 @@ final class LlamaCppRuntime: LocalLLMRuntime, @unchecked Sendable {
             tokensPerSecond: Double(tokens) / elapsed,
             totalDurationMs: Int(elapsed * 1_000)
         )
+    }
+
+    /// Validates that the file at `url` is a plausible GGUF model before
+    /// handing it to the C++ bridge. Two checks:
+    ///
+    /// 1. **Size**: a real quantised model is hundreds of MB. Anything under
+    ///    1 MB is a dev-mode stub (`"STUB_MODEL"` = 10 bytes).
+    /// 2. **Magic**: first 4 bytes must be `GGUF` (0x47 0x47 0x55 0x46).
+    ///    An invalid header means the file is corrupt, wrong format, or a
+    ///    placeholder.
+    ///
+    /// Throws `RuntimeError.incompatibleModel` with a user-actionable message
+    /// so the error is visible in `RuntimeManager.state` and the Diagnostics view.
+    static func validateGGUFFile(at url: URL) throws {
+        let fm = FileManager.default
+
+        // --- Size guard ---
+        guard let attrs = try? fm.attributesOfItem(atPath: url.path),
+              let size = attrs[.size] as? Int64,
+              size >= 1_000_000 else {
+            throw RuntimeError.incompatibleModel(
+                "\(url.lastPathComponent) is too small to be a real model (< 1 MB). " +
+                "This is likely a dev-mode stub file. " +
+                "Open Settings → Developer Diagnostics and tap 'Reset All Models', " +
+                "then download the model for real on this device."
+            )
+        }
+
+        // --- GGUF magic-bytes guard (0x47 0x47 0x55 0x46 = "GGUF") ---
+        guard let handle = try? FileHandle(forReadingFrom: url) else {
+            throw RuntimeError.incompatibleModel(
+                "Cannot open model file: \(url.lastPathComponent)"
+            )
+        }
+        defer { try? handle.close() }
+        let magic = handle.readData(ofLength: 4)
+        guard magic == Data([0x47, 0x47, 0x55, 0x46]) else {
+            throw RuntimeError.incompatibleModel(
+                "\(url.lastPathComponent) has an invalid GGUF header " +
+                "(expected magic 0x47475546). " +
+                "The file may be corrupt, a stub, or a non-GGUF format. " +
+                "Delete it in Settings → Developer Diagnostics and re-download."
+            )
+        }
     }
 }

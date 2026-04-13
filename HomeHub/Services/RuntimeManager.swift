@@ -51,6 +51,15 @@ final class RuntimeManager: ObservableObject {
         state = .idle
     }
 
+    /// Syncs `activeModel` and `state` to `.idle` without calling
+    /// `runtime.unload()`. Use this when the runtime has already auto-unloaded
+    /// (memory pressure, background) and `AppContainer` needs to reconcile the
+    /// observable state without triggering a second unload call.
+    func clearState() {
+        activeModel = nil
+        state = .idle
+    }
+
     /// Thin passthrough. Services call this instead of holding a
     /// direct runtime reference so the manager stays the one place
     /// that tracks state transitions.
