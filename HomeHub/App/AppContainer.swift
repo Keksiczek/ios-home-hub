@@ -19,6 +19,15 @@ final class AppContainer: ObservableObject {
     let appState: AppState
     let store: any Store
 
+    /// Number of UIApplication memory-pressure warnings received since launch.
+    /// Shown in Developer Diagnostics so you can correlate OOM events with model
+    /// unloads without needing Xcode attached.
+    @Published private(set) var memoryWarningCount: Int = 0
+
+    /// Human-readable description of the last automatic model unload
+    /// (memory pressure or app-background). Nil until the first unload occurs.
+    @Published private(set) var lastUnloadNotification: String?
+
     let settingsService: SettingsService
     let personalizationService: PersonalizationService
     let modelCatalogService: ModelCatalogService
@@ -123,9 +132,19 @@ final class AppContainer: ObservableObject {
     // MARK: - Lifecycle
 
     /// Forward memory-pressure notification to the runtime.
+    /// Also increments `memoryWarningCount` and syncs `RuntimeManager` state
+    /// when the runtime auto-unloads the model.
     func handleMemoryPressure() async {
+        memoryWarningCount += 1
         if let llama = runtimeManager.runtime as? LlamaCppRuntime {
             await llama.handleMemoryPressure()
+            // Sync RuntimeManager if the runtime silently unloaded the model.
+            if await llama.currentModel() == nil && runtimeManager.activeModel != nil {
+                let name = runtimeManager.activeModel?.displayName ?? "model"
+                runtimeManager.clearState()
+                let time = DateFormatter.localizedString(from: .now, dateStyle: .none, timeStyle: .medium)
+                lastUnloadNotification = "\(time) – '\(name)' unloaded (memory pressure #\(memoryWarningCount))"
+            }
         }
     }
 
@@ -135,6 +154,13 @@ final class AppContainer: ObservableObject {
         case .background:
             if let llama = runtimeManager.runtime as? LlamaCppRuntime {
                 await llama.handleBackground()
+                // Sync RuntimeManager if the runtime silently unloaded the model.
+                if await llama.currentModel() == nil && runtimeManager.activeModel != nil {
+                    let name = runtimeManager.activeModel?.displayName ?? "model"
+                    runtimeManager.clearState()
+                    let time = DateFormatter.localizedString(from: .now, dateStyle: .none, timeStyle: .medium)
+                    lastUnloadNotification = "\(time) – '\(name)' unloaded (app backgrounded)"
+                }
             }
         case .active:
             // Reload model if it was unloaded while backgrounded.
@@ -155,21 +181,24 @@ final class AppContainer: ObservableObject {
 
     /// Production wiring. Uses `FileStore` for persistence.
     ///
-    /// Runtime selection:
-    /// - Default: `MockLocalRuntime` — the app is fully functional with
-    ///   simulated inference. Use this until the llama.cpp xcframework
-    ///   is integrated.
-    /// - To use the real llama.cpp runtime, add `HOMEHUB_REAL_RUNTIME`
-    ///   to Swift Active Compilation Conditions in Xcode build settings.
+    /// ## Runtime
+    /// Always wires `LlamaCppRuntime`. Without `HOMEHUB_REAL_RUNTIME` the
+    /// C++ bridge (`LlamaContextHandle`) is a stub that throws a descriptive
+    /// error on `load()` — surfaced in `RuntimeManager.state` and visible in
+    /// Settings → Developer Diagnostics on device without Xcode attached.
+    ///
+    /// ## To enable the full real runtime
+    /// 1. In Xcode build settings, add `HOMEHUB_REAL_RUNTIME` to
+    ///    "Swift Active Compilation Conditions" (both Debug and Release).
+    /// 2. Set "Objective-C Bridging Header" to
+    ///    `HomeHub/Runtime/Bridge/HomeHub-Bridging-Header.h`.
+    /// 3. Link the llama.cpp xcframework under Frameworks, Libraries, and
+    ///    Embedded Content.
+    /// 4. See `project.yml` for the corresponding XcodeGen configuration.
     static let shared = AppContainer.live()
 
     static func live() -> AppContainer {
-        let runtime: any LocalLLMRuntime
-        #if HOMEHUB_REAL_RUNTIME
-        runtime = LlamaCppRuntime()
-        #else
-        runtime = MockLocalRuntime()
-        #endif
+        let runtime: any LocalLLMRuntime = LlamaCppRuntime()
 
         let store: any Store
         #if HOMEHUB_SWIFTDATA

@@ -74,6 +74,26 @@ final class ModelDownloadService: ObservableObject {
         catalog.setInstallState(.notInstalled, for: modelID)
     }
 
+    /// Cancels all active downloads, deletes every `.gguf` file on disk,
+    /// and resets every catalog entry to `.notInstalled`.
+    ///
+    /// Use this to purge dev-mode stub files created by the simulated
+    /// downloader, or to start fresh after a bad real download. The caller
+    /// should also call `RuntimeManager.clearState()` if a model is loaded,
+    /// because this method does not touch the runtime.
+    func resetAllModels() async {
+        // 1. Cancel every in-flight download (real or simulated).
+        for modelID in Array(active.keys) {
+            cancel(modelID)
+        }
+        // 2. Delete all .gguf files from disk.
+        try? await localModels.removeAll()
+        // 3. Reset every catalog entry so the UI shows "Not installed".
+        for model in catalog.models {
+            catalog.setInstallState(.notInstalled, for: model.id)
+        }
+    }
+
     // MARK: - Real download (HOMEHUB_REAL_RUNTIME)
 
 #if HOMEHUB_REAL_RUNTIME

@@ -33,6 +33,22 @@ final class ModelCatalogService: ObservableObject {
         // Gemma 3 4B is the recommended default — strong reasoning, fits on iPhone.
         models.first(where: { $0.id == "gemma-3-4b-it-q4_k_m" }) ?? models[0]
     }
+
+    /// Smallest iPhone-safe model for smoke-testing a real-runtime device build.
+    ///
+    /// **Gemma 2 2B** (1.6 GB, Q4_K_M) is the quickest way to verify that
+    /// download → install → load → first token works on a real iPhone without
+    /// spending 30+ minutes on a bigger download. Expected benchmarks on
+    /// iPhone 15 Pro: load < 8 s, TTFT < 4 s, ≥ 2 t/s.
+    var iPhoneSmokeTestModel: LocalModel {
+        models.first(where: { $0.id == "gemma-2-2b-it-q4_k_m" }) ?? models[0]
+    }
+
+    /// Returns `true` when `model` is recommended for iPad M-series only
+    /// and is therefore likely to OOM or be very slow on an iPhone.
+    func isIPadOnly(_ model: LocalModel) -> Bool {
+        !model.recommendedFor.contains(.iPhone)
+    }
 }
 
 // MARK: - Curated model catalog

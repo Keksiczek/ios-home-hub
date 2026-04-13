@@ -5,6 +5,7 @@ struct SettingsView: View {
     @EnvironmentObject private var personalization: PersonalizationService
     @EnvironmentObject private var memory: MemoryService
     @EnvironmentObject private var onboarding: OnboardingService
+    @EnvironmentObject private var runtime: RuntimeManager
 
     var body: some View {
         NavigationStack {
@@ -16,6 +17,7 @@ struct SettingsView: View {
                 appearanceSection
                 privacySection
                 aboutSection
+                developerSection
             }
             .navigationTitle("Settings")
         }
@@ -189,9 +191,33 @@ struct SettingsView: View {
     private var aboutSection: some View {
         Section {
             LabeledContent("Version", value: "1.0 (skeleton)")
-            LabeledContent("Runtime", value: "llama.cpp")
+            LabeledContent("Runtime", value: runtime.runtime.identifier)
+            LabeledContent("Runtime state", value: runtimeStateLabel)
         } header: {
             Text("About")
+        }
+    }
+
+    private var runtimeStateLabel: String {
+        switch runtime.state {
+        case .idle:            return "Idle"
+        case .loading(let id): return "Loading \(id)"
+        case .ready(let id):   return "Ready — \(id)"
+        case .failed:          return "Failed (see Developer Diagnostics)"
+        }
+    }
+
+    // MARK: - Developer
+
+    private var developerSection: some View {
+        Section {
+            NavigationLink("Runtime Diagnostics") {
+                DeveloperDiagnosticsView()
+            }
+        } header: {
+            Text("Developer")
+        } footer: {
+            Text("Live runtime state, GGUF file integrity, telemetry log, and model reset — visible on device without Xcode.")
         }
     }
 }

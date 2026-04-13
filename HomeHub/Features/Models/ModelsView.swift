@@ -1,10 +1,19 @@
 import SwiftUI
+import UIKit
 
 struct ModelsView: View {
     @EnvironmentObject private var catalog: ModelCatalogService
     @EnvironmentObject private var downloads: ModelDownloadService
     @EnvironmentObject private var runtime: RuntimeManager
     @EnvironmentObject private var settings: SettingsService
+
+    private var isRunningOnPhone: Bool {
+        #if targetEnvironment(simulator)
+        return false
+        #else
+        return UIDevice.current.userInterfaceIdiom == .phone
+        #endif
+    }
 
     /// Model pending download confirmation (shown in alert).
     @State private var downloadTarget: LocalModel?
@@ -33,6 +42,7 @@ struct ModelsView: View {
                             isLoaded: runtime.activeModel?.id == model.id,
                             isLoading: runtime.state == .loading(modelID: model.id),
                             hasResumeData: downloads.hasResumeData(for: model.id),
+                            showIPadOnlyWarning: catalog.isIPadOnly(model) && isRunningOnPhone,
                             onDownload: { downloadTarget = model },
                             onCancelDownload: { downloads.cancel(model.id) },
                             onLoad: {
@@ -96,6 +106,8 @@ private struct ModelRow: View {
     let isLoaded: Bool
     let isLoading: Bool
     let hasResumeData: Bool
+    /// True when this model is recommended for iPad only and the device is an iPhone.
+    let showIPadOnlyWarning: Bool
     let onDownload: () -> Void
     let onCancelDownload: () -> Void
     let onLoad: () -> Void
@@ -106,14 +118,27 @@ private struct ModelRow: View {
         VStack(alignment: .leading, spacing: HHTheme.spaceM) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(model.displayName)
-                        .font(HHTheme.headline)
+                    HStack(spacing: 6) {
+                        Text(model.displayName)
+                            .font(HHTheme.headline)
+                        if showIPadOnlyWarning {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundStyle(HHTheme.warning)
+                                .imageScale(.small)
+                                .help("Recommended for iPad M-series only. May exceed iPhone RAM.")
+                        }
+                    }
                     Text("\(model.family) · \(model.parameterCount) · \(model.quantization) · \(model.sizeFormatted)")
                         .font(HHTheme.footnote)
                         .foregroundStyle(HHTheme.textSecondary)
                     Text("Context: \(model.contextLength) tokens · \(model.license)")
                         .font(HHTheme.caption)
                         .foregroundStyle(HHTheme.textSecondary)
+                    if showIPadOnlyWarning {
+                        Text("iPad-only — likely to OOM on iPhone")
+                            .font(HHTheme.caption)
+                            .foregroundStyle(HHTheme.warning)
+                    }
                 }
                 Spacer()
                 Button(action: onInfo) {
