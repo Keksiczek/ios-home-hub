@@ -42,9 +42,7 @@ struct LlamaContextHandle: @unchecked Sendable {
         }
     }
 
-#if HOMEHUB_REAL_RUNTIME
-
-    // MARK: - Real llama.cpp implementation
+    // MARK: - llama.cpp implementation
 
     private let contextPtr: OpaquePointer   // llama_context *
     private let modelPtr: OpaquePointer     // llama_model *
@@ -273,39 +271,4 @@ struct LlamaContextHandle: @unchecked Sendable {
         llama_free(contextPtr)
         llama_model_free(modelPtr)
     }
-
-#else
-
-    // MARK: - Stub implementation (development builds)
-
-    static func load(
-        modelPath: String,
-        contextLength: Int,
-        gpuLayers: GPULayers
-    ) throws -> LlamaContextHandle {
-        throw RuntimeError.underlying(
-            "LlamaContextHandle.load is a stub – wire in the llama.cpp xcframework. " +
-            "Set HOMEHUB_REAL_RUNTIME in Swift Active Compilation Conditions to enable the real runtime."
-        )
-    }
-
-    func stream(
-        prompt: String,
-        maxTokens: Int,
-        temperature: Float,
-        topP: Float,
-        stopSequences: [String]
-    ) throws -> AsyncThrowingStream<String, Error> {
-        AsyncThrowingStream { continuation in
-            continuation.finish(
-                throwing: RuntimeError.underlying("LlamaContextHandle.stream stub")
-            )
-        }
-    }
-
-    func close() {
-        // No-op in stub mode.
-    }
-
-#endif
 }

@@ -53,34 +53,9 @@ targets:
         NSCalendarsFullAccessUsageDescription: "Získávání a modifikace kalendářových dat lokálním AI."
         NSHomeKitUsageDescription: "Asistent potřebuje přístup k domácnosti pro ovládání světel, zásuveek a čtení ze senzorů."
         NSRemindersFullAccessUsageDescription: "Asistent potřebuje přístup k připomínkám pro vytváření a čtení úkolů."
-        SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited)"
-        #
-        # ─── Real-runtime device build ────────────────────────────────────────────
-        #
-        # To build with the real llama.cpp C++ backend, do ALL of the following:
-        #
-        #  1. Uncomment the three lines below (SWIFT_ACTIVE_COMPILATION_CONDITIONS,
-        #     SWIFT_OBJC_BRIDGING_HEADER, GCC_PREPROCESSOR_DEFINITIONS) and comment
-        #     out the plain SWIFT_ACTIVE_COMPILATION_CONDITIONS line above.
-        #
-        #  2. Place the llama.cpp xcframework at:
-        #       HomeHub/Runtime/Bridge/llama.xcframework
-        #     (add it under Xcode → General → Frameworks, Libraries, Embedded Content)
-        #
-        #  3. Ensure the bridging header exists at:
-        #       HomeHub/Runtime/Bridge/HomeHub-Bridging-Header.h
-        #     It must import the llama.cpp C header: #include "llama.h"
-        #
-        #  4. Run `xcodegen generate` to regenerate the Xcode project, then build for
-        #     a physical device. The Simulator is NOT supported (Metal compute shaders).
-        #
-        #  5. On first install: open Settings → Developer Diagnostics to verify
-        #     "C++ Bridge" shows "llama.cpp (HOMEHUB_REAL_RUNTIME set)".
-        #     If it shows "Stub", the flag was not picked up — clean build and retry.
-        #
-        # SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) HOMEHUB_REAL_RUNTIME"
-        # SWIFT_OBJC_BRIDGING_HEADER: "HomeHub/Runtime/Bridge/HomeHub-Bridging-Header.h"
-        # GCC_PREPROCESSOR_DEFINITIONS: "$(inherited) HOMEHUB_REAL_RUNTIME=1"
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) HOMEHUB_REAL_RUNTIME"
+        SWIFT_OBJC_BRIDGING_HEADER: "HomeHub/Runtime/Bridge/HomeHub-Bridging-Header.h"
+        GCC_PREPROCESSOR_DEFINITIONS: "$(inherited) HOMEHUB_REAL_RUNTIME=1"
         #
         # ─── SwiftData persistence (optional) ────────────────────────────────────
         # Uncomment to replace the JSON FileStore with SwiftData:

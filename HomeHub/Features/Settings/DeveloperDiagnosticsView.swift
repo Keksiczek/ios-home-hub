@@ -71,22 +71,6 @@ struct DeveloperDiagnosticsView: View {
             LabeledContent("Download Mode", value: downloadModeLabel)
             LabeledContent("Device", value: deviceLabel)
 
-            if !isRealRuntime {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("How to enable the real runtime")
-                        .font(.caption.bold())
-                    Text(
-                        "1. In Xcode → Build Settings add HOMEHUB_REAL_RUNTIME to " +
-                        "\"Swift Active Compilation Conditions\".\n" +
-                        "2. Set Objective-C Bridging Header to " +
-                        "HomeHub/Runtime/Bridge/HomeHub-Bridging-Header.h\n" +
-                        "3. Link the llama.cpp xcframework under Frameworks."
-                    )
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                }
-                .listRowBackground(Color.orange.opacity(0.06))
-            }
         }
     }
 
@@ -290,29 +274,9 @@ struct DeveloperDiagnosticsView: View {
         }
     }
 
-    private var isRealRuntime: Bool {
-        #if HOMEHUB_REAL_RUNTIME
-        return true
-        #else
-        return false
-        #endif
-    }
+    private var cppBridgeLabel: String { "llama.cpp" }
 
-    private var cppBridgeLabel: String {
-        #if HOMEHUB_REAL_RUNTIME
-        return "llama.cpp (HOMEHUB_REAL_RUNTIME set)"
-        #else
-        return "Stub — HOMEHUB_REAL_RUNTIME not set"
-        #endif
-    }
-
-    private var downloadModeLabel: String {
-        #if HOMEHUB_REAL_RUNTIME
-        return "URLSession background (real)"
-        #else
-        return "Simulated (dev mode)"
-        #endif
-    }
+    private var downloadModeLabel: String { "URLSession background (real)" }
 
     private var deviceLabel: String {
         #if targetEnvironment(simulator)

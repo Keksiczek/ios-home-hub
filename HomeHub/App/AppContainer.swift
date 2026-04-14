@@ -212,43 +212,12 @@ final class AppContainer: ObservableObject {
 
     // MARK: - Factories
 
-    /// Production wiring. Uses `FileStore` for persistence.
-    ///
-    /// ## Runtime
-    /// - With `HOMEHUB_REAL_RUNTIME` defined: wires `LlamaCppRuntime` (real
-    ///   C++ backend via llama.cpp xcframework).
-    /// - Without it (default): wires `MockLocalRuntime` so the full
-    ///   download → install → load → chat flow is testable end-to-end on a
-    ///   real device without the native bridge. Previously this path wired
-    ///   `LlamaCppRuntime`, which rejected dev-mode stub files on load and
-    ///   produced the "downloads silently fail" regression.
-    ///
-    /// ## To enable the full real runtime
-    /// 1. In Xcode build settings, add `HOMEHUB_REAL_RUNTIME` to
-    ///    "Swift Active Compilation Conditions" (both Debug and Release).
-    /// 2. Set "Objective-C Bridging Header" to
-    ///    `HomeHub/Runtime/Bridge/HomeHub-Bridging-Header.h`.
-    /// 3. Link the llama.cpp xcframework under Frameworks, Libraries, and
-    ///    Embedded Content.
-    /// 4. See `project.yml` for the corresponding XcodeGen configuration.
+    /// Production wiring. Uses `FileStore` for persistence and `LlamaCppRuntime`
+    /// as the real llama.cpp C++ backend.
     static let shared = AppContainer.live()
 
     static func live() -> AppContainer {
-        // Pick the runtime based on whether the real llama.cpp bridge is wired up.
-        //
-        // Prior bug: `LlamaCppRuntime` was used unconditionally. When the build
-        // did not define `HOMEHUB_REAL_RUNTIME` (default state of `project.yml`),
-        // the C++ bridge is a stub that throws on `load()`. The simulated
-        // download pipeline creates placeholder files which the runtime's
-        // `validateGGUFFile` rejects — so after a "successful" download the
-        // user could never select the model and no error was surfaced in the
-        // Models UI. Using `MockLocalRuntime` in dev builds makes the full
-        // download → load → chat flow work end-to-end without llama.cpp.
-        #if HOMEHUB_REAL_RUNTIME
         let runtime: any LocalLLMRuntime = LlamaCppRuntime()
-        #else
-        let runtime: any LocalLLMRuntime = MockLocalRuntime()
-        #endif
 
         let store: any Store
         #if HOMEHUB_SWIFTDATA

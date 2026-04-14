@@ -41,12 +41,7 @@ let package = Package(
                 "App/HomeHubApp.swift",
                 "Runtime/Bridge/HomeHub-Bridging-Header.h"
             ],
-            swiftSettings: [
-                // Default: use MockLocalRuntime in live() builds.
-                // When integrating the real llama.cpp xcframework, add
-                // HOMEHUB_REAL_RUNTIME to Swift Active Compilation
-                // Conditions in your Xcode build settings.
-            ]
+            swiftSettings: []
         ),
         .testTarget(
             name: "HomeHubTests",

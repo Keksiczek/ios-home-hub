@@ -1,18 +1,15 @@
 import Foundation
 import SwiftUI
 import os
-#if HOMEHUB_REAL_RUNTIME
 import CryptoKit
-#endif
 
 /// Handles downloading a `LocalModel` to disk and keeping the
 /// catalog's `installState` in sync.
 ///
 /// ## Pipeline overview (unified for curated catalog + `Add from URL`)
 ///
-/// Both entry points funnel through `start(_:)` → either `realDownload()`
-/// (HOMEHUB_REAL_RUNTIME) or `simulateDownload()`. Both branches run the
-/// same post-download steps:
+/// Both entry points funnel through `start(_:)` → `realDownload()`.
+/// The pipeline runs the following steps:
 ///
 /// 1. Write bytes into `LocalModelService.localURL(for:)` (Application
 ///    Support / Models / `<id>.gguf`), using an atomic move from a temp
@@ -22,13 +19,8 @@ import CryptoKit
 /// 4. Invoke `onModelInstalled` so `AppContainer` can auto-activate the
 ///    model the first time the user has no active selection.
 ///
-/// ## Build modes
-/// - **`HOMEHUB_REAL_RUNTIME`**: Real `URLSession` downloads with progress
-///   tracking via delegate, SHA-256 verification, and cancel support.
-/// - **Default (dev)**: Simulated progress loop so the UI is fully wired
-///   end-to-end without a real network fetch. Writes a file with a valid
-///   GGUF magic header + padding so it survives
-///   `LocalModelService.isStubOrInvalidGGUF()` reconciliation.
+/// Real `URLSession` downloads with progress tracking via delegate,
+/// SHA-256 verification, and cancel support.
 @MainActor
 final class ModelDownloadService: ObservableObject {
 
@@ -77,9 +69,7 @@ final class ModelDownloadService: ObservableObject {
     init(localModels: LocalModelService, catalog: ModelCatalogService) {
         self.localModels = localModels
         self.catalog = catalog
-        #if HOMEHUB_REAL_RUNTIME
         setupCoordinatorCallbacks()
-        #endif
     }
 
     func isDownloading(_ modelID: String) -> Bool {
@@ -101,11 +91,7 @@ final class ModelDownloadService: ObservableObject {
         log.info("Starting download for model '\(model.id, privacy: .public)' from \(model.downloadURL.absoluteString, privacy: .public)")
 
         tasks[model.id] = Task { [weak self] in
-            #if HOMEHUB_REAL_RUNTIME
             await self?.realDownload(model: model)
-            #else
-            await self?.simulateDownload(model: model)
-            #endif
         }
     }
 
@@ -114,12 +100,10 @@ final class ModelDownloadService: ObservableObject {
         tasks[modelID]?.cancel()
         tasks[modelID] = nil
         active[modelID] = nil
-        #if HOMEHUB_REAL_RUNTIME
         // Cancel the URLSession task; coordinator will attempt to save resume data
         // asynchronously. We intentionally do NOT clear resume data here so the
         // user can resume. Call clearResumeData() only when starting fresh.
         BackgroundDownloadCoordinator.shared.cancelDownload(modelID: modelID)
-        #endif
         catalog.setInstallState(.notInstalled, for: modelID)
         log.info("Cancelled download for '\(modelID, privacy: .public)'")
     }
@@ -308,9 +292,7 @@ final class ModelDownloadService: ObservableObject {
         return magic == Data([0x47, 0x47, 0x55, 0x46])
     }
 
-    // MARK: - Real download (HOMEHUB_REAL_RUNTIME)
-
-#if HOMEHUB_REAL_RUNTIME
+    // MARK: - Real download
 
     enum DownloadError: LocalizedError {
         case checksumMismatch(expected: String, actual: String)
@@ -487,58 +469,5 @@ final class ModelDownloadService: ObservableObject {
             hasher.update(data: data)
         }
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
-    }
-
-#else
-
-    // Non-real-runtime stub for resumeDataKey used by hasResumeData()
-    private func resumeDataKey(for modelID: String) -> String {
-        "com.homehub.app.resumeData.\(modelID)"
-    }
-
-#endif
-
-    // MARK: - Simulated download (development builds)
-
-    private func simulateDownload(model: LocalModel) async {
-        active[model.id]?.phase = .downloading
-        var progress: Double = 0
-        while progress < 1.0 {
-            if Task.isCancelled { return }
-            if active[model.id]?.isCancelled == true { return }
-            try? await Task.sleep(nanoseconds: 180_000_000)
-            progress = min(progress + 0.04, 1.0)
-            active[model.id]?.progress = progress
-            catalog.setInstallState(.downloading(progress: progress), for: model.id)
-        }
-
-        let localURL = await localModels.localURL(for: model.id)
-
-        // Write a stub file that passes both the size and GGUF-magic guards
-        // in `LocalModelService.isStubOrInvalidGGUF` so reconciliation on the
-        // next app launch does NOT erase the model. 1 MiB of padding is well
-        // above the 1 MB threshold while staying cheap on disk.
-        let tempURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("sim-\(UUID().uuidString).gguf")
-        do {
-            try FileManager.default.createDirectory(
-                at: localURL.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            var payload = Data([0x47, 0x47, 0x55, 0x46])   // "GGUF" magic
-            payload.append(Data(count: 1_048_576))          // 1 MiB zero-pad
-            try payload.write(to: tempURL, options: .atomic)
-        } catch {
-            log.error("Simulated stub write failed for '\(model.id, privacy: .public)': \(error.localizedDescription, privacy: .public)")
-            catalog.setInstallState(
-                .failed(reason: "Could not prepare simulated model file: \(error.localizedDescription)"),
-                for: model.id
-            )
-            active[model.id] = nil
-            tasks[model.id] = nil
-            return
-        }
-
-        await completeInstall(modelID: model.id, tempURL: tempURL, localURL: localURL)
     }
 }
