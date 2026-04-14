@@ -10,7 +10,7 @@ final class RuntimeManager: ObservableObject {
         case idle
         case loading(modelID: String)
         case ready(modelID: String)
-        case failed(reason: String)
+        case failed(modelID: String?, reason: String)
     }
 
     @Published private(set) var state: State = .idle
@@ -41,7 +41,7 @@ final class RuntimeManager: ObservableObject {
             activeModel = model
             state = .ready(modelID: model.id)
         } catch {
-            state = .failed(reason: error.localizedDescription)
+            state = .failed(modelID: model.id, reason: error.localizedDescription)
         }
     }
 

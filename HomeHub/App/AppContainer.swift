@@ -138,6 +138,30 @@ final class AppContainer: ObservableObject {
         await runtimeManager.load(model)
     }
 
+    /// Promotes a freshly-installed model to `selectedModelID` and loads it
+    /// into the runtime when that won't clobber an existing user choice.
+    /// Triggered by `ModelDownloadService.onModelInstalled`.
+    ///
+    /// Behavior change: the chat composer gates `canSend` on
+    /// `runtime.activeModel != nil`. Without auto-activation, a fresh
+    /// download would leave the runtime empty and the user would think chat
+    /// was broken. Rules:
+    /// - If no model is currently loaded AND nothing is selected → adopt
+    ///   this model as the selection and load it.
+    /// - If no model is loaded AND the selected one matches this model (the
+    ///   user chose it during onboarding but hadn't downloaded yet) → load it.
+    /// - Otherwise (another model already loaded or selected) → no-op.
+    func autoActivateAfterInstall(_ model: LocalModel) async {
+        guard runtimeManager.activeModel == nil else { return }
+        let selected = settingsService.current.selectedModelID
+        if selected == nil {
+            await settingsService.set(\.selectedModelID, to: model.id)
+            await runtimeManager.load(model)
+        } else if selected == model.id {
+            await runtimeManager.load(model)
+        }
+    }
+
     // MARK: - Lifecycle
 
     /// Forward memory-pressure notification to the runtime.
@@ -191,10 +215,13 @@ final class AppContainer: ObservableObject {
     /// Production wiring. Uses `FileStore` for persistence.
     ///
     /// ## Runtime
-    /// Always wires `LlamaCppRuntime`. Without `HOMEHUB_REAL_RUNTIME` the
-    /// C++ bridge (`LlamaContextHandle`) is a stub that throws a descriptive
-    /// error on `load()` — surfaced in `RuntimeManager.state` and visible in
-    /// Settings → Developer Diagnostics on device without Xcode attached.
+    /// - With `HOMEHUB_REAL_RUNTIME` defined: wires `LlamaCppRuntime` (real
+    ///   C++ backend via llama.cpp xcframework).
+    /// - Without it (default): wires `MockLocalRuntime` so the full
+    ///   download → install → load → chat flow is testable end-to-end on a
+    ///   real device without the native bridge. Previously this path wired
+    ///   `LlamaCppRuntime`, which rejected dev-mode stub files on load and
+    ///   produced the "downloads silently fail" regression.
     ///
     /// ## To enable the full real runtime
     /// 1. In Xcode build settings, add `HOMEHUB_REAL_RUNTIME` to
@@ -207,7 +234,21 @@ final class AppContainer: ObservableObject {
     static let shared = AppContainer.live()
 
     static func live() -> AppContainer {
+        // Pick the runtime based on whether the real llama.cpp bridge is wired up.
+        //
+        // Prior bug: `LlamaCppRuntime` was used unconditionally. When the build
+        // did not define `HOMEHUB_REAL_RUNTIME` (default state of `project.yml`),
+        // the C++ bridge is a stub that throws on `load()`. The simulated
+        // download pipeline creates placeholder files which the runtime's
+        // `validateGGUFFile` rejects — so after a "successful" download the
+        // user could never select the model and no error was surfaced in the
+        // Models UI. Using `MockLocalRuntime` in dev builds makes the full
+        // download → load → chat flow work end-to-end without llama.cpp.
+        #if HOMEHUB_REAL_RUNTIME
         let runtime: any LocalLLMRuntime = LlamaCppRuntime()
+        #else
+        let runtime: any LocalLLMRuntime = MockLocalRuntime()
+        #endif
 
         let store: any Store
         #if HOMEHUB_SWIFTDATA
@@ -216,11 +257,15 @@ final class AppContainer: ObservableObject {
         store = FileStore()
         #endif
 
-        return AppContainer(
+        let container = AppContainer(
             appState: AppState(),
             store: store,
             runtime: runtime
         )
+        container.modelDownloadService.onModelInstalled = { [weak container] model in
+            await container?.autoActivateAfterInstall(model)
+        }
+        return container
     }
 
     static func preview() -> AppContainer {
