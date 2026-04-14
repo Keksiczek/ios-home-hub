@@ -127,9 +127,11 @@ struct MessageComposerView: View {
                             .padding(.horizontal, 8)
                             .padding(.vertical, 4)
                             .background(Capsule().fill(HHTheme.accent))
+                            .contentShape(Capsule())
                         }
+                        .buttonStyle(.plain)
                         .transition(.opacity.combined(with: .scale(scale: 0.9)))
-                        .accessibilityLabel("Disable web search")
+                        .accessibilityLabel("Web search on. Tap to disable.")
                     }
                 }
                 .padding(.horizontal, HHTheme.spaceL)
