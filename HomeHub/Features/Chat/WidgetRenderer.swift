@@ -48,7 +48,7 @@ struct WidgetRenderer: View {
                     }
             }
         }
-        .animation(.spring(response: 0.4, dampingFraction: 0.8), value: actionFeedback?.id)
+        .animation(.easeOut(duration: 0.2), value: actionFeedback?.id)
     }
     
     @ViewBuilder

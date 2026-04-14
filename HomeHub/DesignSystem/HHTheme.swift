@@ -100,8 +100,11 @@ enum HHTheme {
 
     // MARK: - Animation Presets
 
-    static let springSnappy = Animation.spring(response: 0.35, dampingFraction: 0.8)
-    static let springBouncy = Animation.spring(response: 0.45, dampingFraction: 0.65)
+    static let springSnappy = Animation.spring(response: 0.35, dampingFraction: 0.85)
+    /// Retained for callers that still opt into a livelier response,
+    /// but dampened from the earlier 0.65 so it no longer overshoots
+    /// on a utility surface.
+    static let springBouncy = Animation.spring(response: 0.45, dampingFraction: 0.85)
     static let easeSmooth   = Animation.easeInOut(duration: 0.25)
     static let easeSlow     = Animation.easeInOut(duration: 0.5)
 }
