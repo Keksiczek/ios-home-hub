@@ -37,15 +37,18 @@ struct ChatListView: View {
             }
             .navigationTitle("Chats")
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    SidebarMenuButton()
+                }
+                ToolbarItem(placement: .topBarLeading) {
+                    RuntimeBadge(state: runtime.state)
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         Task { await startNewChat() }
                     } label: {
                         Image(systemName: "square.and.pencil")
                     }
-                }
-                ToolbarItem(placement: .topBarLeading) {
-                    RuntimeBadge(state: runtime.state)
                 }
             }
         }

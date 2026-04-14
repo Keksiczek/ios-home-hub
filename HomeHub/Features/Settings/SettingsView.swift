@@ -20,6 +20,11 @@ struct SettingsView: View {
                 developerSection
             }
             .navigationTitle("Settings")
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    SidebarMenuButton()
+                }
+            }
         }
     }
 
