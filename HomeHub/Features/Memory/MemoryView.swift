@@ -88,6 +88,9 @@ struct MemoryView: View {
             }
             .navigationTitle("Memory")
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    SidebarMenuButton()
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { showingAdd = true } label: {
                         Image(systemName: "plus")

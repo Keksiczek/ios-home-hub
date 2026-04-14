@@ -4,6 +4,7 @@ struct MainTabView: View {
     @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var settings: SettingsService
     @Environment(\.horizontalSizeClass) private var hSizeClass
+    @State private var showingSidebar = false
 
     var body: some View {
         if hSizeClass == .regular {
@@ -14,27 +15,29 @@ struct MainTabView: View {
     }
 
     // MARK: - Phone layout (compact width)
+    //
+    // v2: no tab bar. One destination fills the screen; switching
+    // happens through a sheet-style sidebar menu triggered by the
+    // hamburger button that each destination hosts in its nav bar.
 
     private var phoneLayout: some View {
-        TabView(selection: $appState.selectedTab) {
-            ChatListView()
-                .tabItem { Label("Chat", systemImage: "bubble.left.and.bubble.right") }
-                .tag(MainTab.chat)
-
-            MemoryView()
-                .tabItem { Label("Memory", systemImage: "sparkles") }
-                .tag(MainTab.memory)
-
-            ModelsView()
-                .tabItem { Label("Models", systemImage: "cube.box") }
-                .tag(MainTab.models)
-
-            SettingsView()
-                .tabItem { Label("Settings", systemImage: "gearshape") }
-                .tag(MainTab.settings)
+        Group {
+            switch appState.selectedTab {
+            case .chat:     ChatListView()
+            case .memory:   MemoryView()
+            case .models:   ModelsView()
+            case .settings: SettingsView()
+            }
         }
-        .onChange(of: appState.selectedTab) { _, _ in
-            HHHaptics.selection(enabled: settings.current.haptics)
+        .environment(\.showSidebarMenu) { showingSidebar = true }
+        .sheet(isPresented: $showingSidebar) {
+            SidebarMenuView { tab in
+                appState.selectedTab = tab
+                HHHaptics.selection(enabled: settings.current.haptics)
+                showingSidebar = false
+            }
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
         }
     }
 

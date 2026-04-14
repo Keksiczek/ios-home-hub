@@ -262,8 +262,21 @@ final class ConversationService: ObservableObject {
         }
         
         let skillInstructions = await SkillManager.shared.buildSystemInstructions()
+
+        // Overlay the active system-prompt preset onto the persona.
+        // Falls back to `AssistantProfile.defaultSystemPrompt` if the
+        // active ID no longer resolves to a preset (defensive — the
+        // settings model already guarantees this, but keep the fallback
+        // so a corrupted settings file can't brick the chat).
+        var personaForTurn = personalization.assistantProfile
+        let activePreset = settings.current.activeSystemPromptPreset
+        let presetPrompt = activePreset.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        personaForTurn.systemPromptBase = presetPrompt.isEmpty
+            ? AssistantProfile.defaultSystemPrompt
+            : activePreset.prompt
+
         let package = PromptContextPackage(
-            assistant: personalization.assistantProfile,
+            assistant: personaForTurn,
             user: personalization.userProfile,
             facts: facts,
             episodes: episodes,

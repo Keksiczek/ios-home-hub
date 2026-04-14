@@ -20,6 +20,11 @@ struct SettingsView: View {
                 developerSection
             }
             .navigationTitle("Settings")
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    SidebarMenuButton()
+                }
+            }
         }
     }
 
@@ -30,18 +35,6 @@ struct SettingsView: View {
             NavigationLink("Name & details") {
                 ProfileEditor(profile: personalization.userProfile) { updated in
                     Task { await personalization.update(user: updated) }
-                }
-            }
-            Picker("Response style", selection: Binding(
-                get: { personalization.userProfile.preferredResponseStyle },
-                set: { newValue in
-                    var user = personalization.userProfile
-                    user.preferredResponseStyle = newValue
-                    Task { await personalization.update(user: user) }
-                }
-            )) {
-                ForEach(ResponseStyle.allCases) { style in
-                    Text(style.label).tag(style)
                 }
             }
         }
@@ -59,17 +52,8 @@ struct SettingsView: View {
                     Task { await personalization.update(assistant: a) }
                 }
             ))
-            Picker("Tone", selection: Binding(
-                get: { personalization.assistantProfile.tone },
-                set: { newValue in
-                    var a = personalization.assistantProfile
-                    a.tone = newValue
-                    Task { await personalization.update(assistant: a) }
-                }
-            )) {
-                ForEach(AssistantTone.allCases) { tone in
-                    Text(tone.label).tag(tone)
-                }
+            NavigationLink("System prompts") {
+                SystemPromptManagerView()
             }
         }
     }
@@ -140,6 +124,14 @@ struct SettingsView: View {
                 ),
                 in: 0.0...1.5, step: 0.05
             )
+
+            // Display preference — kept at the bottom of the section so
+            // the generation knobs (stream, tokens, temperature) stay
+            // grouped and this reads as a "show this extra info" toggle.
+            Toggle("Show token usage", isOn: Binding(
+                get: { settings.current.showTokenUsage },
+                set: { newValue in Task { await settings.set(\.showTokenUsage, to: newValue) } }
+            ))
         } header: {
             Text("Generation")
         } footer: {

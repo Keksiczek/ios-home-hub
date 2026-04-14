@@ -63,6 +63,11 @@ struct ModelsView: View {
             }
             .listStyle(.insetGrouped)
             .navigationTitle("Models")
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    SidebarMenuButton()
+                }
+            }
             .sheet(item: $infoTarget) { model in
                 ModelInfoSheet(model: model)
             }
