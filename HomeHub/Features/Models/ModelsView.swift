@@ -31,6 +31,17 @@ struct ModelsView: View {
         return availableBytes >= Int64(Double(model.sizeBytes) * 1.1)
     }
 
+    /// Returns a user-visible runtime load-failure reason for `model`, if the
+    /// last `runtime.load(...)` attempt was for this model and failed. The UI
+    /// uses this to show a short error label + Retry button underneath the
+    /// Load button so load failures are never silent.
+    private func loadFailureReason(for model: LocalModel) -> String? {
+        if case .failed(let failedID, let reason) = runtime.state, failedID == model.id {
+            return reason
+        }
+        return nil
+    }
+
     // MARK: - Section splits
 
     private var localModels: [LocalModel] {
@@ -61,6 +72,7 @@ struct ModelsView: View {
                                 downloadPhase: downloads.active[model.id]?.phase,
                                 isLoaded: runtime.activeModel?.id == model.id,
                                 isLoading: runtime.state == .loading(modelID: model.id),
+                                loadFailureReason: loadFailureReason(for: model),
                                 hasResumeData: downloads.hasResumeData(for: model.id),
                                 showIPadOnlyWarning: catalog.isIPadOnly(model) && isRunningOnPhone,
                                 onDownload: { downloadTarget = model },
@@ -90,6 +102,7 @@ struct ModelsView: View {
                                 downloadPhase: nil,
                                 isLoaded: false,
                                 isLoading: false,
+                                loadFailureReason: nil,
                                 hasResumeData: downloads.hasResumeData(for: model.id),
                                 showIPadOnlyWarning: catalog.isIPadOnly(model) && isRunningOnPhone,
                                 onDownload: { downloadTarget = model },
@@ -222,6 +235,10 @@ private struct ModelRow: View {
     let downloadPhase: ModelDownloadService.DownloadPhase?
     let isLoaded: Bool
     let isLoading: Bool
+    /// Non-nil when the most recent `runtime.load(_:)` attempt targeted this
+    /// model and failed. Drives the inline error label + Retry button below
+    /// the Load control so load failures are never silent.
+    let loadFailureReason: String?
     let hasResumeData: Bool
     let showIPadOnlyWarning: Bool
     let onDownload: () -> Void
@@ -322,22 +339,30 @@ private struct ModelRow: View {
             }
 
         case .installed:
-            HStack(spacing: HHTheme.spaceS) {
-                Button(isLoaded ? "Unload" : "Load") {
-                    isLoaded ? onUnload() : onLoad()
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: HHTheme.spaceS) {
+                    Button(isLoaded ? "Unload" : (loadFailureReason != nil ? "Retry" : "Load")) {
+                        isLoaded ? onUnload() : onLoad()
+                    }
+                    .buttonStyle(HHSecondaryButtonStyle())
+                    if isLoading {
+                        ProgressView().controlSize(.small)
+                    }
+                    Spacer()
+                    installedMetadata
+                    Button(role: .destructive, action: onDelete) {
+                        Image(systemName: "trash")
+                            .foregroundStyle(HHTheme.danger)
+                            .imageScale(.medium)
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(HHSecondaryButtonStyle())
-                if isLoading {
-                    ProgressView().controlSize(.small)
+                if let reason = loadFailureReason {
+                    Label(reason, systemImage: "exclamationmark.triangle.fill")
+                        .font(HHTheme.caption)
+                        .foregroundStyle(HHTheme.warning)
+                        .lineLimit(3)
                 }
-                Spacer()
-                installedMetadata
-                Button(role: .destructive, action: onDelete) {
-                    Image(systemName: "trash")
-                        .foregroundStyle(HHTheme.danger)
-                        .imageScale(.medium)
-                }
-                .buttonStyle(.plain)
             }
 
         case .loaded:

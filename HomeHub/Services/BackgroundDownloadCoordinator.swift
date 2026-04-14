@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Owns a single background `URLSession` for model downloads.
 ///
@@ -16,6 +17,8 @@ final class BackgroundDownloadCoordinator: NSObject {
 
     static let shared = BackgroundDownloadCoordinator()
     static let sessionID = "com.homehub.app.modeldownload.v1"
+
+    private let log = Logger(subsystem: "com.homehub.app", category: "BackgroundDownloadCoordinator")
 
     // MARK: - Session (lazy so the delegate adapter is fully initialised first)
 
@@ -50,13 +53,20 @@ final class BackgroundDownloadCoordinator: NSObject {
 
     private override init() {
         super.init()
-        // Touching `session` reconnects to any in-flight background session
-        // from a previous app run, which triggers the delegate callbacks for
-        // already-completed downloads.
-        _ = session
+        // NOTE: we no longer touch `session` here. If we did, URLSession would
+        // start delivering any in-flight background-session events before
+        // `ModelDownloadService` has assigned `onProgress/onCompleted/onFailed`,
+        // dropping those events on the floor. `reconnect()` is called explicitly
+        // by `ModelDownloadService` after wiring callbacks.
     }
 
     // MARK: - Public API
+
+    /// Forces session creation and reconnection to any in-flight background
+    /// session from a previous app run. Call this only after callbacks are wired.
+    func reconnect() {
+        _ = session
+    }
 
     func startDownload(modelID: String, url: URL) {
         let task = session.downloadTask(with: url)
@@ -136,11 +146,34 @@ extension BackgroundDownloadCoordinator: URLSessionDownloadDelegate {
             activeTasks.removeValue(forKey: modelID)
         }
 
+        // Reject non-2xx HTTP responses before we pretend the download succeeded.
+        // `URLSession.downloadTask` happily saves a 401/403/404 body to disk as
+        // a "successful" download, which would otherwise end up on disk with a
+        // .gguf extension.
+        if let http = downloadTask.response as? HTTPURLResponse,
+           !(200..<300).contains(http.statusCode) {
+            let err = URLError(
+                .badServerResponse,
+                userInfo: [NSLocalizedDescriptionKey: "Server returned HTTP \(http.statusCode). The URL may be gated, require authentication, or be wrong."]
+            )
+            log.error("Non-2xx HTTP (\(http.statusCode)) for '\(modelID, privacy: .public)'")
+            Task { @MainActor [weak self] in self?.onFailed?(modelID, err, nil) }
+            return
+        }
+
         // The system deletes `location` when this method returns — copy it
-        // synchronously to a stable temp path before that happens.
+        // synchronously to a stable temp path before that happens. The copy
+        // MUST succeed before we return from the delegate, otherwise the
+        // temp file is gone and the finalizer will see a missing file.
         let dest = FileManager.default.temporaryDirectory
             .appendingPathComponent("\(UUID().uuidString).gguf")
-        try? FileManager.default.copyItem(at: location, to: dest)
+        do {
+            try FileManager.default.copyItem(at: location, to: dest)
+        } catch {
+            log.error("copyItem failed moving completed download for '\(modelID, privacy: .public)': \(error.localizedDescription, privacy: .public)")
+            Task { @MainActor [weak self] in self?.onFailed?(modelID, error, nil) }
+            return
+        }
 
         Task { @MainActor [weak self] in self?.onCompleted?(modelID, dest) }
     }

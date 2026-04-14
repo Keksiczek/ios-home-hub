@@ -110,7 +110,11 @@ struct AddFromURLSheet: View {
         }
 
         let contextLength = Int(contextLengthText) ?? 4096
-        downloads.importFromURL(name: trimmedName, url: url, contextLength: contextLength)
-        dismiss()
+        do {
+            try downloads.importFromURL(name: trimmedName, url: url, contextLength: contextLength)
+            dismiss()
+        } catch {
+            validationError = error.localizedDescription
+        }
     }
 }

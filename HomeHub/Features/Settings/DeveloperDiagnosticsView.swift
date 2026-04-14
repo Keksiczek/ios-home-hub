@@ -48,7 +48,7 @@ struct DeveloperDiagnosticsView: View {
             LabeledContent("Identifier", value: runtime.runtime.identifier)
             LabeledContent("State", value: stateLabel)
 
-            if case .failed(let reason) = runtime.state {
+            if case .failed(_, let reason) = runtime.state {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Error")
                         .font(.caption)
