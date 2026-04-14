@@ -97,11 +97,6 @@ struct SettingsView: View {
                 set: { newValue in Task { await settings.set(\.streamingEnabled, to: newValue) } }
             ))
 
-            Toggle("Show token usage", isOn: Binding(
-                get: { settings.current.showTokenUsage },
-                set: { newValue in Task { await settings.set(\.showTokenUsage, to: newValue) } }
-            ))
-
             HStack {
                 Text("Max response tokens")
                 Spacer()
@@ -129,6 +124,14 @@ struct SettingsView: View {
                 ),
                 in: 0.0...1.5, step: 0.05
             )
+
+            // Display preference — kept at the bottom of the section so
+            // the generation knobs (stream, tokens, temperature) stay
+            // grouped and this reads as a "show this extra info" toggle.
+            Toggle("Show token usage", isOn: Binding(
+                get: { settings.current.showTokenUsage },
+                set: { newValue in Task { await settings.set(\.showTokenUsage, to: newValue) } }
+            ))
         } header: {
             Text("Generation")
         } footer: {
