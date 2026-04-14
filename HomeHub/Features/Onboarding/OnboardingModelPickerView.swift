@@ -10,7 +10,7 @@ struct OnboardingModelPickerView: View {
         HHScreen(
             eyebrow: "Step 1",
             title: "Choose a model.",
-            subtitle: "Pick one to start — you can always change, add, or remove models later."
+            subtitle: "Download a model to get started. The app runs entirely on-device — no model, no chat. You can add more or import custom models later from Settings → Models."
         ) {
             VStack(spacing: HHTheme.spaceM) {
                 ForEach(catalog.models) { model in
@@ -30,6 +30,16 @@ struct OnboardingModelPickerView: View {
                 .buttonStyle(HHPrimaryButtonStyle())
                 .disabled(drafts.selectedModelID == nil)
                 .opacity(drafts.selectedModelID == nil ? 0.5 : 1.0)
+
+                if drafts.selectedModelID != nil {
+                    let selectedState = catalog.model(withID: drafts.selectedModelID ?? "")?.installState
+                    if case .notInstalled = selectedState ?? .notInstalled {
+                        Text("You can continue and download the model later from Models tab.")
+                            .font(HHTheme.caption)
+                            .foregroundStyle(HHTheme.textSecondary)
+                            .multilineTextAlignment(.center)
+                    }
+                }
 
                 Button("Back") {
                     Task { await service.back(to: .welcome) }

@@ -57,6 +57,43 @@ actor LocalModelService {
         return magic != Data([0x47, 0x47, 0x55, 0x46])
     }
 
+    /// Returns file size in bytes for a model file, or nil if file doesn't exist.
+    func fileSizeBytes(for modelID: String) -> Int64? {
+        let url = localURL(for: modelID)
+        guard let attrs = try? fileManager.attributesOfItem(atPath: url.path),
+              let size = attrs[.size] as? Int64 else { return nil }
+        return size
+    }
+
+    /// Returns the set of model IDs (filename stem) for which a valid GGUF
+    /// file exists on disk. Used by bootstrap to reconcile catalog states.
+    func installedModelIDs() -> Set<String> {
+        let contents = (try? fileManager.contentsOfDirectory(
+            at: modelsDirectory,
+            includingPropertiesForKeys: nil,
+            options: .skipsHiddenFiles
+        )) ?? []
+        return Set(
+            contents
+                .filter { $0.pathExtension == "gguf" }
+                .compactMap { url -> String? in
+                    let modelID = url.deletingPathExtension().lastPathComponent
+                    return isStubOrInvalidGGUF(modelID) ? nil : modelID
+                }
+        )
+    }
+
+    /// Returns every .gguf file URL in the models directory, whether or not
+    /// it corresponds to a catalog model. Used to surface orphaned files.
+    func allGGUFFiles() -> [URL] {
+        let contents = (try? fileManager.contentsOfDirectory(
+            at: modelsDirectory,
+            includingPropertiesForKeys: [.fileSizeKey],
+            options: .skipsHiddenFiles
+        )) ?? []
+        return contents.filter { $0.pathExtension == "gguf" }
+    }
+
     /// Removes all `.gguf` files from the models directory.
     /// Call via `ModelDownloadService.resetAllModels()` which also
     /// cancels downloads and resets catalog state.
