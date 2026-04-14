@@ -17,6 +17,7 @@ struct MessageComposerView: View {
     @State private var attachments: [Message.Attachment] = []
 
     @State private var selectedPhotos: [PhotosPickerItem] = []
+    @State private var showingPhotoPicker = false
     @State private var isWebSearchEnabled = false
 
     var body: some View {
@@ -229,8 +230,6 @@ struct MessageComposerView: View {
             Text(docErrorMessage)
         }
     }
-
-    @State private var showingPhotoPicker = false
 
     private var contextBarColor: Color {
         if tokenFill > 0.9 { return HHTheme.danger }
