@@ -1,9 +1,10 @@
 import Foundation
 import SwiftUI
 
-/// The list of models the user can pick from. In v1 the catalog is
-/// hard-coded and vetted for iPhone 16 Pro / M-series iPad. Future:
-/// fetch a signed JSON manifest from a pinned endpoint.
+/// The list of models the user can pick from. In v1 the curated catalog is
+/// hard-coded and vetted for iPhone 16 Pro / M-series iPad. User-added models
+/// (via "Add from URL") are persisted in `user-models.json` alongside the
+/// catalog and merged at launch.
 @MainActor
 final class ModelCatalogService: ObservableObject {
     @Published private(set) var models: [LocalModel]
@@ -35,11 +36,6 @@ final class ModelCatalogService: ObservableObject {
     }
 
     /// Smallest iPhone-safe model for smoke-testing a real-runtime device build.
-    ///
-    /// **Gemma 2 2B** (1.6 GB, Q4_K_M) is the quickest way to verify that
-    /// download → install → load → first token works on a real iPhone without
-    /// spending 30+ minutes on a bigger download. Expected benchmarks on
-    /// iPhone 15 Pro: load < 8 s, TTFT < 4 s, ≥ 2 t/s.
     var iPhoneSmokeTestModel: LocalModel {
         models.first(where: { $0.id == "gemma-2-2b-it-q4_k_m" }) ?? models[0]
     }
@@ -48,6 +44,90 @@ final class ModelCatalogService: ObservableObject {
     /// and is therefore likely to OOM or be very slow on an iPhone.
     func isIPadOnly(_ model: LocalModel) -> Bool {
         !model.recommendedFor.contains(.iPhone)
+    }
+
+    // MARK: - User-added model management
+
+    /// Adds a user-defined model to the catalog and saves to disk.
+    func addUserModel(_ model: LocalModel) {
+        guard !models.contains(where: { $0.id == model.id }) else { return }
+        models.append(model)
+        saveUserModels()
+    }
+
+    /// Removes a user-added model from the catalog and saves to disk.
+    func removeUserModel(id: String) {
+        models.removeAll { $0.id == id && $0.isUserAdded }
+        saveUserModels()
+    }
+
+    // MARK: - Disk reconciliation
+
+    /// Reconciles every catalog model's `installState` against actual files on
+    /// disk. Must be called at app launch (in `AppContainer.bootstrap()`) before
+    /// `autoLoadSelectedModel()` so the UI and runtime never see stale state.
+    ///
+    /// Rules:
+    /// - File exists + valid GGUF → `.installed(localURL:)`
+    /// - File absent or stub/invalid → `.notInstalled`
+    /// - In-flight `.downloading` states are left untouched (coordinator owns those).
+    func reconcileInstallStates(localModels: LocalModelService) async {
+        let installed = await localModels.installedModelIDs()
+        for idx in models.indices {
+            let model = models[idx]
+            // Don't disturb an actively-tracked download.
+            if case .downloading = model.installState { continue }
+            let localURL = await localModels.localURL(for: model.id)
+            if installed.contains(model.id) {
+                models[idx].installState = .installed(localURL: localURL)
+            } else {
+                // File gone or invalid — ensure state is consistent.
+                if model.installState != .notInstalled {
+                    models[idx].installState = .notInstalled
+                }
+            }
+        }
+    }
+
+    // MARK: - User model persistence
+
+    func loadUserModels() {
+        guard let url = userModelsFileURL,
+              let data = try? Data(contentsOf: url),
+              let decoded = try? JSONDecoder().decode([LocalModel].self, from: data)
+        else { return }
+
+        for var model in decoded {
+            guard !models.contains(where: { $0.id == model.id }) else { continue }
+            // Always load with .notInstalled; reconcileInstallStates() will fix it up.
+            model.installState = .notInstalled
+            models.append(model)
+        }
+    }
+
+    private func saveUserModels() {
+        guard let url = userModelsFileURL else { return }
+        let userModels = models
+            .filter { $0.isUserAdded }
+            .map { model -> LocalModel in
+                var m = model
+                m.installState = .notInstalled   // strip runtime state before persisting
+                return m
+            }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        guard let data = try? encoder.encode(userModels) else { return }
+        try? data.write(to: url, options: .atomic)
+    }
+
+    private var userModelsFileURL: URL? {
+        guard let support = try? FileManager.default.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        ) else { return nil }
+        return support.appendingPathComponent("user-models.json")
     }
 }
 

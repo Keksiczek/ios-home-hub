@@ -102,6 +102,15 @@ final class AppContainer: ObservableObject {
         await onboardingService.load()
         await conversationService.load()
 
+        // 1. Merge user-added models into the catalog before reconciling disk state.
+        modelCatalogService.loadUserModels()
+
+        // 2. Reconcile every catalog entry against what's actually on disk.
+        //    This is the critical fix: catalog states start as .notInstalled on
+        //    every cold launch, so without this step the app can never auto-load
+        //    a model that was downloaded in a previous session.
+        await modelCatalogService.reconcileInstallStates(localModels: localModelService)
+
         if onboardingService.state.isCompleted {
             appState.phase = .ready
             // Auto-load the last selected model if it's installed.
