@@ -32,18 +32,6 @@ struct SettingsView: View {
                     Task { await personalization.update(user: updated) }
                 }
             }
-            Picker("Response style", selection: Binding(
-                get: { personalization.userProfile.preferredResponseStyle },
-                set: { newValue in
-                    var user = personalization.userProfile
-                    user.preferredResponseStyle = newValue
-                    Task { await personalization.update(user: user) }
-                }
-            )) {
-                ForEach(ResponseStyle.allCases) { style in
-                    Text(style.label).tag(style)
-                }
-            }
         }
     }
 
@@ -59,17 +47,8 @@ struct SettingsView: View {
                     Task { await personalization.update(assistant: a) }
                 }
             ))
-            Picker("Tone", selection: Binding(
-                get: { personalization.assistantProfile.tone },
-                set: { newValue in
-                    var a = personalization.assistantProfile
-                    a.tone = newValue
-                    Task { await personalization.update(assistant: a) }
-                }
-            )) {
-                ForEach(AssistantTone.allCases) { tone in
-                    Text(tone.label).tag(tone)
-                }
+            NavigationLink("System prompts") {
+                SystemPromptManagerView()
             }
         }
     }
@@ -111,6 +90,11 @@ struct SettingsView: View {
             Toggle("Stream responses", isOn: Binding(
                 get: { settings.current.streamingEnabled },
                 set: { newValue in Task { await settings.set(\.streamingEnabled, to: newValue) } }
+            ))
+
+            Toggle("Show token usage", isOn: Binding(
+                get: { settings.current.showTokenUsage },
+                set: { newValue in Task { await settings.set(\.showTokenUsage, to: newValue) } }
             ))
 
             HStack {
