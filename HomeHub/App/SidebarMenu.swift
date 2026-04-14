@@ -21,6 +21,9 @@ extension EnvironmentValues {
 /// Standard hamburger button bound to `@Environment(\.showSidebarMenu)`.
 /// Automatically hides on regular-width layouts where the sidebar is
 /// already visible via `NavigationSplitView`.
+///
+/// The symbol + accessibility label are centralised here so every
+/// destination's toolbar gets the exact same button.
 struct SidebarMenuButton: View {
     @Environment(\.showSidebarMenu) private var showMenu
     @Environment(\.horizontalSizeClass) private var hSize
@@ -31,8 +34,10 @@ struct SidebarMenuButton: View {
                 showMenu()
             } label: {
                 Image(systemName: "sidebar.left")
+                    .font(.body.weight(.medium))
             }
             .accessibilityLabel("Menu")
+            .accessibilityHint("Switch between sections")
         }
     }
 }
@@ -44,6 +49,7 @@ struct SidebarMenuButton: View {
 /// permanent tab bar.
 struct SidebarMenuView: View {
     @EnvironmentObject private var appState: AppState
+    @EnvironmentObject private var runtime: RuntimeManager
     @Environment(\.dismiss) private var dismiss
     let onSelect: (MainTab) -> Void
 
@@ -55,30 +61,22 @@ struct SidebarMenuView: View {
                         Button {
                             onSelect(tab)
                         } label: {
-                            HStack(spacing: HHTheme.spaceL) {
-                                Image(systemName: tab.symbol)
-                                    .font(.title3)
-                                    .frame(width: 28)
-                                    .foregroundStyle(appState.selectedTab == tab ? HHTheme.accent : HHTheme.textSecondary)
-                                Text(tab.title)
-                                    .font(HHTheme.headline)
-                                    .foregroundStyle(HHTheme.textPrimary)
-                                Spacer()
-                                if appState.selectedTab == tab {
-                                    Image(systemName: "checkmark")
-                                        .foregroundStyle(HHTheme.accent)
-                                        .font(.callout.weight(.semibold))
-                                }
-                            }
-                            .padding(.vertical, 4)
-                            .contentShape(Rectangle())
+                            rowContent(for: tab)
                         }
                         .buttonStyle(.plain)
+                        .listRowBackground(
+                            appState.selectedTab == tab
+                                ? HHTheme.accentSoft
+                                : Color(.secondarySystemGroupedBackground)
+                        )
                     }
+                } header: {
+                    header
+                        .textCase(nil)
                 }
             }
             .listStyle(.insetGrouped)
-            .navigationTitle("HomeHub")
+            .navigationTitle("Menu")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -86,5 +84,54 @@ struct SidebarMenuView: View {
                 }
             }
         }
+    }
+
+    // MARK: - Subviews
+
+    @ViewBuilder
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("HomeHub")
+                .font(HHTheme.title2)
+                .foregroundStyle(HHTheme.textPrimary)
+            Text(activeModelSubtitle)
+                .font(HHTheme.footnote)
+                .foregroundStyle(HHTheme.textSecondary)
+        }
+        .padding(.vertical, HHTheme.spaceS)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var activeModelSubtitle: String {
+        if let model = runtime.activeModel {
+            return model.displayName
+        }
+        switch runtime.state {
+        case .loading(let id): return "Loading \(id)…"
+        case .failed:          return "No model — see Developer Diagnostics"
+        default:               return "No model loaded"
+        }
+    }
+
+    @ViewBuilder
+    private func rowContent(for tab: MainTab) -> some View {
+        let isActive = appState.selectedTab == tab
+        HStack(spacing: HHTheme.spaceL) {
+            Image(systemName: tab.symbol)
+                .font(.title3)
+                .frame(width: 28)
+                .foregroundStyle(isActive ? HHTheme.accent : HHTheme.textSecondary)
+            Text(tab.title)
+                .font(HHTheme.headline)
+                .foregroundStyle(HHTheme.textPrimary)
+            Spacer()
+            if isActive {
+                Image(systemName: "checkmark")
+                    .foregroundStyle(HHTheme.accent)
+                    .font(.callout.weight(.semibold))
+            }
+        }
+        .padding(.vertical, 4)
+        .contentShape(Rectangle())
     }
 }
