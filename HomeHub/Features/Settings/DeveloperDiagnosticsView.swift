@@ -217,7 +217,7 @@ struct DeveloperDiagnosticsView: View {
         } footer: {
             Text(
                 "Reset cancels active downloads, deletes all .gguf files from disk, " +
-                "and resets every catalog entry to "Not installed". " +
+                "and resets every catalog entry to \"Not installed\". " +
                 "Use this after switching from mock to real builds to remove stub files."
             )
         }
