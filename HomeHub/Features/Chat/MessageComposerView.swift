@@ -10,12 +10,12 @@ struct MessageComposerView: View {
     let tokenFill: Double
     let onSend: ([Message.Attachment], Bool) -> Void
     let onCancel: () -> Void
-    
+
     @State private var showingFilePicker = false
     @State private var showingDocError = false
     @State private var docErrorMessage = ""
     @State private var attachments: [Message.Attachment] = []
-    
+
     @State private var selectedPhotos: [PhotosPickerItem] = []
     @State private var isWebSearchEnabled = false
 
@@ -34,7 +34,7 @@ struct MessageComposerView: View {
             }
 
             Divider().overlay(HHTheme.stroke)
-            
+
             // Attachments Preview Area
             if !attachments.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -47,7 +47,7 @@ struct MessageComposerView: View {
                                     .font(.caption)
                                     .lineLimit(1)
                                     .truncationMode(.middle)
-                                
+
                                 Button {
                                     attachments.removeAll { $0.id == attachment.id }
                                 } label: {
@@ -67,57 +67,77 @@ struct MessageComposerView: View {
             }
 
             HStack(alignment: .bottom, spacing: HHTheme.spaceM) {
+                // Unified attachments + tools menu — one button instead of three.
+                // PhotosPicker is anchored invisibly inside the menu by toggling
+                // `showingPhotoPicker` → it flips a PhotosPicker overlay that
+                // lives outside the menu (SwiftUI doesn't allow PhotosPicker
+                // inside a Menu label directly on iOS 17).
                 Menu {
-                    Button(action: { showingFilePicker = true }) {
+                    Button {
+                        showingFilePicker = true
+                    } label: {
                         Label("Vybrat soubor", systemImage: "doc")
+                    }
+                    Button {
+                        showingPhotoPicker = true
+                    } label: {
+                        Label("Vybrat fotku", systemImage: "photo")
+                    }
+                    Divider()
+                    Button {
+                        HHHaptics.impact(.light, enabled: settings.current.haptics)
+                        isWebSearchEnabled.toggle()
+                    } label: {
+                        if isWebSearchEnabled {
+                            Label("Search web", systemImage: "checkmark")
+                        } else {
+                            Label("Search web", systemImage: "globe")
+                        }
                     }
                 } label: {
                     Image(systemName: "plus")
-                        .font(.system(size: 24))
+                        .font(.system(size: 22, weight: .medium))
                         .foregroundColor(HHTheme.accent)
-                        .padding(8)
+                        .frame(width: 36, height: 36)
                         .background(
-                            Circle().stroke(HHTheme.accent, lineWidth: 1)
+                            Circle().stroke(HHTheme.accent.opacity(0.35), lineWidth: 1)
                         )
                 }
                 .padding(.bottom, 2)
-                
-                // Add PhotosPicker invisibly over the menu, wait, a Menu can't easily host a PhotosPicker button directly due to iOS 16 limitations unless using UIViewControllerRepresentable. 
-                // Let's just overlay a generic button or add an explicit PhotosPicker inside the HStack.
-                PhotosPicker(selection: $selectedPhotos, matching: .images, photoLibrary: .shared()) {
-                    Image(systemName: "photo")
-                        .font(.system(size: 24))
-                        .foregroundColor(HHTheme.accent)
-                        .padding(8)
-                        .background(
-                            Circle().stroke(HHTheme.accent, lineWidth: 1)
-                        )
+
+                // Text field with an inline web-search chip (right-aligned
+                // suffix). Small, non-agressive, auto-hides when off.
+                HStack(alignment: .bottom, spacing: HHTheme.spaceS) {
+                    TextField("Message", text: $draft, axis: .vertical)
+                        .lineLimit(1...6)
+                        .font(HHTheme.body)
+
+                    if isWebSearchEnabled {
+                        Button {
+                            HHHaptics.impact(.light, enabled: settings.current.haptics)
+                            isWebSearchEnabled = false
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "globe")
+                                Text("Web")
+                            }
+                            .font(HHTheme.caption.weight(.medium))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Capsule().fill(HHTheme.accent))
+                        }
+                        .transition(.opacity.combined(with: .scale(scale: 0.9)))
+                        .accessibilityLabel("Disable web search")
+                    }
                 }
-                .padding(.bottom, 2)
-                
-                Button(action: {
-                    HHHaptics.impact(.light, enabled: settings.current.haptics)
-                    isWebSearchEnabled.toggle()
-                }) {
-                    Image(systemName: "globe")
-                        .font(.system(size: 24))
-                        .foregroundColor(isWebSearchEnabled ? .white : HHTheme.textSecondary)
-                        .padding(8)
-                        .background(
-                            Circle().fill(isWebSearchEnabled ? HHTheme.accent : Color.clear)
-                        )
-                }
-                .padding(.bottom, 2)
-                
-                TextField("Message", text: $draft, axis: .vertical)
-                    .lineLimit(1...6)
-                    .font(HHTheme.body)
-                    .padding(.horizontal, HHTheme.spaceL)
-                    .padding(.vertical, HHTheme.spaceM)
-                    .background(
-                        RoundedRectangle(cornerRadius: HHTheme.cornerLarge, style: .continuous)
-                            .fill(HHTheme.surface)
-                    )
+                .padding(.horizontal, HHTheme.spaceL)
+                .padding(.vertical, HHTheme.spaceM)
+                .background(
+                    RoundedRectangle(cornerRadius: HHTheme.cornerLarge, style: .continuous)
+                        .fill(HHTheme.surface)
+                )
+                .animation(.easeOut(duration: 0.18), value: isWebSearchEnabled)
 
                 if isStreaming {
                     Button {
@@ -150,6 +170,12 @@ struct MessageComposerView: View {
             .padding(.vertical, HHTheme.spaceM)
         }
         .background(HHTheme.canvas)
+        .photosPicker(
+            isPresented: $showingPhotoPicker,
+            selection: $selectedPhotos,
+            matching: .images,
+            photoLibrary: .shared()
+        )
         .fileImporter(
             isPresented: $showingFilePicker,
             allowedContentTypes: [.plainText, .pdf, .commaSeparatedText, .json],
@@ -203,6 +229,8 @@ struct MessageComposerView: View {
             Text(docErrorMessage)
         }
     }
+
+    @State private var showingPhotoPicker = false
 
     private var contextBarColor: Color {
         if tokenFill > 0.9 { return HHTheme.danger }
