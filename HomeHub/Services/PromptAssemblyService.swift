@@ -16,10 +16,34 @@ import Foundation
 @MainActor
 final class PromptAssemblyService {
 
+    /// Hard cap on the number of tokens we allow the conversation history to
+    /// occupy in the assembled prompt. Conservative on purpose:
+    ///   - typical n_ctx = 4096
+    ///   - system prompt ≈ 400–600 tokens
+    ///   - maxNewTokens reservation ≈ 512
+    ///   - remaining ≈ 1200 tokens for history is safe across all supported models.
+    private static let maxHistoryTokenBudget: Int = 1200
+
+    /// Rough tokens-per-character estimate used to keep the history within the
+    /// budget without tokenising (which requires loading the model). Conservative —
+    /// actual ratios are typically ~0.25 for English; 0.35 adds margin for code,
+    /// non-Latin scripts, and BPE artefacts.
+    private static let avgTokensPerChar: Double = 0.35
+
     func build(from package: PromptContextPackage) -> RuntimePrompt {
         let system = assembleSystemPrompt(from: package)
 
-        var runtimeMessages: [RuntimeMessage] = package.recentMessages.compactMap { m in
+        // Trim the recent-messages window to a conservative character budget so
+        // the assembled prompt never exceeds n_ctx. We keep the most recent
+        // messages and drop older ones first.
+        let historyBudgetChars = Int(Double(Self.maxHistoryTokenBudget) / Self.avgTokensPerChar)
+        var charCount = 0
+        let trimmedMessages = package.recentMessages.reversed().filter { msg in
+            charCount += msg.content.count
+            return charCount <= historyBudgetChars
+        }.reversed()
+
+        var runtimeMessages: [RuntimeMessage] = trimmedMessages.compactMap { m in
             switch m.role {
             case .user:      return RuntimeMessage(role: .user, content: m.content)
             case .assistant: return RuntimeMessage(role: .assistant, content: m.content)

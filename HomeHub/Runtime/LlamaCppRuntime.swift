@@ -267,15 +267,8 @@ final class LlamaCppRuntime: LocalLLMRuntime, @unchecked Sendable {
     /// Call this from a `UIApplication.didReceiveMemoryWarningNotification`
     /// observer. Respects `unloadPolicy`: no-op when policy is `.manual`.
     ///
-    /// Wire into the App lifecycle in `HomeHubApp.swift`:
-    /// ```swift
-    /// .onReceive(NotificationCenter.default.publisher(
-    ///     for: UIApplication.didReceiveMemoryWarningNotification)) { _ in
-    ///     Task { await container.runtimeManager.runtime.handleMemoryPressure() }
-    /// }
-    /// ```
-    /// TODO: Wire into `HomeHubApp` once memory-pressure tests on device
-    /// confirm the correct UX (reload prompt vs. silent background reload).
+    /// Wired into the App lifecycle via `AppContainer.handleMemoryPressure()`,
+    /// which is invoked from `HomeHubApp.swift`'s memory-warning observer.
     func handleMemoryPressure() async {
         guard self.unloadPolicy == .onBackgroundOrMemoryPressure else { return }
         await telemetry.emit(.memoryPressureReceived)
@@ -285,15 +278,8 @@ final class LlamaCppRuntime: LocalLLMRuntime, @unchecked Sendable {
 
     /// Unloads the model when the app enters the background.
     ///
-    /// Call this from a `ScenePhase.background` observer in `HomeHubApp`:
-    /// ```swift
-    /// .onChange(of: scenePhase) { phase in
-    ///     if phase == .background {
-    ///         Task { await container.runtimeManager.runtime.handleBackground() }
-    ///     }
-    /// }
-    /// ```
-    /// TODO: Wire into `HomeHubApp` and confirm reload-on-foreground UX.
+    /// Wired into the App lifecycle via `AppContainer.handleScenePhaseChange(_:)`,
+    /// which is invoked from `HomeHubApp.swift`'s `.onChange(of: scenePhase)` observer.
     func handleBackground() async {
         guard self.unloadPolicy != .manual else { return }
         log.info("App backgrounded — unloading model per policy '\(String(describing: self.unloadPolicy))'.")

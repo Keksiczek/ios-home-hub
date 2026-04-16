@@ -13,8 +13,15 @@ actor SkillManager {
     private var skills: [String: any Skill] = [:]
     
     private init() {
+        // WebSearchSkill is intentionally omitted from the default registration.
+        // PromptAssemblyService injects an on-device privacy guardrail
+        // ("You run entirely on-device with no network access…") that directly
+        // contradicts any web-search tool instructions. The model would behave
+        // unpredictably if both were present. Register WebSearchSkill explicitly
+        // via `register(_:)` once real network-enabled search is wired up and
+        // the privacy guardrail is made conditional.
         let defaults: [any Skill] = [
-            CalculatorSkill(), WebSearchSkill(), CalendarSkill(), HomeKitSkill(), RemindersSkill()
+            CalculatorSkill(), CalendarSkill(), HomeKitSkill(), RemindersSkill()
         ]
         for skill in defaults {
             skills[skill.name.lowercased()] = skill

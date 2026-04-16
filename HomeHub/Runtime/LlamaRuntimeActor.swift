@@ -119,7 +119,8 @@ actor LlamaRuntimeActor {
         let ctx = try LlamaContextHandle.load(
             modelPath: path,
             contextLength: model.contextLength,
-            gpuLayers: .maximum
+            gpuLayers: .maximum,
+            modelFamily: model.family
         )
         context = ctx
         loadedModel = model

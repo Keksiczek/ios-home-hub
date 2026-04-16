@@ -46,10 +46,12 @@ struct LlamaContextHandle: @unchecked Sendable {
 
     private let contextPtr: OpaquePointer   // llama_context *
     private let modelPtr: OpaquePointer     // llama_model *
+    private let contextLength: Int
 
-    private init(context: OpaquePointer, model: OpaquePointer) {
+    private init(context: OpaquePointer, model: OpaquePointer, contextLength: Int) {
         self.contextPtr = context
         self.modelPtr = model
+        self.contextLength = contextLength
     }
 
     // MARK: - One-time backend init
@@ -63,7 +65,8 @@ struct LlamaContextHandle: @unchecked Sendable {
     static func load(
         modelPath: String,
         contextLength: Int,
-        gpuLayers: GPULayers
+        gpuLayers: GPULayers,
+        modelFamily: String = ""
     ) throws -> LlamaContextHandle {
         _ = backendInitOnce
 
@@ -77,18 +80,24 @@ struct LlamaContextHandle: @unchecked Sendable {
             )
         }
 
+        // Flash attention: safe for Llama/Qwen/Mistral/Gemma, problematic for Phi-3
+        // and some quantised models. Enable only for model families we've verified.
+        let flashAttnFamily = ["llama", "qwen", "mistral", "gemma"]
+        let familyLower = modelFamily.lowercased()
+        let flashAttnEnabled = flashAttnFamily.contains(where: { familyLower.contains($0) })
+
         var ctxParams = llama_context_default_params()
         ctxParams.n_ctx    = UInt32(contextLength)
-        ctxParams.n_batch  = 512
-        ctxParams.n_ubatch = 512
-        ctxParams.flash_attn = true
+        ctxParams.n_batch  = 512   // keep for prompt eval
+        ctxParams.n_ubatch = 64    // reduce for generation — lower TTFT on device
+        ctxParams.flash_attn = flashAttnEnabled
 
         guard let ctx = llama_init_from_model(model, ctxParams) else {
             llama_model_free(model)
             throw RuntimeError.outOfMemory
         }
 
-        return LlamaContextHandle(context: ctx, model: model)
+        return LlamaContextHandle(context: ctx, model: model, contextLength: contextLength)
     }
 
     // MARK: - Generation
@@ -102,6 +111,7 @@ struct LlamaContextHandle: @unchecked Sendable {
     ) throws -> AsyncThrowingStream<String, Error> {
         let ctx = contextPtr
         let model = modelPtr
+        let n_ctx = contextLength
 
         return AsyncThrowingStream { continuation in
             let task = Task.detached(priority: .userInitiated) {
@@ -127,7 +137,32 @@ struct LlamaContextHandle: @unchecked Sendable {
 
                     let promptTokens = Array(tokens.prefix(Int(nTokens)))
 
-                    // --- 2. Clear KV cache ---
+                    // --- 2. Context-length guard ---
+                    // Refuse to evaluate when the prompt alone already exceeds 90% of
+                    // n_ctx. Without this guard the decode would silently truncate or
+                    // crash. The PromptAssemblyService's history-token-budget (FIX 3)
+                    // is the first line of defence; this is the belt-and-braces check
+                    // at the bridge boundary.
+                    let ctxBudget = Int(Double(n_ctx) * 0.9)
+                    guard promptTokens.count <= ctxBudget else {
+                        continuation.finish(throwing: RuntimeError.underlying(
+                            "Prompt too large for context window: \(promptTokens.count) tokens " +
+                            "exceeds safe budget of \(ctxBudget) (n_ctx = \(n_ctx)). " +
+                            "Trim the conversation history or increase the model's context length."
+                        ))
+                        return
+                    }
+
+                    // --- 2b. Clear KV cache ---
+                    // The assembled prompt always includes the full rendered chat
+                    // history + system prompt, so we start each turn from a clean
+                    // slate. A sliding-window strategy (llama_kv_cache_seq_shift +
+                    // llama_get_kv_cache_used_cells) would avoid re-evaluating
+                    // the shared prefix across turns, but it requires caller-side
+                    // incremental prompt assembly and an xcframework that exposes
+                    // those symbols.
+                    // TODO: upgrade xcframework and move to sliding-window KV cache
+                    //       (see PromptAssemblyService + ConversationService).
                     llama_kv_cache_clear(ctx)
 
                     // --- 3. Evaluate prompt in batches ---

@@ -227,6 +227,11 @@ final class MemoryService: ObservableObject {
 
     /// Consider a newly-sent user message for memory extraction. Runs
     /// off the main actor since extraction may perform inference.
+    ///
+    /// Callers on the hot path should invoke this from a
+    /// `Task.detached(priority: .background)` so the extraction's second
+    /// LLM inference pass doesn't compete with the user-visible
+    /// assistant stream (see `ConversationService.performSend`).
     func consider(message: Message) async {
         guard settings.current.memoryEnabled,
               settings.current.autoExtractMemory else { return }

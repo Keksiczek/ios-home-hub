@@ -376,7 +376,15 @@ final class ConversationService: ObservableObject {
             }
 
             // Fire-and-forget memory consideration on the user turn.
-            Task { [memory] in await memory.consider(message: msg) }
+            //
+            // Use a detached, background-priority Task so the memory-extraction
+            // LLM inference pass doesn't compete with the user-visible assistant
+            // stream. Without this decoupling, every user message triggers a
+            // second full inference run at the same priority as the hot path —
+            // doubling perceived latency and battery draw.
+            Task.detached(priority: .background) { [memory] in
+                await memory.consider(message: msg)
+            }
         }
 
         // Update the home/lock screen widget with latest state.
