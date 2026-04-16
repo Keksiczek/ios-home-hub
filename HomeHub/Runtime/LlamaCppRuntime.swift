@@ -281,6 +281,9 @@ final class LlamaCppRuntime: LocalLLMRuntime, @unchecked Sendable {
     /// Wired into the App lifecycle via `AppContainer.handleScenePhaseChange(_:)`,
     /// which is invoked from `HomeHubApp.swift`'s `.onChange(of: scenePhase)` observer.
     func handleBackground() async {
+        // Emit before the policy check so diagnostics can verify the event
+        // was received even when policy is .manual (no unload happens).
+        await telemetry.emit(.backgroundEventReceived)
         guard self.unloadPolicy != .manual else { return }
         log.info("App backgrounded — unloading model per policy '\(String(describing: self.unloadPolicy))'.")
         await unload(reason: .appBackground)

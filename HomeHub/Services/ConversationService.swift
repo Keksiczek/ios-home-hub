@@ -275,6 +275,10 @@ final class ConversationService: ObservableObject {
             ? AssistantProfile.defaultSystemPrompt
             : activePreset.prompt
 
+        let capabilityProfile = ModelCapabilityProfile.resolve(
+            family: runtime.activeModel?.family ?? ""
+        )
+
         let package = PromptContextPackage(
             assistant: personaForTurn,
             user: personalization.userProfile,
@@ -285,7 +289,8 @@ final class ConversationService: ObservableObject {
             settings: settings.current,
             conversationSummary: summaryText,
             fileExcerpts: topExcerpts,
-            skillInstructions: skillInstructions
+            skillInstructions: skillInstructions,
+            modelCapabilityProfile: capabilityProfile
         )
         let parameters = RuntimeParameters(
             maxTokens: settings.current.maxResponseTokens,

@@ -24,6 +24,13 @@ struct PromptContextPackage {
     var fileExcerpts: [String] = []
     /// Instructions derived from active skills to be injected into the system prompt.
     var skillInstructions: String? = nil
+    /// Capability profile for the model that will process this prompt.
+    ///
+    /// Used by `PromptAssemblyService` to apply per-family token budgets and
+    /// by future prompt-mode logic (EPIC 5) to shape sections for specific
+    /// model families. Defaults to `ModelCapabilityProfile.default` when nil
+    /// (e.g. in previews and unit tests that don't specify a model).
+    var modelCapabilityProfile: ModelCapabilityProfile? = nil
 }
 
 /// A snapshot of the user's personalization state at a point in

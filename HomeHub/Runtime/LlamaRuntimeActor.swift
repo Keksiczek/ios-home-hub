@@ -116,11 +116,12 @@ actor LlamaRuntimeActor {
 
         // If this throws, all state stays nil and the fresh token is non-cancelled —
         // correct for a subsequent retry.
+        let capabilities = ModelCapabilityProfile.resolve(family: model.family)
         let ctx = try LlamaContextHandle.load(
             modelPath: path,
             contextLength: model.contextLength,
             gpuLayers: .maximum,
-            modelFamily: model.family
+            capabilities: capabilities
         )
         context = ctx
         loadedModel = model

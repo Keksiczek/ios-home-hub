@@ -66,7 +66,7 @@ struct LlamaContextHandle: @unchecked Sendable {
         modelPath: String,
         contextLength: Int,
         gpuLayers: GPULayers,
-        modelFamily: String = ""
+        capabilities: ModelCapabilityProfile = .default
     ) throws -> LlamaContextHandle {
         _ = backendInitOnce
 
@@ -80,17 +80,13 @@ struct LlamaContextHandle: @unchecked Sendable {
             )
         }
 
-        // Flash attention: safe for Llama/Qwen/Mistral/Gemma, problematic for Phi-3
-        // and some quantised models. Enable only for model families we've verified.
-        let flashAttnFamily = ["llama", "qwen", "mistral", "gemma"]
-        let familyLower = modelFamily.lowercased()
-        let flashAttnEnabled = flashAttnFamily.contains(where: { familyLower.contains($0) })
-
+        // All model-specific parameters come from the resolved capability profile
+        // rather than ad-hoc conditionals. See ModelCapabilityProfile.swift.
         var ctxParams = llama_context_default_params()
-        ctxParams.n_ctx    = UInt32(contextLength)
-        ctxParams.n_batch  = 512   // keep for prompt eval
-        ctxParams.n_ubatch = 64    // reduce for generation — lower TTFT on device
-        ctxParams.flash_attn = flashAttnEnabled
+        ctxParams.n_ctx      = UInt32(contextLength)
+        ctxParams.n_batch    = 512                             // keep large for prompt eval
+        ctxParams.n_ubatch   = UInt32(capabilities.nUBatch)   // smaller for generation TTFT
+        ctxParams.flash_attn = capabilities.supportsFlashAttention
 
         guard let ctx = llama_init_from_model(model, ctxParams) else {
             llama_model_free(model)

@@ -103,6 +103,13 @@ enum RuntimeTelemetryEvent: Sendable {
 
     /// The OS delivered a memory-pressure warning.
     case memoryPressureReceived
+
+    /// The app scene moved to the background.
+    ///
+    /// Emitted before any policy-driven unload so diagnostics can answer
+    /// "was the background event received?" independently of whether an
+    /// unload actually happened.
+    case backgroundEventReceived
 }
 
 // MARK: - RuntimeTelemetry
