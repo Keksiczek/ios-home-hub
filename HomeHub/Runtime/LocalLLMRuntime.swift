@@ -102,6 +102,9 @@ struct RuntimeParameters: Sendable {
     var temperature: Double
     var topP: Double
     var stopSequences: [String]
+    /// Conversation the generation belongs to.
+    /// When set, `LlamaCppRuntime` attempts KV-cache prefix reuse across turns.
+    var conversationID: UUID?
 
     static let balanced = RuntimeParameters(
         maxTokens: 768,

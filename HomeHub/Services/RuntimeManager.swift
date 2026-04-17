@@ -70,6 +70,14 @@ final class RuntimeManager: ObservableObject {
         runtime.generate(prompt: prompt, parameters: parameters)
     }
 
+    // MARK: - KV-cache session management
+
+    /// Removes the KV-cache session for `conversationID`.
+    /// No-op when the runtime doesn't support session tracking (e.g. mock).
+    func invalidateSession(for conversationID: UUID) async {
+        await (runtime as? LlamaCppRuntime)?.invalidateSession(for: conversationID)
+    }
+
     // MARK: - Lifecycle forwarding
 
     /// Forwards a memory-pressure event to the runtime.

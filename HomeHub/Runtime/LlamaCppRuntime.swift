@@ -153,6 +153,15 @@ final class LlamaCppRuntime: LocalLLMRuntime, @unchecked Sendable {
         await unload(reason: .manual)
     }
 
+    // MARK: - Session invalidation
+
+    /// Removes the KV-cache session record for `conversationID`.
+    /// Call when the user deletes a conversation so stale tokens don't
+    /// occupy memory and don't mislead the prefix-match logic on reuse.
+    func invalidateSession(for conversationID: UUID) async {
+        await runtimeActor.removeSession(for: conversationID)
+    }
+
     // MARK: - Generate
 
     func generate(
@@ -192,13 +201,26 @@ final class LlamaCppRuntime: LocalLLMRuntime, @unchecked Sendable {
                 var tokens = 0
                 var firstTokenDate: Date? = nil
 
+                // Fetch any existing KV-cache session for this conversation so we
+                // can pass the cached token array to stream() for prefix reuse.
+                let convID = parameters.conversationID
+                let cachedTokens: [Int32]
+                if let convID, let sess = await actor.session(for: convID) {
+                    cachedTokens = sess.cachedPromptTokens
+                } else {
+                    cachedTokens = []
+                }
+                let cacheBox = StreamCacheBox()
+
                 do {
                     let stream = try ctx.stream(
                         prompt: renderedPrompt,
                         maxTokens: parameters.maxTokens,
                         temperature: Float(parameters.temperature),
                         topP: Float(parameters.topP),
-                        stopSequences: parameters.stopSequences
+                        stopSequences: parameters.stopSequences,
+                        cachedTokens: cachedTokens,
+                        cacheBox: cacheBox
                     )
 
                     for try await piece in stream {
@@ -230,6 +252,16 @@ final class LlamaCppRuntime: LocalLLMRuntime, @unchecked Sendable {
 
                         tokens += 1
                         continuation.yield(.token(piece))
+                    }
+
+                    // Persist the prompt token sequence so the next turn for the
+                    // same conversation can skip re-evaluating the shared prefix.
+                    if let convID, !cacheBox.finalPromptTokens.isEmpty {
+                        let updated = ConversationRuntimeSession(
+                            conversationID: convID,
+                            cachedPromptTokens: cacheBox.finalPromptTokens
+                        )
+                        await actor.updateSession(updated)
                     }
 
                     let stats = Self.makeStats(tokens: tokens, started: started)

@@ -90,6 +90,11 @@ actor LlamaRuntimeActor {
     /// Replaced on every `load()` or `unload()` call.
     private(set) var currentCancellationToken = GenerationCancellationToken()
 
+    /// Per-conversation KV-cache session records.
+    /// Keyed by `conversationID`; cleared when the model is unloaded because
+    /// a freshly-loaded model always starts with an empty KV cache.
+    private var sessions: [UUID: ConversationRuntimeSession] = [:]
+
     // MARK: - Load
 
     /// Closes any existing context and loads `model` from `path`.
@@ -139,6 +144,24 @@ actor LlamaRuntimeActor {
         context?.close()
         context = nil
         loadedModel = nil
+        sessions.removeAll()
+    }
+
+    // MARK: - Session management
+
+    /// Returns the KV-cache session for `id`, or `nil` if none exists.
+    func session(for id: UUID) -> ConversationRuntimeSession? {
+        sessions[id]
+    }
+
+    /// Stores or replaces the session record for `session.conversationID`.
+    func updateSession(_ session: ConversationRuntimeSession) {
+        sessions[session.conversationID] = session
+    }
+
+    /// Removes the session record for `id`. Call from `deleteConversation`.
+    func removeSession(for id: UUID) {
+        sessions[id] = nil
     }
 
     // MARK: - Borrow for generation

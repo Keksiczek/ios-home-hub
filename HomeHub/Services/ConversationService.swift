@@ -86,6 +86,7 @@ final class ConversationService: ObservableObject {
         messagesByConversation[id] = nil
         streamingConversationIDs.remove(id)
         summaryByConversation[id] = nil
+        await runtime.invalidateSession(for: id)
         try? await store.delete(conversationID: id)
     }
 
@@ -294,10 +295,11 @@ final class ConversationService: ObservableObject {
             promptMode: .chat
         )
         let stops = stopSequences(for: runtime.activeModel)
-        let parameters = PromptMode.chat.defaultParameters(
+        var parameters = PromptMode.chat.defaultParameters(
             settings: settings.current,
             stopSequences: stops
         )
+        parameters.conversationID = conversationID
 
         let maxLoops = 3
         var currentLoop = 0
