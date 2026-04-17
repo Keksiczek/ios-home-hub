@@ -77,27 +77,33 @@ private let stubModel = LocalModel(
 
 final class MemoryExtractionTests: XCTestCase {
 
-    // MARK: - Structured extraction
+    // MARK: - Structured LLM extraction (Layer 3)
+
+    /// Uses a message with no keyword triggers and no recognisable named
+    /// entities so Layers 1+2 return empty and Layer 3 actually fires.
+    private func noTriggerMessage(in convoID: UUID = UUID()) -> Message {
+        Message.user(
+            "I have been feeling stressed about deadlines and thinking about changing my daily routine entirely",
+            in: convoID
+        )
+    }
 
     func testStructuredExtractionProducesFactAndEpisodeCandidates() async {
         let runtime = StubRuntime()
-        await runtime.load(model: stubModel) // mark as loaded
+        await runtime.load(model: stubModel)
         runtime.responseText = """
-        {"facts":[{"content":"User is a product designer","category":"work","confidence":0.9}],"episodes":[{"summary":"Working on a meditation app","confidence":0.85}]}
+        {"facts":[{"content":"User is stressed about deadlines","category":"work","confidence":0.9}],"episodes":[{"summary":"Considering changing daily routine","confidence":0.85}]}
         """
 
         let extractor = MemoryExtractionService(runtime: runtime)
-        let message = Message.user("I'm a product designer building a meditation app", in: UUID())
-        let candidates = await extractor.extract(from: message)
+        let candidates = await extractor.extract(from: noTriggerMessage())
 
-        XCTAssertEqual(candidates.count, 2)
-        XCTAssertEqual(candidates[0].kind, .fact)
-        XCTAssertEqual(candidates[0].content, "User is a product designer")
-        XCTAssertEqual(candidates[0].category, .work)
-        XCTAssertEqual(candidates[0].extractionMethod, .structured)
-        XCTAssertEqual(candidates[1].kind, .episode)
-        XCTAssertEqual(candidates[1].content, "Working on a meditation app")
-        XCTAssertEqual(candidates[1].extractionMethod, .structured)
+        let structured = candidates.filter { $0.extractionMethod == .structured }
+        XCTAssertEqual(structured.count, 2)
+        XCTAssertEqual(structured[0].kind, .fact)
+        XCTAssertEqual(structured[0].content, "User is stressed about deadlines")
+        XCTAssertEqual(structured[1].kind, .episode)
+        XCTAssertEqual(structured[1].content, "Considering changing daily routine")
     }
 
     func testStructuredExtractionHandlesMarkdownFencing() async {
@@ -105,16 +111,16 @@ final class MemoryExtractionTests: XCTestCase {
         await runtime.load(model: stubModel)
         runtime.responseText = """
         ```json
-        {"facts":[{"content":"Lives in San Francisco","category":"personal","confidence":0.9}],"episodes":[]}
+        {"facts":[{"content":"Stressed about deadlines","category":"work","confidence":0.9}],"episodes":[]}
         ```
         """
 
         let extractor = MemoryExtractionService(runtime: runtime)
-        let message = Message.user("I live in San Francisco", in: UUID())
-        let candidates = await extractor.extract(from: message)
+        let candidates = await extractor.extract(from: noTriggerMessage())
 
-        XCTAssertEqual(candidates.count, 1)
-        XCTAssertEqual(candidates[0].content, "Lives in San Francisco")
+        let structured = candidates.filter { $0.extractionMethod == .structured }
+        XCTAssertEqual(structured.count, 1)
+        XCTAssertEqual(structured[0].content, "Stressed about deadlines")
     }
 
     func testStructuredExtractionHandlesProseWrappedJSON() async {
@@ -122,79 +128,95 @@ final class MemoryExtractionTests: XCTestCase {
         await runtime.load(model: stubModel)
         runtime.responseText = """
         Here is the extraction:
-        {"facts":[{"content":"Prefers dark mode","category":"preferences","confidence":0.8}],"episodes":[]}
+        {"facts":[{"content":"Wants to change routine","category":"preferences","confidence":0.8}],"episodes":[]}
         That's all I found.
         """
 
         let extractor = MemoryExtractionService(runtime: runtime)
-        let message = Message.user("I prefer dark mode", in: UUID())
-        let candidates = await extractor.extract(from: message)
+        let candidates = await extractor.extract(from: noTriggerMessage())
 
-        XCTAssertEqual(candidates.count, 1)
-        XCTAssertEqual(candidates[0].content, "Prefers dark mode")
+        let structured = candidates.filter { $0.extractionMethod == .structured }
+        XCTAssertEqual(structured.count, 1)
+        XCTAssertEqual(structured[0].content, "Wants to change routine")
     }
 
-    // MARK: - Fallback to heuristic
+    // MARK: - Pipeline layering
 
-    func testFallsBackToHeuristicWhenNoRuntimeProvided() async {
+    func testHeuristicTriggersPreventLLMFromRunning() async {
+        let runtime = StubRuntime()
+        await runtime.load(model: stubModel)
+        runtime.responseText = """
+        {"facts":[{"content":"Should not appear","category":"other","confidence":0.9}],"episodes":[]}
+        """
+
+        let extractor = MemoryExtractionService(runtime: runtime)
+        let message = Message.user("My name is Alex and I work at a tech company", in: UUID())
+        let candidates = await extractor.extract(from: message)
+
+        XCTAssertFalse(candidates.isEmpty,
+            "Heuristic layer should produce candidates")
+        XCTAssertTrue(candidates.allSatisfy { $0.extractionMethod != .structured },
+            "LLM layer should not run when heuristic layer found candidates")
+    }
+
+    func testShortMessageSkipsLLMEvenWithoutCheapResults() async {
+        let runtime = StubRuntime()
+        await runtime.load(model: stubModel)
+        runtime.responseText = """
+        {"facts":[{"content":"Should not appear","category":"other","confidence":0.9}],"episodes":[]}
+        """
+
+        let extractor = MemoryExtractionService(runtime: runtime)
+        let message = Message.user("How are you today?", in: UUID())
+        let candidates = await extractor.extract(from: message)
+
+        XCTAssertTrue(candidates.isEmpty,
+            "Short messages without triggers should produce no candidates at all")
+    }
+
+    func testLLMEscalationOnLongMessageWithoutCheapResults() async {
+        let runtime = StubRuntime()
+        await runtime.load(model: stubModel)
+        runtime.responseText = """
+        {"facts":[{"content":"Stressed about deadlines","category":"work","confidence":0.8}],"episodes":[]}
+        """
+
+        let extractor = MemoryExtractionService(runtime: runtime)
+        let candidates = await extractor.extract(from: noTriggerMessage())
+
+        let structured = candidates.filter { $0.extractionMethod == .structured }
+        XCTAssertFalse(structured.isEmpty,
+            "LLM layer should run when cheap layers found nothing on a long message")
+    }
+
+    func testLLMFailureReturnsEmptyWhenNoCheapResults() async {
+        let runtime = FailingRuntime()
+        await runtime.load(model: stubModel)
+
+        let extractor = MemoryExtractionService(runtime: runtime)
+        let candidates = await extractor.extract(from: noTriggerMessage())
+
+        XCTAssertTrue(candidates.isEmpty,
+            "When all layers fail, result should be empty")
+    }
+
+    // MARK: - Heuristic-only paths
+
+    func testHeuristicRunsWithoutRuntime() async {
         let extractor = MemoryExtractionService(runtime: nil)
         let message = Message.user("My name is Alex and I work at Apple", in: UUID())
         let candidates = await extractor.extract(from: message)
 
         XCTAssertFalse(candidates.isEmpty)
         XCTAssertTrue(candidates.allSatisfy { $0.extractionMethod == .heuristic })
-        XCTAssertTrue(candidates.allSatisfy { $0.kind == .fact })
     }
 
-    func testFallsBackToHeuristicWhenNoModelLoaded() async {
+    func testHeuristicRunsWhenNoModelLoaded() async {
         let runtime = StubRuntime()
-        // Don't load a model — loadedModel remains nil
         let extractor = MemoryExtractionService(runtime: runtime)
         let message = Message.user("My name is Alex", in: UUID())
         let candidates = await extractor.extract(from: message)
 
-        XCTAssertFalse(candidates.isEmpty)
-        XCTAssertTrue(candidates.allSatisfy { $0.extractionMethod == .heuristic })
-    }
-
-    func testFallsBackToHeuristicWhenRuntimeFails() async {
-        let runtime = FailingRuntime()
-        await runtime.load(model: stubModel)
-
-        let extractor = MemoryExtractionService(runtime: runtime)
-        let message = Message.user("My name is Alex", in: UUID())
-        let candidates = await extractor.extract(from: message)
-
-        XCTAssertFalse(candidates.isEmpty)
-        XCTAssertTrue(candidates.allSatisfy { $0.extractionMethod == .heuristic })
-    }
-
-    func testFallsBackToHeuristicOnInvalidJSON() async {
-        let runtime = StubRuntime()
-        await runtime.load(model: stubModel)
-        runtime.responseText = "I don't know how to extract memory from that."
-
-        let extractor = MemoryExtractionService(runtime: runtime)
-        let message = Message.user("My name is Alex", in: UUID())
-        let candidates = await extractor.extract(from: message)
-
-        XCTAssertFalse(candidates.isEmpty)
-        XCTAssertTrue(candidates.allSatisfy { $0.extractionMethod == .heuristic })
-    }
-
-    func testFallsBackToHeuristicOnEmptyStructuredResult() async {
-        let runtime = StubRuntime()
-        await runtime.load(model: stubModel)
-        runtime.responseText = """
-        {"facts":[],"episodes":[]}
-        """
-
-        let extractor = MemoryExtractionService(runtime: runtime)
-        // This message has a heuristic trigger
-        let message = Message.user("My name is Alex", in: UUID())
-        let candidates = await extractor.extract(from: message)
-
-        // Structured returned empty → falls through to heuristic
         XCTAssertFalse(candidates.isEmpty)
         XCTAssertTrue(candidates.allSatisfy { $0.extractionMethod == .heuristic })
     }
