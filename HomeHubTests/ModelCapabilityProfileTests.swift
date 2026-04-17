@@ -139,23 +139,15 @@ final class ModelCapabilityProfileTests: XCTestCase {
         }
     }
 
-    // MARK: - safeHistoryCharBudget derived property
+    // MARK: - messageTokenOverhead
 
-    func testCharBudgetIsDerivedFromTokenBudget() {
+    func testMessageTokenOverheadIsInReasonableRange() {
         let all: [ModelCapabilityProfile] = [.llama, .qwen, .mistral, .gemma, .phi, .default]
         for profile in all {
-            let expected = Int(Double(profile.safeHistoryTokenBudget) / 0.35)
-            XCTAssertEqual(profile.safeHistoryCharBudget, expected,
-                           "\(profile.family): char budget must equal tokenBudget / 0.35")
-        }
-    }
-
-    func testCharBudgetIsAlwaysGreaterThanTokenBudget() {
-        // Characters are always fewer than tokens (1 token ≥ 1 char on average),
-        // so the char budget must be larger than the token budget.
-        let all: [ModelCapabilityProfile] = [.llama, .qwen, .mistral, .gemma, .phi, .default]
-        for profile in all {
-            XCTAssertGreaterThan(profile.safeHistoryCharBudget, profile.safeHistoryTokenBudget)
+            XCTAssertGreaterThanOrEqual(profile.messageTokenOverhead, 3,
+                "\(profile.family): overhead < 3 is unrealistically low for any chat template")
+            XCTAssertLessThanOrEqual(profile.messageTokenOverhead, 12,
+                "\(profile.family): overhead > 12 is suspiciously large")
         }
     }
 
@@ -178,25 +170,31 @@ final class ModelCapabilityProfileTests: XCTestCase {
     func testPromptAssemblyUsesProfileHistoryBudget() {
         let service = PromptAssemblyService()
 
-        // Build a long history: 20 messages × 200 chars each = 4000 chars total.
-        // Llama char budget = 1400 / 0.35 ≈ 4000. Phi char budget = 1200 / 0.35 ≈ 3428.
-        // With 4000 total chars, llama should include all 20 messages but phi should trim.
+        // Build a long history: 20 messages × 200 ASCII 'x' chars each.
+        // HeuristicTokenEstimator weights ASCII letters at 0.25 tok/char → ~50 tokens
+        // per message body. Add per-message overhead (llama=7, phi=5) → ~57 / ~55 tokens
+        // per message respectively.
+        //   Llama budget 1400 ÷ 57 ≈ 24 — fits all 20 messages.
+        //   Phi   budget 1200 ÷ 55 ≈ 21 — also fits all 20, but tighter.
+        // Using 400-char messages (100 tokens/body) instead makes the contrast clear:
+        //   Llama: 1400 ÷ 107 ≈ 13 messages kept.
+        //   Phi:   1200 ÷ 105 ≈ 11 messages kept.
         let convID = UUID()
         let messages = (0..<20).map { i in
             Message(
                 id: UUID(), conversationID: convID,
                 role: i.isMultiple(of: 2) ? .user : .assistant,
-                content: String(repeating: "x", count: 200),
+                content: String(repeating: "x", count: 400),
                 createdAt: .now, status: .complete, tokenCount: nil
             )
         }
 
         // Phi profile — tighter budget
-        var phiPackage = makePackage(messages: messages, profile: .phi)
+        let phiPackage = makePackage(messages: messages, profile: .phi)
         let phiPrompt = service.build(from: phiPackage)
 
         // Llama profile — larger budget
-        var llamaPackage = makePackage(messages: messages, profile: .llama)
+        let llamaPackage = makePackage(messages: messages, profile: .llama)
         let llamaPrompt = service.build(from: llamaPackage)
 
         // Llama should fit more history messages than phi

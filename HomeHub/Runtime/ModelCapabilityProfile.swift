@@ -13,8 +13,8 @@ import Foundation
 /// // In LlamaContextHandle.load():
 /// ctxParams.flash_attn = profile.supportsFlashAttention
 /// ctxParams.n_ubatch   = UInt32(profile.nUBatch)
-/// // In PromptAssemblyService:
-/// let budgetChars = profile.safeHistoryCharBudget
+/// // In PromptTokenBudgeter:
+/// let budgeter = PromptTokenBudgeter(profile: profile)
 /// ```
 ///
 /// ## Future fields (stubs — not yet consumed)
@@ -44,7 +44,7 @@ struct ModelCapabilityProfile: Sendable, Equatable {
     /// benefits from larger batches.
     let nUBatch: Int
 
-    // MARK: - Prompt budget (consumed by PromptAssemblyService)
+    // MARK: - Prompt budget (consumed by PromptTokenBudgeter)
 
     /// Maximum number of tokens reserved for conversation history in the
     /// assembled prompt.
@@ -60,10 +60,25 @@ struct ModelCapabilityProfile: Sendable, Equatable {
     /// Tokens reserved for the model's generation output.
     ///
     /// The prompt guard in `LlamaContextHandle` uses this value when computing
-    /// the 90%-of-n_ctx safety limit, and `PromptAssemblyService` uses it to
-    /// communicate intent (not enforced there directly — the bridge is the
-    /// last safety gate).
+    /// the 90%-of-n_ctx safety limit. `PromptBudgetReport` includes it so
+    /// diagnostics can verify prompt + reserve stays under the context length.
     let generationReserveTokens: Int
+
+    /// Extra tokens added per chat message by the model's chat template.
+    ///
+    /// Chat templates wrap each turn in family-specific delimiter tokens
+    /// (header IDs, role markers, end-of-turn tokens). These overhead
+    /// tokens accumulate in long conversations and must be accounted for
+    /// to avoid underestimating prompt size.
+    ///
+    /// Calibrated values per family (approximate, measured on llama.cpp):
+    /// - llama: 7  — `<|start_header_id|>role<|end_header_id|>\n\n…<|eot_id|>`
+    /// - qwen:  5  — `<|im_start|>role\n…<|im_end|>\n`
+    /// - mistral: 6 — `[INST] … [/INST]` (instruction variant)
+    /// - gemma: 6  — `<start_of_turn>role\n…<end_of_turn>\n`
+    /// - phi:   5  — `<|user|>\n…<|end|>\n`
+    /// - default: 5 — conservative fallback
+    let messageTokenOverhead: Int
 
     // MARK: - Future capability flags (stubs for later EPICs)
 
@@ -76,17 +91,6 @@ struct ModelCapabilityProfile: Sendable, Equatable {
     /// rather than run inline (EPIC 4). Currently unused — policy is set
     /// at the call-site level regardless of model family.
     let prefersDeferredMemoryExtraction: Bool
-
-    // MARK: - Derived
-
-    /// Character budget for conversation history, derived from the token
-    /// budget using a conservative estimate of 0.35 tokens per character.
-    ///
-    /// This estimate adds headroom for code blocks, JSON, non-Latin scripts,
-    /// and BPE artefacts that tokenise at a higher-than-English rate.
-    var safeHistoryCharBudget: Int {
-        Int(Double(safeHistoryTokenBudget) / 0.35)
-    }
 }
 
 // MARK: - Built-in profiles
@@ -102,6 +106,7 @@ extension ModelCapabilityProfile {
         nUBatch: 64,
         safeHistoryTokenBudget: 1400,
         generationReserveTokens: 512,
+        messageTokenOverhead: 7,
         supportsStructuredToolCalling: false,
         prefersDeferredMemoryExtraction: false
     )
@@ -113,6 +118,7 @@ extension ModelCapabilityProfile {
         nUBatch: 64,
         safeHistoryTokenBudget: 1400,
         generationReserveTokens: 512,
+        messageTokenOverhead: 5,
         supportsStructuredToolCalling: false,
         prefersDeferredMemoryExtraction: false
     )
@@ -124,6 +130,7 @@ extension ModelCapabilityProfile {
         nUBatch: 64,
         safeHistoryTokenBudget: 1400,
         generationReserveTokens: 512,
+        messageTokenOverhead: 6,
         supportsStructuredToolCalling: false,
         prefersDeferredMemoryExtraction: false
     )
@@ -135,6 +142,7 @@ extension ModelCapabilityProfile {
         nUBatch: 64,
         safeHistoryTokenBudget: 1200,
         generationReserveTokens: 512,
+        messageTokenOverhead: 6,
         supportsStructuredToolCalling: false,
         prefersDeferredMemoryExtraction: false
     )
@@ -147,6 +155,7 @@ extension ModelCapabilityProfile {
         nUBatch: 64,
         safeHistoryTokenBudget: 1200,
         generationReserveTokens: 512,
+        messageTokenOverhead: 5,
         supportsStructuredToolCalling: false,
         prefersDeferredMemoryExtraction: false
     )
@@ -162,6 +171,7 @@ extension ModelCapabilityProfile {
         nUBatch: 64,
         safeHistoryTokenBudget: 1000,
         generationReserveTokens: 512,
+        messageTokenOverhead: 5,
         supportsStructuredToolCalling: false,
         prefersDeferredMemoryExtraction: false
     )

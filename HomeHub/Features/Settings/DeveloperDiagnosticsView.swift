@@ -19,6 +19,7 @@ struct DeveloperDiagnosticsView: View {
     @EnvironmentObject private var runtime: RuntimeManager
     @EnvironmentObject private var catalog: ModelCatalogService
     @EnvironmentObject private var downloads: ModelDownloadService
+    @EnvironmentObject private var prompts: PromptAssemblyService
 
     @State private var stubModelIDs: [String] = []
     @State private var isScanning = false
@@ -31,6 +32,7 @@ struct DeveloperDiagnosticsView: View {
             buildSection
             activeModelSection
             deviceEventsSection
+            tokenBudgetSection
             integritySection
             actionsSection
             smokeTestSection
@@ -134,6 +136,31 @@ struct DeveloperDiagnosticsView: View {
                 "Memory warnings trigger automatic model unload per the runtime unload policy. " +
                 "The model reloads when the app returns to foreground."
             )
+        }
+    }
+
+    // MARK: - Token budget
+
+    private var tokenBudgetSection: some View {
+        Section {
+            if let report = prompts.lastReport {
+                LabeledContent("Family", value: report.family.isEmpty ? "default" : report.family)
+                ForEach(report.sections, id: \.name) { section in
+                    LabeledContent(section.name, value: "\(section.tokens) tokens")
+                }
+                LabeledContent("History kept",    value: "\(report.historyMessagesKept) msgs")
+                LabeledContent("History dropped", value: "\(report.historyMessagesDropped) msgs")
+                LabeledContent("Total prompt",    value: "\(report.totalPromptTokens) tokens")
+                LabeledContent("Gen reserve",     value: "\(report.generationReserveTokens) tokens")
+            } else {
+                Text("No prompt built yet — send a message to populate.")
+                    .foregroundStyle(.secondary)
+                    .font(.caption)
+            }
+        } header: {
+            Text("Last Prompt Budget")
+        } footer: {
+            Text("Token counts use the heuristic estimator (±15% vs. real BPE). Reflects the most recent call to PromptAssemblyService.build().")
         }
     }
 
@@ -350,6 +377,8 @@ struct DeveloperDiagnosticsView: View {
             return "\(t) ✕ Cancelled"
         case .memoryPressureReceived:
             return "\(t) ⚠ Memory pressure"
+        case .backgroundEventReceived:
+            return "\(t) ⬇ App backgrounded"
         }
     }
 }

@@ -14,26 +14,29 @@ import Foundation
 /// Privacy guardrails + recent conversation messages + current input
 /// follow the memory layers.
 @MainActor
-final class PromptAssemblyService {
+final class PromptAssemblyService: ObservableObject {
+
+    /// Budget report from the most recent `build(from:)` call.
+    ///
+    /// Published so `DeveloperDiagnosticsView` can display token
+    /// accounting without needing a separate subscription. `nil` until
+    /// the first prompt is built.
+    @Published private(set) var lastReport: PromptBudgetReport?
 
     func build(from package: PromptContextPackage) -> RuntimePrompt {
         let system = assembleSystemPrompt(from: package)
 
-        // Per-family history budget from the model's capability profile.
+        // Per-family token budgeter from the model's capability profile.
         // Falls back to ModelCapabilityProfile.default for previews / tests
         // that don't supply a profile.
         let profile = package.modelCapabilityProfile ?? .default
-        let historyBudgetChars = profile.safeHistoryCharBudget
+        let budgeter = PromptTokenBudgeter(profile: profile)
 
-        // Trim the recent-messages window to the character budget, keeping the
+        // Trim the recent-messages window to the token budget, keeping the
         // most recent messages and dropping older ones first.
-        var charCount = 0
-        let trimmedMessages = package.recentMessages.reversed().filter { msg in
-            charCount += msg.content.count
-            return charCount <= historyBudgetChars
-        }.reversed()
+        let trimResult = budgeter.trimHistory(package.recentMessages)
 
-        var runtimeMessages: [RuntimeMessage] = trimmedMessages.compactMap { m in
+        var runtimeMessages: [RuntimeMessage] = trimResult.kept.compactMap { m in
             switch m.role {
             case .user:      return RuntimeMessage(role: .user, content: m.content)
             case .assistant: return RuntimeMessage(role: .assistant, content: m.content)
@@ -42,6 +45,23 @@ final class PromptAssemblyService {
         }
 
         runtimeMessages.append(RuntimeMessage(role: .user, content: package.userInput))
+
+        // Emit a budget report for diagnostics.
+        let historyTokens = trimResult.kept.reduce(0) {
+            $0 + budgeter.tokensForMessage(content: $1.content)
+        }
+        lastReport = PromptBudgetReport(
+            family: profile.family,
+            sections: [
+                .init(name: "system",     tokens: budgeter.tokens(in: system)),
+                .init(name: "history",    tokens: historyTokens),
+                .init(name: "user_input", tokens: budgeter.tokensForMessage(content: package.userInput))
+            ],
+            historyMessagesKept: trimResult.kept.count,
+            historyMessagesDropped: trimResult.dropped,
+            generationReserveTokens: profile.generationReserveTokens
+        )
+
         return RuntimePrompt(systemPrompt: system, messages: runtimeMessages)
     }
 
@@ -113,7 +133,7 @@ final class PromptAssemblyService {
             \(fileLines.joined(separator: "\n\n"))
             """)
         }
-        
+
         // L4. Available Agentic Tools
         if let skills = package.skillInstructions, !skills.isEmpty {
             chunks.append(skills)
