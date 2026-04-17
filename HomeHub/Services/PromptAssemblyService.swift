@@ -163,7 +163,7 @@ final class PromptAssemblyService: ObservableObject {
         chunks.append("""
         You just used a tool and received an <Observation> with the result. \
         Use that information to formulate a helpful, natural response to the user. \
-        Do NOT output another <Action:…> tag unless absolutely necessary.
+        Do NOT output another <tool_call> block unless absolutely necessary.
         """)
 
         chunks.append(privacyGuardrail)
