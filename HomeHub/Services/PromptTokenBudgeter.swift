@@ -122,6 +122,9 @@ struct PromptBudgetReport: Sendable, Equatable {
     /// Canonical lowercase model family (e.g. `"llama"`, `"default"`).
     let family: String
 
+    /// Which prompt mode produced this report.
+    let mode: PromptMode
+
     /// Ordered contributions that make up the prompt.
     let sections: [Section]
 
@@ -146,7 +149,7 @@ struct PromptBudgetReport: Sendable, Equatable {
 
     /// Human-readable, multi-line rendering for diagnostics UI and logs.
     var summary: String {
-        var lines: [String] = ["Prompt budget (\(family)):"]
+        var lines: [String] = ["Prompt budget (\(family), \(mode.rawValue)):"]
         for section in sections {
             lines.append("  \(section.name): \(section.tokens) tokens")
         }

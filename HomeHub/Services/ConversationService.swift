@@ -37,7 +37,7 @@ final class ConversationService: ObservableObject {
         self.memory = memory
         self.settings = settings
         self.personalization = personalization
-        self.summarizer = SummarizationService(runtime: runtime)
+        self.summarizer = SummarizationService(runtime: runtime, prompts: prompts)
         self.embeddingService = embeddingService
     }
 
@@ -290,13 +290,13 @@ final class ConversationService: ObservableObject {
             conversationSummary: summaryText,
             fileExcerpts: topExcerpts,
             skillInstructions: skillInstructions,
-            modelCapabilityProfile: capabilityProfile
+            modelCapabilityProfile: capabilityProfile,
+            promptMode: .chat
         )
-        let parameters = RuntimeParameters(
-            maxTokens: settings.current.maxResponseTokens,
-            temperature: settings.current.temperature,
-            topP: settings.current.topP,
-            stopSequences: stopSequences(for: runtime.activeModel)
+        let stops = stopSequences(for: runtime.activeModel)
+        let parameters = PromptMode.chat.defaultParameters(
+            settings: settings.current,
+            stopSequences: stops
         )
 
         let maxLoops = 3
@@ -355,7 +355,8 @@ final class ConversationService: ObservableObject {
                     
                     loopPackage.recentMessages.append(actionMsgCopy)
                     loopPackage.recentMessages.append(obsMsg)
-                    
+                    loopPackage.promptMode = .toolFollowup
+
                     // Reset message state for the final response stream
                     assistantMessage.content = ""
                     assistantMessage.status = .streaming

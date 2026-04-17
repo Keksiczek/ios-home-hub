@@ -31,6 +31,14 @@ struct PromptContextPackage {
     /// model families. Defaults to `ModelCapabilityProfile.default` when nil
     /// (e.g. in previews and unit tests that don't specify a model).
     var modelCapabilityProfile: ModelCapabilityProfile? = nil
+
+    /// Which prompt shape to use for this inference call.
+    ///
+    /// Determines which system-prompt layers are included and what
+    /// `RuntimeParameters` are appropriate. Defaults to `.chat` so
+    /// existing call sites that don't specify a mode get the full
+    /// conversational prompt.
+    var promptMode: PromptMode = .chat
 }
 
 /// A snapshot of the user's personalization state at a point in

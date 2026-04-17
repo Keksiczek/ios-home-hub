@@ -144,6 +144,7 @@ struct DeveloperDiagnosticsView: View {
     private var tokenBudgetSection: some View {
         Section {
             if let report = prompts.lastReport {
+                LabeledContent("Mode",   value: report.mode.rawValue)
                 LabeledContent("Family", value: report.family.isEmpty ? "default" : report.family)
                 ForEach(report.sections, id: \.name) { section in
                     LabeledContent(section.name, value: "\(section.tokens) tokens")

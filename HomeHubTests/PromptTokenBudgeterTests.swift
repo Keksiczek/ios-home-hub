@@ -161,6 +161,7 @@ final class PromptTokenBudgeterTests: XCTestCase {
     func testTotalPromptTokensIsSumOfSections() {
         let report = PromptBudgetReport(
             family: "llama",
+            mode: .chat,
             sections: [
                 .init(name: "system",     tokens: 300),
                 .init(name: "history",    tokens: 700),
@@ -176,6 +177,7 @@ final class PromptTokenBudgeterTests: XCTestCase {
     func testSummaryContainsAllKeyFields() {
         let report = PromptBudgetReport(
             family: "qwen",
+            mode: .chat,
             sections: [
                 .init(name: "system", tokens: 200),
                 .init(name: "history", tokens: 500)
@@ -186,6 +188,7 @@ final class PromptTokenBudgeterTests: XCTestCase {
         )
         let s = report.summary
         XCTAssertTrue(s.contains("qwen"))
+        XCTAssertTrue(s.contains("chat"))
         XCTAssertTrue(s.contains("system"))
         XCTAssertTrue(s.contains("history"))
         XCTAssertTrue(s.contains("kept: 4"))
@@ -197,6 +200,7 @@ final class PromptTokenBudgeterTests: XCTestCase {
     func testEmptyReportHasZeroTotal() {
         let report = PromptBudgetReport(
             family: "",
+            mode: .summarization,
             sections: [],
             historyMessagesKept: 0,
             historyMessagesDropped: 0,

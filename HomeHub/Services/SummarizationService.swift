@@ -11,12 +11,21 @@ import Foundation
 /// grows beyond the history window and the context budget is >60% used.
 /// The summary is injected into the system prompt for subsequent turns
 /// so older context isn't silently lost.
+///
+/// ## Prompt mode
+/// Uses `PromptMode.summarization` via `PromptAssemblyService` so the
+/// system prompt and parameters are centrally managed. The caller does
+/// not need to know the summarization prompt text or temperature — that
+/// lives in `PromptAssemblyService.assembleSummarizationPrompt()` and
+/// `PromptMode.defaultParameters(settings:)`.
 @MainActor
 final class SummarizationService {
     private let runtime: RuntimeManager
+    private let prompts: PromptAssemblyService
 
-    init(runtime: RuntimeManager) {
+    init(runtime: RuntimeManager, prompts: PromptAssemblyService? = nil) {
         self.runtime = runtime
+        self.prompts = prompts ?? PromptAssemblyService()
     }
 
     /// Summarises `messages` into a single concise paragraph.
@@ -32,25 +41,25 @@ final class SummarizationService {
 
         let transcript = lines.joined(separator: "\n")
 
-        let prompt = RuntimePrompt(
-            systemPrompt: """
-            You are a conversation summarizer. Produce a concise factual summary \
-            of the conversation below. Be neutral, factual, and under 120 words. \
-            Focus on key topics, decisions, and conclusions. Output only the summary \
-            text — no preamble, no labels.
-            """,
-            messages: [
-                RuntimeMessage(
-                    role: .user,
-                    content: "Summarize this conversation:\n\n\(transcript)"
-                )
-            ]
+        let capabilityProfile = ModelCapabilityProfile.resolve(
+            family: runtime.activeModel?.family ?? ""
         )
 
-        let parameters = RuntimeParameters(
-            maxTokens: 200,
-            temperature: 0.2,
-            topP: 0.9,
+        let package = PromptContextPackage(
+            assistant: .defaultAssistant,
+            user: .blank,
+            facts: [],
+            episodes: [],
+            recentMessages: [],
+            userInput: "Summarize this conversation:\n\n\(transcript)",
+            settings: .default,
+            modelCapabilityProfile: capabilityProfile,
+            promptMode: .summarization
+        )
+
+        let prompt = prompts.build(from: package)
+        let parameters = PromptMode.summarization.defaultParameters(
+            settings: .default,
             stopSequences: stopSequencesForCurrentModel()
         )
 
