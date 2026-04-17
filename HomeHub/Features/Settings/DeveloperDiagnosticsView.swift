@@ -25,6 +25,9 @@ struct DeveloperDiagnosticsView: View {
     @State private var isScanning = false
     @State private var isResetting = false
     @State private var telemetryLog: [String] = []
+    @State private var lastTTFTms: Int? = nil
+    @State private var lastThroughput: Double? = nil
+    @State private var lastDurationMs: Int? = nil
 
     var body: some View {
         List {
@@ -32,6 +35,7 @@ struct DeveloperDiagnosticsView: View {
             buildSection
             activeModelSection
             deviceEventsSection
+            generationPerformanceSection
             tokenBudgetSection
             integritySection
             actionsSection
@@ -135,6 +139,34 @@ struct DeveloperDiagnosticsView: View {
             Text(
                 "Memory warnings trigger automatic model unload per the runtime unload policy. " +
                 "The model reloads when the app returns to foreground."
+            )
+        }
+    }
+
+    // MARK: - Generation performance
+
+    private var generationPerformanceSection: some View {
+        Section {
+            if let ttft = lastTTFTms {
+                LabeledContent("Last TTFT", value: "\(ttft) ms")
+            } else {
+                Text("No generation yet — send a message to populate.")
+                    .foregroundStyle(.secondary)
+                    .font(.caption)
+            }
+            if let tps = lastThroughput {
+                LabeledContent("Throughput", value: String(format: "%.1f t/s", tps))
+            }
+            if let dur = lastDurationMs {
+                LabeledContent("Total duration", value: "\(dur) ms")
+            }
+        } header: {
+            Text("Generation Performance")
+        } footer: {
+            Text(
+                "TTFT (time-to-first-token) measures prompt evaluation latency. " +
+                "Target: < 4 s on iPhone 15 Pro for a 500-token prompt. " +
+                "Throughput reflects decode speed after the first token."
             )
         }
     }
@@ -355,6 +387,16 @@ struct DeveloperDiagnosticsView: View {
         let (stream, id) = await runtime.telemetry.subscribe()
         defer { Task { await runtime.telemetry.unsubscribe(id: id) } }
         for await event in stream {
+            // Capture per-generation metrics for the performance section.
+            switch event {
+            case .firstToken(_, let ms):
+                lastTTFTms = ms
+            case .generationFinished(_, let stats, _):
+                lastThroughput = stats.tokensPerSecond
+                lastDurationMs = stats.totalDurationMs
+            default:
+                break
+            }
             let entry = telemetryEntry(for: event)
             telemetryLog.append(entry)
             if telemetryLog.count > 12 { telemetryLog.removeFirst() }
