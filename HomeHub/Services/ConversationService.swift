@@ -37,7 +37,7 @@ final class ConversationService: ObservableObject {
         self.memory = memory
         self.settings = settings
         self.personalization = personalization
-        self.summarizer = SummarizationService(runtime: runtime)
+        self.summarizer = SummarizationService(runtime: runtime, prompts: prompts)
         self.embeddingService = embeddingService
     }
 
@@ -86,6 +86,7 @@ final class ConversationService: ObservableObject {
         messagesByConversation[id] = nil
         streamingConversationIDs.remove(id)
         summaryByConversation[id] = nil
+        await runtime.invalidateSession(for: id)
         try? await store.delete(conversationID: id)
     }
 
@@ -275,6 +276,10 @@ final class ConversationService: ObservableObject {
             ? AssistantProfile.defaultSystemPrompt
             : activePreset.prompt
 
+        let capabilityProfile = ModelCapabilityProfile.resolve(
+            family: runtime.activeModel?.family ?? ""
+        )
+
         let package = PromptContextPackage(
             assistant: personaForTurn,
             user: personalization.userProfile,
@@ -285,14 +290,16 @@ final class ConversationService: ObservableObject {
             settings: settings.current,
             conversationSummary: summaryText,
             fileExcerpts: topExcerpts,
-            skillInstructions: skillInstructions
+            skillInstructions: skillInstructions,
+            modelCapabilityProfile: capabilityProfile,
+            promptMode: .chat
         )
-        let parameters = RuntimeParameters(
-            maxTokens: settings.current.maxResponseTokens,
-            temperature: settings.current.temperature,
-            topP: settings.current.topP,
-            stopSequences: stopSequences(for: runtime.activeModel)
+        let stops = stopSequences(for: runtime.activeModel)
+        var parameters = PromptMode.chat.defaultParameters(
+            settings: settings.current,
+            stopSequences: stops
         )
+        parameters.conversationID = conversationID
 
         let maxLoops = 3
         var currentLoop = 0
@@ -350,7 +357,8 @@ final class ConversationService: ObservableObject {
                     
                     loopPackage.recentMessages.append(actionMsgCopy)
                     loopPackage.recentMessages.append(obsMsg)
-                    
+                    loopPackage.promptMode = .toolFollowup
+
                     // Reset message state for the final response stream
                     assistantMessage.content = ""
                     assistantMessage.status = .streaming
@@ -376,7 +384,15 @@ final class ConversationService: ObservableObject {
             }
 
             // Fire-and-forget memory consideration on the user turn.
-            Task { [memory] in await memory.consider(message: msg) }
+            //
+            // Use a detached, background-priority Task so the memory-extraction
+            // LLM inference pass doesn't compete with the user-visible assistant
+            // stream. Without this decoupling, every user message triggers a
+            // second full inference run at the same priority as the hot path —
+            // doubling perceived latency and battery draw.
+            Task.detached(priority: .background) { [memory] in
+                await memory.consider(message: msg)
+            }
         }
 
         // Update the home/lock screen widget with latest state.

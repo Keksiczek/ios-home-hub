@@ -2,38 +2,74 @@ import Foundation
 
 /// Proposes `MemoryCandidate`s from a finished user message.
 ///
-/// v2: tries a structured extraction pass using the local runtime
-/// first. If the runtime is unavailable, the model isn't loaded,
-/// or the JSON output is invalid, falls back to the original v1
-/// heuristic keyword triggers. Chat is never blocked by extraction.
+/// ## Three-layer extraction pipeline
+///
+/// Extraction runs cheapest-first. Expensive layers are skipped when
+/// cheaper ones already found candidates — saving battery and latency.
+///
+/// | Layer | Method           | Cost          | When it runs               |
+/// |-------|------------------|---------------|----------------------------|
+/// | 1     | Keyword triggers | microseconds  | always                     |
+/// | 2     | NLTagger entities| milliseconds  | always (additive)          |
+/// | 3     | Local LLM JSON   | seconds       | only if layers 1+2 empty   |
+///
+/// Layer 2 candidates are de-duplicated against Layer 1 by category so
+/// the same fact isn't proposed twice.
+///
+/// Layer 3 only fires when:
+/// - Layers 1 + 2 found zero candidates, AND
+/// - The message is at least `llmMinMessageLength` characters (short
+///   messages like "hi" or "thanks" aren't worth inference), AND
+/// - A model is currently loaded in the runtime.
 actor MemoryExtractionService {
 
     private let runtime: (any LocalLLMRuntime)?
 
+    /// Messages shorter than this skip the LLM extraction layer even
+    /// when the cheaper layers found nothing.
+    static let llmMinMessageLength = 40
+
     /// - Parameter runtime: The local LLM runtime used for structured
     ///   extraction. Pass `nil` for previews/tests or when only
-    ///   heuristic extraction is desired.
+    ///   heuristic + NL extraction is desired.
     init(runtime: (any LocalLLMRuntime)? = nil) {
         self.runtime = runtime
     }
 
-    /// Main entry point. Tries structured → heuristic fallback.
+    /// Main entry point — runs the 3-layer extraction pipeline.
     func extract(from message: Message) async -> [MemoryCandidate] {
         guard message.role == .user else { return [] }
 
-        // Try structured extraction when the runtime has a model loaded.
-        if let runtime, runtime.loadedModel != nil {
+        // Layer 1: Keyword triggers (microseconds).
+        var candidates = extractHeuristic(from: message)
+        let coveredCategories = Set(candidates.map(\.category))
+
+        // Layer 2: NLTagger named entities (milliseconds).
+        // Skip categories already covered by Layer 1 to avoid duplicates.
+        let nlCandidates = NLExtractionPass.extract(from: message)
+        for c in nlCandidates where !coveredCategories.contains(c.category) {
+            candidates.append(c)
+        }
+
+        // Layer 3: Structured LLM extraction (seconds).
+        // Only when the cheap layers found nothing and the message is
+        // long enough to plausibly contain extractable information.
+        if candidates.isEmpty
+            && message.content.count >= Self.llmMinMessageLength,
+           let runtime,
+           runtime.loadedModel != nil
+        {
             do {
-                let candidates = try await extractStructured(
+                let llmCandidates = try await extractStructured(
                     from: message, using: runtime
                 )
-                if !candidates.isEmpty { return candidates }
+                candidates.append(contentsOf: llmCandidates)
             } catch {
-                // Structured extraction failed — fall through to heuristic.
+                // Structured extraction failed — return empty.
             }
         }
 
-        return extractHeuristic(from: message)
+        return candidates
     }
 
     // MARK: - Structured extraction

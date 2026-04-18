@@ -153,6 +153,15 @@ final class LlamaCppRuntime: LocalLLMRuntime, @unchecked Sendable {
         await unload(reason: .manual)
     }
 
+    // MARK: - Session invalidation
+
+    /// Removes the KV-cache session record for `conversationID`.
+    /// Call when the user deletes a conversation so stale tokens don't
+    /// occupy memory and don't mislead the prefix-match logic on reuse.
+    func invalidateSession(for conversationID: UUID) async {
+        await runtimeActor.removeSession(for: conversationID)
+    }
+
     // MARK: - Generate
 
     func generate(
@@ -192,13 +201,26 @@ final class LlamaCppRuntime: LocalLLMRuntime, @unchecked Sendable {
                 var tokens = 0
                 var firstTokenDate: Date? = nil
 
+                // Fetch any existing KV-cache session for this conversation so we
+                // can pass the cached token array to stream() for prefix reuse.
+                let convID = parameters.conversationID
+                let cachedTokens: [Int32]
+                if let convID, let sess = await actor.session(for: convID) {
+                    cachedTokens = sess.cachedPromptTokens
+                } else {
+                    cachedTokens = []
+                }
+                let cacheBox = StreamCacheBox()
+
                 do {
                     let stream = try ctx.stream(
                         prompt: renderedPrompt,
                         maxTokens: parameters.maxTokens,
                         temperature: Float(parameters.temperature),
                         topP: Float(parameters.topP),
-                        stopSequences: parameters.stopSequences
+                        stopSequences: parameters.stopSequences,
+                        cachedTokens: cachedTokens,
+                        cacheBox: cacheBox
                     )
 
                     for try await piece in stream {
@@ -230,6 +252,16 @@ final class LlamaCppRuntime: LocalLLMRuntime, @unchecked Sendable {
 
                         tokens += 1
                         continuation.yield(.token(piece))
+                    }
+
+                    // Persist the prompt token sequence so the next turn for the
+                    // same conversation can skip re-evaluating the shared prefix.
+                    if let convID, !cacheBox.finalPromptTokens.isEmpty {
+                        let updated = ConversationRuntimeSession(
+                            conversationID: convID,
+                            cachedPromptTokens: cacheBox.finalPromptTokens
+                        )
+                        await actor.updateSession(updated)
                     }
 
                     let stats = Self.makeStats(tokens: tokens, started: started)
@@ -267,15 +299,8 @@ final class LlamaCppRuntime: LocalLLMRuntime, @unchecked Sendable {
     /// Call this from a `UIApplication.didReceiveMemoryWarningNotification`
     /// observer. Respects `unloadPolicy`: no-op when policy is `.manual`.
     ///
-    /// Wire into the App lifecycle in `HomeHubApp.swift`:
-    /// ```swift
-    /// .onReceive(NotificationCenter.default.publisher(
-    ///     for: UIApplication.didReceiveMemoryWarningNotification)) { _ in
-    ///     Task { await container.runtimeManager.runtime.handleMemoryPressure() }
-    /// }
-    /// ```
-    /// TODO: Wire into `HomeHubApp` once memory-pressure tests on device
-    /// confirm the correct UX (reload prompt vs. silent background reload).
+    /// Wired into the App lifecycle via `AppContainer.handleMemoryPressure()`,
+    /// which is invoked from `HomeHubApp.swift`'s memory-warning observer.
     func handleMemoryPressure() async {
         guard self.unloadPolicy == .onBackgroundOrMemoryPressure else { return }
         await telemetry.emit(.memoryPressureReceived)
@@ -285,16 +310,12 @@ final class LlamaCppRuntime: LocalLLMRuntime, @unchecked Sendable {
 
     /// Unloads the model when the app enters the background.
     ///
-    /// Call this from a `ScenePhase.background` observer in `HomeHubApp`:
-    /// ```swift
-    /// .onChange(of: scenePhase) { phase in
-    ///     if phase == .background {
-    ///         Task { await container.runtimeManager.runtime.handleBackground() }
-    ///     }
-    /// }
-    /// ```
-    /// TODO: Wire into `HomeHubApp` and confirm reload-on-foreground UX.
+    /// Wired into the App lifecycle via `AppContainer.handleScenePhaseChange(_:)`,
+    /// which is invoked from `HomeHubApp.swift`'s `.onChange(of: scenePhase)` observer.
     func handleBackground() async {
+        // Emit before the policy check so diagnostics can verify the event
+        // was received even when policy is .manual (no unload happens).
+        await telemetry.emit(.backgroundEventReceived)
         guard self.unloadPolicy != .manual else { return }
         log.info("App backgrounded — unloading model per policy '\(String(describing: self.unloadPolicy))'.")
         await unload(reason: .appBackground)

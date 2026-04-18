@@ -3,6 +3,7 @@ import Foundation
 /// Method used to extract a memory item from conversation.
 enum ExtractionMethod: String, Codable, Hashable {
     case heuristic
+    case naturalLanguage
     case structured
 }
 

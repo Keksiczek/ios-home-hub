@@ -46,10 +46,12 @@ struct LlamaContextHandle: @unchecked Sendable {
 
     private let contextPtr: OpaquePointer   // llama_context *
     private let modelPtr: OpaquePointer     // llama_model *
+    private let contextLength: Int
 
-    private init(context: OpaquePointer, model: OpaquePointer) {
+    private init(context: OpaquePointer, model: OpaquePointer, contextLength: Int) {
         self.contextPtr = context
         self.modelPtr = model
+        self.contextLength = contextLength
     }
 
     // MARK: - One-time backend init
@@ -63,7 +65,8 @@ struct LlamaContextHandle: @unchecked Sendable {
     static func load(
         modelPath: String,
         contextLength: Int,
-        gpuLayers: GPULayers
+        gpuLayers: GPULayers,
+        capabilities: ModelCapabilityProfile = .default
     ) throws -> LlamaContextHandle {
         _ = backendInitOnce
 
@@ -77,18 +80,20 @@ struct LlamaContextHandle: @unchecked Sendable {
             )
         }
 
+        // All model-specific parameters come from the resolved capability profile
+        // rather than ad-hoc conditionals. See ModelCapabilityProfile.swift.
         var ctxParams = llama_context_default_params()
-        ctxParams.n_ctx    = UInt32(contextLength)
-        ctxParams.n_batch  = 512
-        ctxParams.n_ubatch = 512
-        ctxParams.flash_attn = true
+        ctxParams.n_ctx      = UInt32(contextLength)
+        ctxParams.n_batch    = 512                             // keep large for prompt eval
+        ctxParams.n_ubatch   = UInt32(capabilities.nUBatch)   // smaller for generation TTFT
+        ctxParams.flash_attn = capabilities.supportsFlashAttention
 
         guard let ctx = llama_init_from_model(model, ctxParams) else {
             llama_model_free(model)
             throw RuntimeError.outOfMemory
         }
 
-        return LlamaContextHandle(context: ctx, model: model)
+        return LlamaContextHandle(context: ctx, model: model, contextLength: contextLength)
     }
 
     // MARK: - Generation
@@ -98,10 +103,13 @@ struct LlamaContextHandle: @unchecked Sendable {
         maxTokens: Int,
         temperature: Float,
         topP: Float,
-        stopSequences: [String]
+        stopSequences: [String],
+        cachedTokens: [Int32] = [],
+        cacheBox: StreamCacheBox? = nil
     ) throws -> AsyncThrowingStream<String, Error> {
         let ctx = contextPtr
         let model = modelPtr
+        let n_ctx = contextLength
 
         return AsyncThrowingStream { continuation in
             let task = Task.detached(priority: .userInitiated) {
@@ -121,45 +129,88 @@ struct LlamaContextHandle: @unchecked Sendable {
                     }
 
                     guard nTokens > 0 else {
+                        cacheBox?.finalPromptTokens = []
                         continuation.finish(throwing: RuntimeError.underlying("Tokenisation failed"))
                         return
                     }
 
                     let promptTokens = Array(tokens.prefix(Int(nTokens)))
 
-                    // --- 2. Clear KV cache ---
-                    llama_kv_cache_clear(ctx)
+                    // --- 2. Context-length guard ---
+                    // Refuse to evaluate when the prompt alone already exceeds 90% of
+                    // n_ctx. Without this guard the decode would silently truncate or
+                    // crash. The PromptAssemblyService's history-token-budget (FIX 3)
+                    // is the first line of defence; this is the belt-and-braces check
+                    // at the bridge boundary.
+                    let ctxBudget = Int(Double(n_ctx) * 0.9)
+                    guard promptTokens.count <= ctxBudget else {
+                        cacheBox?.finalPromptTokens = []
+                        continuation.finish(throwing: RuntimeError.underlying(
+                            "Prompt too large for context window: \(promptTokens.count) tokens " +
+                            "exceeds safe budget of \(ctxBudget) (n_ctx = \(n_ctx)). " +
+                            "Trim the conversation history or increase the model's context length."
+                        ))
+                        return
+                    }
 
-                    // --- 3. Evaluate prompt in batches ---
+                    // --- 2b. KV-cache reuse or clear ---
+                    // Compute how many leading tokens are already resident in the KV
+                    // cache from the previous turn. If the reusable prefix covers at
+                    // least 50% of the new prompt we skip llama_kv_cache_clear and
+                    // begin prompt evaluation at prefixLen — those tokens are already
+                    // decoded and their K/V activations are still valid.
+                    //
+                    // llama_batch_get_one with pos=nullptr auto-continues from the
+                    // current KV cache position, so starting at prefixLen is correct
+                    // without any llama_kv_cache_seq_shift calls.
+                    //
+                    // If the prefix is too short (first turn, different conversation,
+                    // or regeneration with a different system prompt) we clear and
+                    // re-evaluate the whole prompt as before.
+                    var prefixLen = 0
+                    if !cachedTokens.isEmpty {
+                        var i = 0
+                        while i < cachedTokens.count && i < promptTokens.count
+                                && cachedTokens[i] == promptTokens[i] { i += 1 }
+                        let ratio = Double(i) / Double(promptTokens.count)
+                        if ratio >= ConversationRuntimeSession.minReuseRatio {
+                            prefixLen = i
+                        }
+                    }
+
+                    if prefixLen == 0 {
+                        llama_kv_cache_clear(ctx)
+                    }
+
+                    // --- 3. Evaluate prompt in batches (skip already-cached prefix) ---
                     let batchSize = 512
-                    var pos: Int32 = 0
-                    for batchStart in stride(from: 0, to: promptTokens.count, by: batchSize) {
+                    for batchStart in stride(from: prefixLen, to: promptTokens.count, by: batchSize) {
                         if Task.isCancelled {
+                            cacheBox?.finalPromptTokens = promptTokens
                             continuation.finish()
                             return
                         }
 
                         let batchEnd = min(batchStart + batchSize, promptTokens.count)
                         let batchSlice = Array(promptTokens[batchStart..<batchEnd])
-                        let n = Int32(batchSlice.count)
 
                         let batch = batchSlice.withUnsafeBufferPointer { buf in
-                            llama_batch_get_one(UnsafeMutablePointer(mutating: buf.baseAddress!), n)
+                            llama_batch_get_one(UnsafeMutablePointer(mutating: buf.baseAddress!), Int32(batchSlice.count))
                         }
 
                         let status = llama_decode(ctx, batch)
                         if status != 0 {
+                            cacheBox?.finalPromptTokens = promptTokens
                             continuation.finish(throwing: RuntimeError.underlying(
                                 "llama_decode failed during prompt evaluation (status: \(status))"
                             ))
                             return
                         }
-                        pos += n
                     }
 
                     // --- 4. Set up sampler chain ---
-                    let samplerParams = llama_sampler_chain_default_params()
-                    guard let sampler = llama_sampler_chain_init(samplerParams) else {
+                    guard let sampler = llama_sampler_chain_init(llama_sampler_chain_default_params()) else {
+                        cacheBox?.finalPromptTokens = promptTokens
                         continuation.finish(throwing: RuntimeError.underlying("Failed to init sampler chain"))
                         return
                     }
@@ -176,7 +227,9 @@ struct LlamaContextHandle: @unchecked Sendable {
 
                     for _ in 0..<maxTokens {
                         if Task.isCancelled {
-                            llama_kv_cache_clear(ctx)
+                            // Don't clear the KV cache — the prefix is still valid
+                            // and can be reused on the next turn for the same conversation.
+                            cacheBox?.finalPromptTokens = promptTokens
                             continuation.finish()
                             return
                         }
@@ -184,10 +237,8 @@ struct LlamaContextHandle: @unchecked Sendable {
                         let newToken = llama_sampler_sample(sampler, ctx, -1)
 
                         if newToken == eosToken {
-                            // Flush any buffered text
-                            if !stopBuffer.isEmpty {
-                                continuation.yield(stopBuffer)
-                            }
+                            if !stopBuffer.isEmpty { continuation.yield(stopBuffer) }
+                            cacheBox?.finalPromptTokens = promptTokens
                             continuation.finish()
                             return
                         }
@@ -211,16 +262,13 @@ struct LlamaContextHandle: @unchecked Sendable {
                         // Stop sequence detection
                         if !stopSequences.isEmpty {
                             stopBuffer += piece
-                            var matched = false
                             for seq in stopSequences {
                                 if stopBuffer.contains(seq) {
-                                    // Yield text before the stop sequence
                                     if let range = stopBuffer.range(of: seq) {
                                         let before = String(stopBuffer[stopBuffer.startIndex..<range.lowerBound])
-                                        if !before.isEmpty {
-                                            continuation.yield(before)
-                                        }
+                                        if !before.isEmpty { continuation.yield(before) }
                                     }
+                                    cacheBox?.finalPromptTokens = promptTokens
                                     continuation.finish()
                                     return
                                 }
@@ -243,6 +291,7 @@ struct LlamaContextHandle: @unchecked Sendable {
                         }
                         let decodeStatus = llama_decode(ctx, nextBatch)
                         if decodeStatus != 0 {
+                            cacheBox?.finalPromptTokens = promptTokens
                             continuation.finish(throwing: RuntimeError.underlying(
                                 "llama_decode failed during generation (status: \(decodeStatus))"
                             ))
@@ -250,13 +299,13 @@ struct LlamaContextHandle: @unchecked Sendable {
                         }
                     }
 
-                    // Flush remaining buffer
-                    if !stopBuffer.isEmpty {
-                        continuation.yield(stopBuffer)
-                    }
+                    // Max tokens reached — flush remaining buffer
+                    if !stopBuffer.isEmpty { continuation.yield(stopBuffer) }
+                    cacheBox?.finalPromptTokens = promptTokens
                     continuation.finish()
 
                 } catch {
+                    cacheBox?.finalPromptTokens = []
                     continuation.finish(throwing: error)
                 }
             }

@@ -13,8 +13,15 @@ actor SkillManager {
     private var skills: [String: any Skill] = [:]
     
     private init() {
+        // WebSearchSkill is intentionally omitted from the default registration.
+        // PromptAssemblyService injects an on-device privacy guardrail
+        // ("You run entirely on-device with no network access…") that directly
+        // contradicts any web-search tool instructions. The model would behave
+        // unpredictably if both were present. Register WebSearchSkill explicitly
+        // via `register(_:)` once real network-enabled search is wired up and
+        // the privacy guardrail is made conditional.
         let defaults: [any Skill] = [
-            CalculatorSkill(), WebSearchSkill(), CalendarSkill(), HomeKitSkill(), RemindersSkill()
+            CalculatorSkill(), CalendarSkill(), HomeKitSkill(), RemindersSkill()
         ]
         for skill in defaults {
             skills[skill.name.lowercased()] = skill
@@ -28,44 +35,36 @@ actor SkillManager {
     /// Generates L4 Prompt string explaining all available skills.
     func buildSystemInstructions() -> String {
         guard !skills.isEmpty else { return "" }
-        
+
         var instructions = "You have access to the following native tools/skills:\n"
         for (_, skill) in skills {
             instructions += "- \(skill.name): \(skill.description)\n"
         }
-        
+
         instructions += """
 
-        To use a tool, you MUST reply with the exact format:
-        <Action:SkillName:Input>
-        
-        For example, if you want to calculate 2+2, you output:
-        <Action:Calculator:2+2>
-        
-        Important rules for tool use:
-        1. When you output an <Action:...> tag, STOP generation immediately. Do NOT output anything else.
-        2. The system will process your action and provide you with an <Observation:Result>.
-        3. Once you receive the observation, use that information to formulate your final user-facing response.
-        4. Do NOT fake observations or guess the result. Always wait for the actual <Observation:>.
+        To use a tool, emit a single `<tool_call>` block containing a JSON object \
+        with a `name` field (skill name) and an `input` field (argument string):
+
+        <tool_call>{"name": "Calculator", "input": "25 * 4 + 10"}</tool_call>
+
+        Important rules:
+        1. Output ONLY the `<tool_call>` block — stop immediately after `</tool_call>`. Add nothing else.
+        2. The system executes the tool and returns the result in an `<Observation>` block.
+        3. Use the observation to write your final user-facing response.
+        4. Never fabricate an observation or guess the result. Always wait for the real `<Observation>`.
+        5. Write `input` as a plain string. Do not nest JSON or manually escape quotes inside `input`.
         """
-        
+
         return instructions
     }
-    
-    /// Parses any <Action:Name:Input> from text.
+
+    /// Parses the first `<tool_call>` envelope in `text`.
+    ///
+    /// Returns `nil` if no valid envelope is present, the JSON is malformed,
+    /// or either the `name` or `input` field is missing.
     func parseAction(from text: String) -> ActionCommand? {
-        let pattern = "<Action:([^:]+):([^>]+)>"
-        guard let regex = try? NSRegularExpression(pattern: pattern),
-              let match = regex.firstMatch(in: text, range: NSRange(location: 0, length: (text as NSString).length)) else {
-            return nil
-        }
-        
-        let nsText = text as NSString
-        let name = nsText.substring(with: match.range(at: 1)).trimmingCharacters(in: .whitespacesAndNewlines)
-        let input = nsText.substring(with: match.range(at: 2)).trimmingCharacters(in: .whitespacesAndNewlines)
-        let fullTag = nsText.substring(with: match.range)
-        
-        return ActionCommand(skillName: name, input: input, fullTag: fullTag)
+        ToolCallEnvelope.parse(from: text)?.toActionCommand()
     }
     
     /// Executes the specified skill command.

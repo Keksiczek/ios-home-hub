@@ -164,36 +164,26 @@ final class AppContainer: ObservableObject {
 
     // MARK: - Lifecycle
 
-    /// Forward memory-pressure notification to the runtime.
-    /// Also increments `memoryWarningCount` and syncs `RuntimeManager` state
-    /// when the runtime auto-unloads the model.
+    /// Forward memory-pressure notification to the runtime via RuntimeManager.
+    ///
+    /// `RuntimeManager.handleMemoryPressure()` calls through to the runtime's
+    /// own implementation (which respects its unload policy) and syncs
+    /// `activeModel` / `state` back to idle if an auto-unload occurred.
     func handleMemoryPressure() async {
         memoryWarningCount += 1
-        if let llama = runtimeManager.runtime as? LlamaCppRuntime {
-            await llama.handleMemoryPressure()
-            // Sync RuntimeManager if the runtime silently unloaded the model.
-            if await llama.currentModel() == nil && runtimeManager.activeModel != nil {
-                let name = runtimeManager.activeModel?.displayName ?? "model"
-                runtimeManager.clearState()
-                let time = DateFormatter.localizedString(from: .now, dateStyle: .none, timeStyle: .medium)
-                lastUnloadNotification = "\(time) – '\(name)' unloaded (memory pressure #\(memoryWarningCount))"
-            }
+        if let unloaded = await runtimeManager.handleMemoryPressure() {
+            let time = DateFormatter.localizedString(from: .now, dateStyle: .none, timeStyle: .medium)
+            lastUnloadNotification = "\(time) – '\(unloaded.displayName)' unloaded (memory pressure #\(memoryWarningCount))"
         }
     }
 
-    /// Forward scene-phase changes to the runtime.
+    /// Forward scene-phase changes to the runtime via RuntimeManager.
     func handleScenePhaseChange(_ phase: ScenePhase) async {
         switch phase {
         case .background:
-            if let llama = runtimeManager.runtime as? LlamaCppRuntime {
-                await llama.handleBackground()
-                // Sync RuntimeManager if the runtime silently unloaded the model.
-                if await llama.currentModel() == nil && runtimeManager.activeModel != nil {
-                    let name = runtimeManager.activeModel?.displayName ?? "model"
-                    runtimeManager.clearState()
-                    let time = DateFormatter.localizedString(from: .now, dateStyle: .none, timeStyle: .medium)
-                    lastUnloadNotification = "\(time) – '\(name)' unloaded (app backgrounded)"
-                }
+            if let unloaded = await runtimeManager.handleBackground() {
+                let time = DateFormatter.localizedString(from: .now, dateStyle: .none, timeStyle: .medium)
+                lastUnloadNotification = "\(time) – '\(unloaded.displayName)' unloaded (app backgrounded)"
             }
         case .active:
             // Reload model if it was unloaded while backgrounded.

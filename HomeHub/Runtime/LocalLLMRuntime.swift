@@ -55,14 +55,33 @@ protocol LocalLLMRuntime: AnyObject, Sendable {
         prompt: RuntimePrompt,
         parameters: RuntimeParameters
     ) -> AsyncThrowingStream<RuntimeEvent, Error>
+
+    /// Called when the OS delivers a memory-pressure notification.
+    ///
+    /// Implementations should respect their own unload policy and unload
+    /// the model if appropriate. Default: no-op (used by `MockLocalRuntime`
+    /// and test stubs; the real implementation is in `LlamaCppRuntime`).
+    func handleMemoryPressure() async
+
+    /// Called when the app scene moves to the background.
+    ///
+    /// Implementations should unload the model if their policy requires it.
+    /// Default: no-op (used by `MockLocalRuntime` and test stubs).
+    func handleBackground() async
 }
 
-// MARK: - Default telemetry
+// MARK: - Default implementations
 
 extension LocalLLMRuntime {
     /// Default: no-op telemetry. `MockLocalRuntime` and test stubs inherit
     /// this so they don't need to implement the property.
     var telemetry: RuntimeTelemetry { .noOp }
+
+    /// Default: no-op. Overridden by `LlamaCppRuntime`.
+    func handleMemoryPressure() async {}
+
+    /// Default: no-op. Overridden by `LlamaCppRuntime`.
+    func handleBackground() async {}
 }
 
 // MARK: - Supporting types
@@ -83,6 +102,9 @@ struct RuntimeParameters: Sendable {
     var temperature: Double
     var topP: Double
     var stopSequences: [String]
+    /// Conversation the generation belongs to.
+    /// When set, `LlamaCppRuntime` attempts KV-cache prefix reuse across turns.
+    var conversationID: UUID?
 
     static let balanced = RuntimeParameters(
         maxTokens: 768,

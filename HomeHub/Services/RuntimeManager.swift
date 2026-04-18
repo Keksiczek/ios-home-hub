@@ -69,4 +69,46 @@ final class RuntimeManager: ObservableObject {
     ) -> AsyncThrowingStream<RuntimeEvent, Error> {
         runtime.generate(prompt: prompt, parameters: parameters)
     }
+
+    // MARK: - KV-cache session management
+
+    /// Removes the KV-cache session for `conversationID`.
+    /// No-op when the runtime doesn't support session tracking (e.g. mock).
+    func invalidateSession(for conversationID: UUID) async {
+        await (runtime as? LlamaCppRuntime)?.invalidateSession(for: conversationID)
+    }
+
+    // MARK: - Lifecycle forwarding
+
+    /// Forwards a memory-pressure event to the runtime.
+    ///
+    /// If the runtime auto-unloads the model in response, `RuntimeManager`
+    /// syncs its own `activeModel` / `state` to `.idle` via `clearState()`.
+    ///
+    /// - Returns: The model that was unloaded, or `nil` if no model was loaded
+    ///   or the runtime chose not to unload (e.g. policy is `.manual`).
+    @discardableResult
+    func handleMemoryPressure() async -> LocalModel? {
+        let modelBeforeEvent = activeModel
+        await runtime.handleMemoryPressure()
+        guard modelBeforeEvent != nil, runtime.loadedModel == nil else { return nil }
+        clearState()
+        return modelBeforeEvent
+    }
+
+    /// Forwards a scene-background event to the runtime.
+    ///
+    /// If the runtime auto-unloads the model, `RuntimeManager` syncs its
+    /// observable state to `.idle` via `clearState()`.
+    ///
+    /// - Returns: The model that was unloaded, or `nil` if no model was loaded
+    ///   or the runtime chose not to unload (e.g. policy is `.manual`).
+    @discardableResult
+    func handleBackground() async -> LocalModel? {
+        let modelBeforeEvent = activeModel
+        await runtime.handleBackground()
+        guard modelBeforeEvent != nil, runtime.loadedModel == nil else { return nil }
+        clearState()
+        return modelBeforeEvent
+    }
 }
