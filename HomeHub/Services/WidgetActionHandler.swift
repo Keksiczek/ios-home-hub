@@ -33,9 +33,9 @@ final class WidgetActionHandler: ObservableObject, WidgetActionHandling {
         let command = ActionCommand(
             skillName: "HomeKitSearch",
             input: json,
-            fullTag: "<Action:HomeKitSearch:\(json)>"
+            fullTag: "<tool_call>{\"name\": \"HomeKitSearch\", \"input\": \"\(json)\"}</tool_call>"
         )
-        
+
         let output = await SkillManager.shared.execute(command)
         let success = output.lowercased().contains("úspěch")
         let result = WidgetActionResult(
@@ -47,16 +47,16 @@ final class WidgetActionHandler: ObservableObject, WidgetActionHandling {
         HHHaptics.notification(success ? .success : .error, enabled: true)
         return result
     }
-    
+
     func handleSlider(label: String, value: Double) async -> WidgetActionResult {
         let json = """
         {"accessoryName": "\(label)", "characteristic": "brightness", "value": \(Int(value))}
         """
-        
+
         let command = ActionCommand(
             skillName: "HomeKitSearch",
             input: json,
-            fullTag: "<Action:HomeKitSearch:\(json)>"
+            fullTag: "<tool_call>{\"name\": \"HomeKitSearch\", \"input\": \"\(json)\"}</tool_call>"
         )
         
         let output = await SkillManager.shared.execute(command)
