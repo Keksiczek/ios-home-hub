@@ -20,7 +20,7 @@ struct HomeHubApp: App {
                 .environmentObject(container.conversationService)
                 .environmentObject(container.onboardingService)
                 .environmentObject(container.widgetActionHandler)
-                .environmentObject(container.promptAssemblyService)
+                .environmentObject(container.promptBudgetReporter)
                 .tint(HHTheme.accent)
                 .preferredColorScheme(container.settingsService.current.theme.colorScheme)
                 .onReceive(NotificationCenter.default.publisher(

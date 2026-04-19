@@ -86,5 +86,5 @@ struct MainTabView: View {
         .environmentObject(container.runtimeManager)
         .environmentObject(container.conversationService)
         .environmentObject(container.onboardingService)
-        .environmentObject(container.promptAssemblyService)
+        .environmentObject(container.promptBudgetReporter)
 }
