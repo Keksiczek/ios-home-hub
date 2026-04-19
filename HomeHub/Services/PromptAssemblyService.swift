@@ -24,11 +24,25 @@ import Foundation
 ///
 /// Privacy guardrails + recent conversation messages + current input
 /// follow the memory layers.
+///
+/// ## Observability
+/// The service is intentionally a plain `final class` rather than an
+/// `ObservableObject`. The only piece of state SwiftUI cares about —
+/// the most recent prompt budget report — lives on a separate
+/// `PromptBudgetReporter` so the assembly pipeline can stay free of
+/// publisher overhead and so previews/tests can construct a service
+/// without wiring an observable.
 @MainActor
-final class PromptAssemblyService: ObservableObject {
+final class PromptAssemblyService {
 
-    /// Budget report from the most recent `build(from:)` call.
-    @Published private(set) var lastReport: PromptBudgetReport?
+    /// Optional sink for the budget report emitted on every `build(from:)`.
+    /// In production this is the shared `PromptBudgetReporter` exposed by
+    /// `AppContainer`; tests/previews/previews can leave it `nil`.
+    private let reporter: PromptBudgetReporter?
+
+    init(reporter: PromptBudgetReporter? = nil) {
+        self.reporter = reporter
+    }
 
     func build(from package: PromptContextPackage) -> RuntimePrompt {
         let mode = package.promptMode
@@ -59,7 +73,7 @@ final class PromptAssemblyService: ObservableObject {
         let historyTokens = trimResult.kept.reduce(0) {
             $0 + budgeter.tokensForMessage(content: $1.content)
         }
-        lastReport = PromptBudgetReport(
+        let report = PromptBudgetReport(
             family: profile.family,
             mode: mode,
             sections: [
@@ -71,6 +85,7 @@ final class PromptAssemblyService: ObservableObject {
             historyMessagesDropped: trimResult.dropped,
             generationReserveTokens: profile.generationReserveTokens
         )
+        reporter?.publish(report)
 
         return RuntimePrompt(systemPrompt: system, messages: runtimeMessages)
     }

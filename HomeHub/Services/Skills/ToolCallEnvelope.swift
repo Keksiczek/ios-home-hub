@@ -16,7 +16,7 @@ import Foundation
 /// ## Field contract
 /// - `name`  — exact registered skill name (case-insensitive at execution).
 /// - `input` — argument string forwarded verbatim to `Skill.execute(input:)`.
-struct ToolCallEnvelope: Decodable, Sendable, Equatable {
+struct ToolCallEnvelope: Codable, Sendable, Equatable {
     let name: String
     let input: String
 }
@@ -51,23 +51,29 @@ extension ToolCallEnvelope {
     }
 
     /// Converts to an `ActionCommand` for the skill execution pipeline.
+    /// `fullTag` is rendered through `JSONEncoder` so callers never have
+    /// to hand-escape quotes or worry about embedded JSON breaking the
+    /// envelope — the encoder handles every legal Unicode payload.
     func toActionCommand() -> ActionCommand {
-        let payload = "{\"name\": \"\(jsonEscape(name))\", \"input\": \"\(jsonEscape(input))\"}"
-        return ActionCommand(
+        ActionCommand(
             skillName: name,
             input: input,
-            fullTag: "\(Self.openTag)\(payload)\(Self.closeTag)"
+            fullTag: renderTag()
         )
     }
 
-    // MARK: - Private
-
-    private func jsonEscape(_ s: String) -> String {
-        s
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-            .replacingOccurrences(of: "\n", with: "\\n")
-            .replacingOccurrences(of: "\r", with: "\\r")
-            .replacingOccurrences(of: "\t", with: "\\t")
+    /// Renders the `<tool_call>{…}</tool_call>` wire form for `self`.
+    /// Falls back to a minimal best-effort string if encoding ever fails
+    /// (cannot in practice — `String` always encodes), so callers can
+    /// rely on a non-empty tag without a do/catch.
+    func renderTag() -> String {
+        let payload: String
+        if let data = try? JSONEncoder().encode(self),
+           let json = String(data: data, encoding: .utf8) {
+            payload = json
+        } else {
+            payload = "{}"
+        }
+        return "\(Self.openTag)\(payload)\(Self.closeTag)"
     }
 }

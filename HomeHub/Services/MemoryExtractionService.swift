@@ -23,16 +23,22 @@ import Foundation
 /// - A model is currently loaded in the runtime.
 actor MemoryExtractionService {
 
-    private let runtime: (any LocalLLMRuntime)?
+    /// `RuntimeManager` rather than a raw `LocalLLMRuntime` so the service
+    /// observes the same load/unload state as the rest of the app: when
+    /// the user-driven manager unloads a model under memory pressure,
+    /// `activeModel` flips to `nil` and Layer 3 stops firing. Holding a
+    /// raw runtime would have hidden that transition until the runtime's
+    /// own `loadedModel` mirror caught up.
+    private let runtime: RuntimeManager?
 
     /// Messages shorter than this skip the LLM extraction layer even
     /// when the cheaper layers found nothing.
     static let llmMinMessageLength = 40
 
-    /// - Parameter runtime: The local LLM runtime used for structured
+    /// - Parameter runtime: The runtime manager used for structured
     ///   extraction. Pass `nil` for previews/tests or when only
     ///   heuristic + NL extraction is desired.
-    init(runtime: (any LocalLLMRuntime)? = nil) {
+    init(runtime: RuntimeManager? = nil) {
         self.runtime = runtime
     }
 
@@ -57,7 +63,7 @@ actor MemoryExtractionService {
         if candidates.isEmpty
             && message.content.count >= Self.llmMinMessageLength,
            let runtime,
-           runtime.loadedModel != nil
+           await runtime.activeModel != nil
         {
             do {
                 let llmCandidates = try await extractStructured(
@@ -76,13 +82,13 @@ actor MemoryExtractionService {
 
     private func extractStructured(
         from message: Message,
-        using runtime: any LocalLLMRuntime
+        using runtime: RuntimeManager
     ) async throws -> [MemoryCandidate] {
-        let prompt = ExtractionPromptBuilder.buildPrompt(for: message)
+        let prompt = await ExtractionPromptBuilder.buildPrompt(for: message)
         let parameters = ExtractionPromptBuilder.extractionParameters
 
         var fullResponse = ""
-        let stream = runtime.generate(prompt: prompt, parameters: parameters)
+        let stream = await runtime.generate(prompt: prompt, parameters: parameters)
         for try await event in stream {
             switch event {
             case .token(let piece):

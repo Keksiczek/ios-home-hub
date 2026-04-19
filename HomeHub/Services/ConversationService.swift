@@ -29,6 +29,7 @@ final class ConversationService: ObservableObject {
         memory: MemoryService,
         settings: SettingsService,
         personalization: PersonalizationService,
+        summarizer: SummarizationService? = nil,
         embeddingService: EmbeddingService = EmbeddingService()
     ) {
         self.store = store
@@ -37,7 +38,10 @@ final class ConversationService: ObservableObject {
         self.memory = memory
         self.settings = settings
         self.personalization = personalization
-        self.summarizer = SummarizationService(runtime: runtime, prompts: prompts)
+        // Default-construct the summarizer when callers (tests/previews)
+        // don't supply one. Production goes through `AppContainer` which
+        // always injects the shared instance.
+        self.summarizer = summarizer ?? SummarizationService(runtime: runtime, prompts: prompts)
         self.embeddingService = embeddingService
     }
 
@@ -206,6 +210,13 @@ final class ConversationService: ObservableObject {
 
         var assistantMessage = Message.assistantPlaceholder(in: conversationID)
         list.append(assistantMessage)
+        // Index of the placeholder in the conversation's message array.
+        // Used by the streaming hot path to mutate the message in-place via
+        // dictionary subscript (`messagesByConversation[id]?[idx] = …`)
+        // instead of copying the array, scanning for the ID, and writing back
+        // on every token. Stable for the lifetime of this `performSend` call
+        // because nothing else appends to this array while the stream runs.
+        let assistantIndex = list.count - 1
         messagesByConversation[conversationID] = list
         try? await store.save(message: assistantMessage)
 
@@ -215,8 +226,10 @@ final class ConversationService: ObservableObject {
         // older turns are never silently dropped. Generated at most once per
         // conversation (stored in summaryByConversation).
         let contextLength = runtime.activeModel?.contextLength ?? 4_096
-        let totalChars = priorMessages.reduce(0) { $0 + $1.content.count }
-        let estimatedFill = Double(totalChars / 4) / Double(contextLength)
+        let estimatedFill = TokenEstimator.contextFill(
+            messages: priorMessages,
+            contextLength: contextLength
+        )
 
         var summaryText: String? = summaryByConversation[conversationID]?.summary
         if priorMessages.count > 20 && estimatedFill > 0.6 && summaryByConversation[conversationID] == nil {
@@ -304,23 +317,30 @@ final class ConversationService: ObservableObject {
         let maxLoops = 3
         var currentLoop = 0
         var loopPackage = package
-        
+
         while currentLoop < maxLoops {
+            // Honor user-initiated cancellation between agentic-loop iterations
+            // so we don't kick off another inference pass once `cancelStream`
+            // has fired. Stream-level cancellation is already handled by the
+            // runtime via `.finished(.cancelled)`; this guards the gap between
+            // the previous iteration's `.finished` event and the next call to
+            // `runtime.generate(...)`.
+            if Task.isCancelled { break }
             currentLoop += 1
-            
+
             let runtimePrompt = prompts.build(from: loopPackage)
             assistantMessage.status = .streaming
-            
+
             do {
                 let stream = runtime.generate(prompt: runtimePrompt, parameters: parameters)
                 for try await event in stream {
                     switch event {
                     case .token(let piece):
                         assistantMessage.content += piece
-                        updateMessage(assistantMessage, in: conversationID)
+                        messagesByConversation[conversationID]?[assistantIndex] = assistantMessage
                     case .finished(let reason, _):
                         assistantMessage.status = (reason == .cancelled) ? .cancelled : .complete
-                        updateMessage(assistantMessage, in: conversationID)
+                        messagesByConversation[conversationID]?[assistantIndex] = assistantMessage
                         try? await store.save(message: assistantMessage)
                     }
                 }
@@ -331,30 +351,30 @@ final class ConversationService: ObservableObject {
                 } else {
                     assistantMessage.content += "\n\n⚠︎ \(error.localizedDescription)"
                 }
-                updateMessage(assistantMessage, in: conversationID)
+                messagesByConversation[conversationID]?[assistantIndex] = assistantMessage
                 try? await store.save(message: assistantMessage)
                 break
             }
-            
+
             // Check for Agentic Action
             if assistantMessage.status == .complete {
                 if let actionCommand = await SkillManager.shared.parseAction(from: assistantMessage.content) {
                     // Show temporary UI indicator
                     let originalContent = assistantMessage.content
                     assistantMessage.content = originalContent + "\n\n*(Agent používá skill: \(actionCommand.skillName)...)*"
-                    updateMessage(assistantMessage, in: conversationID)
-                    
+                    messagesByConversation[conversationID]?[assistantIndex] = assistantMessage
+
                     // Execute native skill
                     let result = await SkillManager.shared.execute(actionCommand)
-                    
+
                     // Seed the context for the next loop so LLM sees what it did and what came back
                     let actionMsg = Message.assistantPlaceholder(in: conversationID)
                     var actionMsgCopy = actionMsg
                     actionMsgCopy.content = originalContent
                     actionMsgCopy.status = .complete
-                    
+
                     let obsMsg = Message.user("<Observation>\n\(result)\n</Observation>", in: conversationID)
-                    
+
                     loopPackage.recentMessages.append(actionMsgCopy)
                     loopPackage.recentMessages.append(obsMsg)
                     loopPackage.promptMode = .toolFollowup
@@ -362,14 +382,24 @@ final class ConversationService: ObservableObject {
                     // Reset message state for the final response stream
                     assistantMessage.content = ""
                     assistantMessage.status = .streaming
-                    updateMessage(assistantMessage, in: conversationID)
-                    
+                    messagesByConversation[conversationID]?[assistantIndex] = assistantMessage
+
                     continue
                 }
             }
-            
+
             // If no action was needed, break and finish turn
             break
+        }
+
+        // Final cancellation reconciliation: if the user cancelled mid-stream
+        // and the message wasn't already marked as `.cancelled` by the runtime
+        // (or the loop broke before any event arrived), record it now and
+        // persist so the UI doesn't leave a stale `.streaming` placeholder.
+        if Task.isCancelled, assistantMessage.status == .streaming {
+            assistantMessage.status = .cancelled
+            messagesByConversation[conversationID]?[assistantIndex] = assistantMessage
+            try? await store.save(message: assistantMessage)
         }
 
         // Auto-title: rename "New chat" from first user message content.
@@ -403,11 +433,4 @@ final class ConversationService: ObservableObject {
         )
     }
 
-    private func updateMessage(_ message: Message, in conversationID: UUID) {
-        var list = messagesByConversation[conversationID] ?? []
-        if let idx = list.firstIndex(where: { $0.id == message.id }) {
-            list[idx] = message
-            messagesByConversation[conversationID] = list
-        }
-    }
 }

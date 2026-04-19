@@ -53,6 +53,12 @@ targets:
         NSCalendarsFullAccessUsageDescription: "Získávání a modifikace kalendářových dat lokálním AI."
         NSHomeKitUsageDescription: "Asistent potřebuje přístup k domácnosti pro ovládání světel, zásuveek a čtení ze senzorů."
         NSRemindersFullAccessUsageDescription: "Asistent potřebuje přístup k připomínkám pro vytváření a čtení úkolů."
+        # App uses only standard HTTPS/TLS for model downloads and no custom
+        # cryptography — declare exemption so App Store review doesn't flag
+        # the build as missing an export-compliance answer. If this changes
+        # (e.g. adding non-exempt crypto), remove this key and answer the
+        # encryption questionnaire in App Store Connect instead.
+        INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
         SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) HOMEHUB_REAL_RUNTIME"
         SWIFT_OBJC_BRIDGING_HEADER: "HomeHub/Runtime/Bridge/HomeHub-Bridging-Header.h"
         GCC_PREPROCESSOR_DEFINITIONS: "$(inherited) HOMEHUB_REAL_RUNTIME=1"

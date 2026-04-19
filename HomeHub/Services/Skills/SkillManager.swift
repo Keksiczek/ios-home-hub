@@ -9,9 +9,14 @@ struct ActionCommand: Equatable {
 /// Central registry for all tools available to the Agent.
 actor SkillManager {
     static let shared = SkillManager()
-    
+
     private var skills: [String: any Skill] = [:]
-    
+
+    /// Cached output of `buildSystemInstructions()`. Cleared on every
+    /// `register(_:)` call. Skills are otherwise immutable, so this is
+    /// safe to memoise across the per-turn calls in `ConversationService`.
+    private var cachedInstructions: String?
+
     private init() {
         // WebSearchSkill is intentionally omitted from the default registration.
         // PromptAssemblyService injects an on-device privacy guardrail
@@ -27,13 +32,27 @@ actor SkillManager {
             skills[skill.name.lowercased()] = skill
         }
     }
-    
+
     func register(_ skill: any Skill) {
         skills[skill.name.lowercased()] = skill
+        cachedInstructions = nil
     }
-    
+
     /// Generates L4 Prompt string explaining all available skills.
+    /// Result is cached until the next `register(_:)` call so the
+    /// per-turn invocation in `ConversationService.performSend` is free
+    /// after the first build.
     func buildSystemInstructions() -> String {
+        if let cachedInstructions {
+            return cachedInstructions
+        }
+
+        let built = renderInstructions()
+        cachedInstructions = built
+        return built
+    }
+
+    private func renderInstructions() -> String {
         guard !skills.isEmpty else { return "" }
 
         var instructions = "You have access to the following native tools/skills:\n"
@@ -68,16 +87,43 @@ actor SkillManager {
     }
     
     /// Executes the specified skill command.
+    /// Errors are caught and rendered as `"Error executing …"` strings so
+    /// the LLM can incorporate them into its `<Observation>` reasoning
+    /// without crashing the agentic loop.
     func execute(_ command: ActionCommand) async -> String {
         guard let skill = skills[command.skillName.lowercased()] else {
             return "Error: Skill '\(command.skillName)' is not recognized."
         }
-        
+
         do {
-            let result = try await skill.execute(input: command.input)
-            return result
+            return try await skill.execute(input: command.input)
         } catch {
             return "Error executing \(command.skillName): \(error.localizedDescription)"
+        }
+    }
+
+    /// Like `execute(_:)` but rethrows the underlying skill error instead
+    /// of stringifying it. Used by callers (widget action handler, App
+    /// Intents) that need structured success/failure detection rather
+    /// than a localised keyword scan.
+    ///
+    /// Throws `SkillManagerError.unknownSkill` when the skill name does
+    /// not resolve; rethrows whatever the skill itself raised on error.
+    func executeThrowing(_ command: ActionCommand) async throws -> String {
+        guard let skill = skills[command.skillName.lowercased()] else {
+            throw SkillManagerError.unknownSkill(name: command.skillName)
+        }
+        return try await skill.execute(input: command.input)
+    }
+}
+
+enum SkillManagerError: LocalizedError, Equatable {
+    case unknownSkill(name: String)
+
+    var errorDescription: String? {
+        switch self {
+        case .unknownSkill(let name):
+            return "Skill '\(name)' is not recognized."
         }
     }
 }

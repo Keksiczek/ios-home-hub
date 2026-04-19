@@ -36,6 +36,8 @@ final class AppContainer: ObservableObject {
     let memoryExtractionService: MemoryExtractionService
     let memoryService: MemoryService
     let promptAssemblyService: PromptAssemblyService
+    let promptBudgetReporter: PromptBudgetReporter
+    let summarizationService: SummarizationService
     let runtimeManager: RuntimeManager
     let conversationService: ConversationService
     let onboardingService: OnboardingService
@@ -59,10 +61,17 @@ final class AppContainer: ObservableObject {
         let localModels = LocalModelService()
         let downloads = ModelDownloadService(localModels: localModels, catalog: catalog)
         let embedding = EmbeddingService()
-        let extractor = MemoryExtractionService(runtime: runtime)
-        let memory = MemoryService(store: store, settings: settings, extractor: extractor)
-        let prompts = PromptAssemblyService()
         let runtimeManager = RuntimeManager(runtime: runtime)
+        // MemoryExtractionService observes runtime load/unload state via the
+        // RuntimeManager rather than holding a raw LocalLLMRuntime — keeps
+        // every consumer of "is a model loaded?" aligned on the same source
+        // of truth and lets the manager intercept the call (telemetry,
+        // policy gating) before the runtime sees it.
+        let extractor = MemoryExtractionService(runtime: runtimeManager)
+        let memory = MemoryService(store: store, settings: settings, extractor: extractor)
+        let promptBudgetReporter = PromptBudgetReporter()
+        let prompts = PromptAssemblyService(reporter: promptBudgetReporter)
+        let summarizer = SummarizationService(runtime: runtimeManager, prompts: prompts)
         let conversations = ConversationService(
             store: store,
             runtime: runtimeManager,
@@ -70,6 +79,7 @@ final class AppContainer: ObservableObject {
             memory: memory,
             settings: settings,
             personalization: personalization,
+            summarizer: summarizer,
             embeddingService: embedding
         )
         let onboarding = OnboardingService(
@@ -87,6 +97,8 @@ final class AppContainer: ObservableObject {
         self.memoryExtractionService = extractor
         self.memoryService = memory
         self.promptAssemblyService = prompts
+        self.promptBudgetReporter = promptBudgetReporter
+        self.summarizationService = summarizer
         self.runtimeManager = runtimeManager
         self.conversationService = conversations
         self.onboardingService = onboarding
@@ -174,6 +186,26 @@ final class AppContainer: ObservableObject {
         if let unloaded = await runtimeManager.handleMemoryPressure() {
             let time = DateFormatter.localizedString(from: .now, dateStyle: .none, timeStyle: .medium)
             lastUnloadNotification = "\(time) – '\(unloaded.displayName)' unloaded (memory pressure #\(memoryWarningCount))"
+        }
+    }
+
+    /// Reacts to a `ProcessInfo.thermalStateDidChange` notification. On
+    /// `.critical` we unload the model — iOS will throttle the GPU/CPU
+    /// and kill hot apps, so holding a multi-GB model in memory at that
+    /// point makes termination more likely, not less. `.serious` is
+    /// logged for observability but doesn't force an unload yet, since
+    /// briefly-hot devices recover without user-visible impact.
+    func handleThermalStateChange(_ state: ProcessInfo.ThermalState) async {
+        switch state {
+        case .critical:
+            if let unloaded = await runtimeManager.handleThermalCritical() {
+                let time = DateFormatter.localizedString(from: .now, dateStyle: .none, timeStyle: .medium)
+                lastUnloadNotification = "\(time) – '\(unloaded.displayName)' unloaded (thermal critical)"
+            }
+        case .serious, .fair, .nominal:
+            break
+        @unknown default:
+            break
         }
     }
 

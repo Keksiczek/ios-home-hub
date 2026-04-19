@@ -7,6 +7,17 @@ import Accelerate
 import WhisperKit
 #endif
 
+enum VoiceServiceError: LocalizedError {
+    case speechRecognizerUnavailable
+
+    var errorDescription: String? {
+        switch self {
+        case .speechRecognizerUnavailable:
+            return "Rozpoznávání řeči není na tomto zařízení k dispozici."
+        }
+    }
+}
+
 @MainActor
 final class VoiceService: ObservableObject {
     @Published var isListening = false
@@ -62,9 +73,14 @@ final class VoiceService: ObservableObject {
         try audioSession.setCategory(.record, mode: .measurement, options: .duckOthers)
         try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
         
-        recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
-        guard let recognitionRequest = recognitionRequest else { fatalError("Unable to create request") }
+        // `SFSpeechAudioBufferRecognitionRequest()` is a non-failable init on
+        // a concrete class, so the old `guard let … else { fatalError(…) }`
+        // could never actually fire at runtime but would have crashed the app
+        // if it ever did. Bind the value directly and keep `self.recognitionRequest`
+        // in sync for the tap callback.
+        let recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
         recognitionRequest.shouldReportPartialResults = true
+        self.recognitionRequest = recognitionRequest
         
         // Configure input node
         let inputNode = audioEngine.inputNode
@@ -103,8 +119,17 @@ final class VoiceService: ObservableObject {
         isListening = true
         transcription = ""
         
-        let recognizer = speechRecognizer ?? SFSpeechRecognizer()!
-        
+        // `SFSpeechRecognizer()` is failable — returns nil when the device
+        // has no speech recognizer at all (extremely rare on iOS 17+, but
+        // possible in restricted regions). Abort the tap + audio session
+        // cleanly instead of trapping so the UI can surface the error.
+        guard let recognizer = speechRecognizer ?? SFSpeechRecognizer() else {
+            audioEngine.stop()
+            inputNode.removeTap(onBus: 0)
+            self.recognitionRequest = nil
+            throw VoiceServiceError.speechRecognizerUnavailable
+        }
+
         recognitionTask = recognizer.recognitionTask(with: recognitionRequest) { [weak self] result, error in
             guard let self = self else { return }
             

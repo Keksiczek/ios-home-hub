@@ -1,6 +1,6 @@
 import Foundation
 
-// MARK: - TokenEstimator
+// MARK: - TokenEstimating
 
 /// Estimates how many tokens a string will occupy once a specific model
 /// tokenises it. Exists as a protocol so we can plug in a real BPE
@@ -8,7 +8,10 @@ import Foundation
 ///
 /// All implementations must be deterministic: the same input always
 /// produces the same count. The return value is always `>= 0`.
-protocol TokenEstimator: Sendable {
+///
+/// Most callers should not depend on this protocol directly — use the
+/// `TokenEstimator` namespace for the shared app-wide heuristic.
+protocol TokenEstimating: Sendable {
     func tokens(in text: String) -> Int
 }
 
@@ -36,7 +39,7 @@ protocol TokenEstimator: Sendable {
 /// for every assembled prompt — calling into C++ synchronously from the
 /// main actor is something we're avoiding until EPIC 6 introduces a
 /// dedicated tokenizer actor.
-struct HeuristicTokenEstimator: TokenEstimator {
+struct HeuristicTokenEstimator: TokenEstimating {
 
     func tokens(in text: String) -> Int {
         if text.isEmpty { return 0 }
@@ -184,11 +187,11 @@ struct PromptBudgetReport: Sendable, Equatable {
 struct PromptTokenBudgeter: Sendable {
 
     let profile: ModelCapabilityProfile
-    let estimator: TokenEstimator
+    let estimator: TokenEstimating
 
     init(
         profile: ModelCapabilityProfile,
-        estimator: TokenEstimator = HeuristicTokenEstimator()
+        estimator: TokenEstimating = HeuristicTokenEstimator()
     ) {
         self.profile = profile
         self.estimator = estimator

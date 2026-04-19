@@ -111,4 +111,19 @@ final class RuntimeManager: ObservableObject {
         clearState()
         return modelBeforeEvent
     }
+
+    /// Unconditionally unloads the active model. Called when the OS
+    /// reports `ProcessInfo.ThermalState.critical` — at that point iOS
+    /// is about to throttle the CPU/GPU aggressively and may terminate
+    /// the app outright, so holding the model in memory only makes the
+    /// situation worse. Safe to call when no model is loaded.
+    ///
+    /// - Returns: The model that was unloaded, or `nil` if nothing was loaded.
+    @discardableResult
+    func handleThermalCritical() async -> LocalModel? {
+        guard let modelBeforeEvent = activeModel else { return nil }
+        await runtime.unload()
+        clearState()
+        return modelBeforeEvent
+    }
 }

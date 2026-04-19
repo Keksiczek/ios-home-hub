@@ -19,7 +19,7 @@ struct DeveloperDiagnosticsView: View {
     @EnvironmentObject private var runtime: RuntimeManager
     @EnvironmentObject private var catalog: ModelCatalogService
     @EnvironmentObject private var downloads: ModelDownloadService
-    @EnvironmentObject private var prompts: PromptAssemblyService
+    @EnvironmentObject private var promptBudget: PromptBudgetReporter
 
     @State private var stubModelIDs: [String] = []
     @State private var isScanning = false
@@ -175,7 +175,7 @@ struct DeveloperDiagnosticsView: View {
 
     private var tokenBudgetSection: some View {
         Section {
-            if let report = prompts.lastReport {
+            if let report = promptBudget.lastReport {
                 LabeledContent("Mode",   value: report.mode.rawValue)
                 LabeledContent("Family", value: report.family.isEmpty ? "default" : report.family)
                 ForEach(report.sections, id: \.name) { section in

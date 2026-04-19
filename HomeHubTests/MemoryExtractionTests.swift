@@ -75,6 +75,7 @@ private let stubModel = LocalModel(
 
 // MARK: - Tests
 
+@MainActor
 final class MemoryExtractionTests: XCTestCase {
 
     // MARK: - Structured LLM extraction (Layer 3)
@@ -88,14 +89,22 @@ final class MemoryExtractionTests: XCTestCase {
         )
     }
 
+    /// Wraps a stub runtime in a fully-loaded `RuntimeManager` so the
+    /// extractor sees `activeModel != nil`. Used by every Layer-3 test.
+    private func loadedManager(_ runtime: any LocalLLMRuntime) async -> RuntimeManager {
+        let manager = RuntimeManager(runtime: runtime)
+        await manager.load(stubModel)
+        return manager
+    }
+
     func testStructuredExtractionProducesFactAndEpisodeCandidates() async {
         let runtime = StubRuntime()
-        await runtime.load(model: stubModel)
         runtime.responseText = """
         {"facts":[{"content":"User is stressed about deadlines","category":"work","confidence":0.9}],"episodes":[{"summary":"Considering changing daily routine","confidence":0.85}]}
         """
+        let manager = await loadedManager(runtime)
 
-        let extractor = MemoryExtractionService(runtime: runtime)
+        let extractor = MemoryExtractionService(runtime: manager)
         let candidates = await extractor.extract(from: noTriggerMessage())
 
         let structured = candidates.filter { $0.extractionMethod == .structured }
@@ -108,14 +117,14 @@ final class MemoryExtractionTests: XCTestCase {
 
     func testStructuredExtractionHandlesMarkdownFencing() async {
         let runtime = StubRuntime()
-        await runtime.load(model: stubModel)
         runtime.responseText = """
         ```json
         {"facts":[{"content":"Stressed about deadlines","category":"work","confidence":0.9}],"episodes":[]}
         ```
         """
+        let manager = await loadedManager(runtime)
 
-        let extractor = MemoryExtractionService(runtime: runtime)
+        let extractor = MemoryExtractionService(runtime: manager)
         let candidates = await extractor.extract(from: noTriggerMessage())
 
         let structured = candidates.filter { $0.extractionMethod == .structured }
@@ -125,14 +134,14 @@ final class MemoryExtractionTests: XCTestCase {
 
     func testStructuredExtractionHandlesProseWrappedJSON() async {
         let runtime = StubRuntime()
-        await runtime.load(model: stubModel)
         runtime.responseText = """
         Here is the extraction:
         {"facts":[{"content":"Wants to change routine","category":"preferences","confidence":0.8}],"episodes":[]}
         That's all I found.
         """
+        let manager = await loadedManager(runtime)
 
-        let extractor = MemoryExtractionService(runtime: runtime)
+        let extractor = MemoryExtractionService(runtime: manager)
         let candidates = await extractor.extract(from: noTriggerMessage())
 
         let structured = candidates.filter { $0.extractionMethod == .structured }
@@ -144,12 +153,12 @@ final class MemoryExtractionTests: XCTestCase {
 
     func testHeuristicTriggersPreventLLMFromRunning() async {
         let runtime = StubRuntime()
-        await runtime.load(model: stubModel)
         runtime.responseText = """
         {"facts":[{"content":"Should not appear","category":"other","confidence":0.9}],"episodes":[]}
         """
+        let manager = await loadedManager(runtime)
 
-        let extractor = MemoryExtractionService(runtime: runtime)
+        let extractor = MemoryExtractionService(runtime: manager)
         let message = Message.user("My name is Alex and I work at a tech company", in: UUID())
         let candidates = await extractor.extract(from: message)
 
@@ -161,12 +170,12 @@ final class MemoryExtractionTests: XCTestCase {
 
     func testShortMessageSkipsLLMEvenWithoutCheapResults() async {
         let runtime = StubRuntime()
-        await runtime.load(model: stubModel)
         runtime.responseText = """
         {"facts":[{"content":"Should not appear","category":"other","confidence":0.9}],"episodes":[]}
         """
+        let manager = await loadedManager(runtime)
 
-        let extractor = MemoryExtractionService(runtime: runtime)
+        let extractor = MemoryExtractionService(runtime: manager)
         let message = Message.user("How are you today?", in: UUID())
         let candidates = await extractor.extract(from: message)
 
@@ -176,12 +185,12 @@ final class MemoryExtractionTests: XCTestCase {
 
     func testLLMEscalationOnLongMessageWithoutCheapResults() async {
         let runtime = StubRuntime()
-        await runtime.load(model: stubModel)
         runtime.responseText = """
         {"facts":[{"content":"Stressed about deadlines","category":"work","confidence":0.8}],"episodes":[]}
         """
+        let manager = await loadedManager(runtime)
 
-        let extractor = MemoryExtractionService(runtime: runtime)
+        let extractor = MemoryExtractionService(runtime: manager)
         let candidates = await extractor.extract(from: noTriggerMessage())
 
         let structured = candidates.filter { $0.extractionMethod == .structured }
@@ -190,10 +199,9 @@ final class MemoryExtractionTests: XCTestCase {
     }
 
     func testLLMFailureReturnsEmptyWhenNoCheapResults() async {
-        let runtime = FailingRuntime()
-        await runtime.load(model: stubModel)
+        let manager = await loadedManager(FailingRuntime())
 
-        let extractor = MemoryExtractionService(runtime: runtime)
+        let extractor = MemoryExtractionService(runtime: manager)
         let candidates = await extractor.extract(from: noTriggerMessage())
 
         XCTAssertTrue(candidates.isEmpty,
@@ -212,8 +220,10 @@ final class MemoryExtractionTests: XCTestCase {
     }
 
     func testHeuristicRunsWhenNoModelLoaded() async {
-        let runtime = StubRuntime()
-        let extractor = MemoryExtractionService(runtime: runtime)
+        // RuntimeManager constructed without a load() call → activeModel == nil,
+        // so Layer 3 must be skipped even though a runtime is wired in.
+        let manager = RuntimeManager(runtime: StubRuntime())
+        let extractor = MemoryExtractionService(runtime: manager)
         let message = Message.user("My name is Alex", in: UUID())
         let candidates = await extractor.extract(from: message)
 

@@ -140,12 +140,14 @@ struct ChatDetailView: View {
     }
 
     /// Estimated fraction of the context window used (0.0–1.0).
-    /// Uses the 4-chars-per-token approximation standard in LLM tooling.
+    /// Delegates to the shared `TokenEstimator` so the badge, the
+    /// composer's context-fill bar, and `ConversationService`'s
+    /// summarisation trigger all agree on the number.
     private var estimatedContextFill: Double {
-        let contextLength = runtime.activeModel?.contextLength ?? 4096
-        let totalChars = messages.reduce(0) { $0 + $1.content.count }
-        let estimatedTokens = totalChars / 4
-        return min(Double(estimatedTokens) / Double(contextLength), 1.0)
+        TokenEstimator.contextFill(
+            messages: messages,
+            contextLength: runtime.activeModel?.contextLength ?? 4096
+        )
     }
 
     /// Formatted conversation text for the share sheet.
@@ -175,8 +177,8 @@ struct ChatDetailView: View {
 }
 
 /// Compact token-usage indicator shown in place of the navigation title
-/// when `settings.showTokenUsage` is enabled. Uses the same 4-chars-per-
-/// token approximation as `ChatDetailView.estimatedContextFill`.
+/// when `settings.showTokenUsage` is enabled. Uses the shared
+/// `TokenEstimator` so the count matches `estimatedContextFill`.
 private struct TokenUsageBadge: View {
     let title: String
     let fill: Double
@@ -184,8 +186,7 @@ private struct TokenUsageBadge: View {
     let messages: [Message]
 
     private var usedTokens: Int {
-        let chars = messages.reduce(0) { $0 + $1.content.count }
-        return chars / 4
+        TokenEstimator.tokens(in: messages)
     }
 
     private var color: Color {

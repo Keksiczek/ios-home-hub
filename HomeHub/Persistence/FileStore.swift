@@ -14,13 +14,12 @@ actor FileStore: Store {
 
     init() {
         let fileManager = FileManager.default
-        let localSupport = try! fileManager.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        )
-        
+        // `URL.applicationSupportDirectory` is non-failable (iOS 16+) and
+        // returns the sandboxed Application Support path. The previous
+        // `try! fileManager.url(…)` would crash the app at launch if the
+        // lookup ever threw — rare, but fatal and unrecoverable.
+        let localSupport = URL.applicationSupportDirectory
+
         // Attempt to get the ubiquitous container for iCloud sync.
         // Fallback to local application support if iCloud is unavailable.
         if let ubiquityURL = fileManager.url(forUbiquityContainerIdentifier: nil) {

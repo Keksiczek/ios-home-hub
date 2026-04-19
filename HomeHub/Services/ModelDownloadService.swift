@@ -86,6 +86,24 @@ final class ModelDownloadService: ObservableObject {
 
     func start(_ model: LocalModel) {
         guard active[model.id] == nil else { return }
+
+        // Disk-space preflight — catch the "user tries to download a 4 GB
+        // model onto a full phone" case before the URLSession task starts
+        // and silently fails mid-stream with a cryptic NSPOSIXErrorDomain.
+        // Skipped when `sizeBytes == 0` (user-added models via URL often
+        // don't know their size in advance).
+        if model.sizeBytes > 0,
+           let free = Self.availableDiskSpaceBytes(),
+           free < model.sizeBytes {
+            let err = DownloadError.insufficientDiskSpace(
+                required: model.sizeBytes,
+                available: free
+            )
+            log.error("Preflight failed for '\(model.id, privacy: .public)': \(err.errorDescription ?? "", privacy: .public)")
+            catalog.setInstallState(.failed(reason: err.errorDescription ?? "Insufficient disk space"), for: model.id)
+            return
+        }
+
         active[model.id] = DownloadState(modelID: model.id, progress: 0, isCancelled: false, phase: .preparing)
         catalog.setInstallState(.downloading(progress: 0), for: model.id)
         log.info("Starting download for model '\(model.id, privacy: .public)' from \(model.downloadURL.absoluteString, privacy: .public)")
@@ -93,6 +111,17 @@ final class ModelDownloadService: ObservableObject {
         tasks[model.id] = Task { [weak self] in
             await self?.realDownload(model: model)
         }
+    }
+
+    /// Returns the space iOS considers available for important (user-
+    /// initiated) downloads on the Application Support volume. Uses
+    /// `volumeAvailableCapacityForImportantUsageKey` per Apple's
+    /// guidance — this is larger than raw free bytes because iOS will
+    /// purge purgeable caches to satisfy the request.
+    private static func availableDiskSpaceBytes() -> Int64? {
+        let url = URL.applicationSupportDirectory
+        let values = try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+        return values?.volumeAvailableCapacityForImportantUsage
     }
 
     func cancel(_ modelID: String) {
@@ -298,6 +327,7 @@ final class ModelDownloadService: ObservableObject {
         case checksumMismatch(expected: String, actual: String)
         case fileMoveFailed(String)
         case fileMissingAfterDownload
+        case insufficientDiskSpace(required: Int64, available: Int64)
 
         var errorDescription: String? {
             switch self {
@@ -307,6 +337,11 @@ final class ModelDownloadService: ObservableObject {
                 return "Downloaded file could not be moved into Models directory: \(msg)"
             case .fileMissingAfterDownload:
                 return "Model file is missing after download — the system may have deleted the temp file."
+            case .insufficientDiskSpace(let required, let available):
+                let fmt = ByteCountFormatter()
+                fmt.allowedUnits = [.useMB, .useGB]
+                fmt.countStyle = .file
+                return "Nedostatek místa: potřeba \(fmt.string(fromByteCount: required)), dostupné \(fmt.string(fromByteCount: available))."
             }
         }
     }
