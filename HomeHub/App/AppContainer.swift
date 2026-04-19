@@ -189,6 +189,26 @@ final class AppContainer: ObservableObject {
         }
     }
 
+    /// Reacts to a `ProcessInfo.thermalStateDidChange` notification. On
+    /// `.critical` we unload the model — iOS will throttle the GPU/CPU
+    /// and kill hot apps, so holding a multi-GB model in memory at that
+    /// point makes termination more likely, not less. `.serious` is
+    /// logged for observability but doesn't force an unload yet, since
+    /// briefly-hot devices recover without user-visible impact.
+    func handleThermalStateChange(_ state: ProcessInfo.ThermalState) async {
+        switch state {
+        case .critical:
+            if let unloaded = await runtimeManager.handleThermalCritical() {
+                let time = DateFormatter.localizedString(from: .now, dateStyle: .none, timeStyle: .medium)
+                lastUnloadNotification = "\(time) – '\(unloaded.displayName)' unloaded (thermal critical)"
+            }
+        case .serious, .fair, .nominal:
+            break
+        @unknown default:
+            break
+        }
+    }
+
     /// Forward scene-phase changes to the runtime via RuntimeManager.
     func handleScenePhaseChange(_ phase: ScenePhase) async {
         switch phase {

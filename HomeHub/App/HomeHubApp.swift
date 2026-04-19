@@ -28,6 +28,15 @@ struct HomeHubApp: App {
                 )) { _ in
                     Task { await container.handleMemoryPressure() }
                 }
+                .onReceive(NotificationCenter.default.publisher(
+                    for: ProcessInfo.thermalStateDidChangeNotification
+                )) { _ in
+                    // Snapshot on the notification thread; forward to the
+                    // container on the main actor. ProcessInfo reads are
+                    // thread-safe, so this doesn't need isolation.
+                    let state = ProcessInfo.processInfo.thermalState
+                    Task { await container.handleThermalStateChange(state) }
+                }
                 .onChange(of: scenePhase) { _, newPhase in
                     Task { await container.handleScenePhaseChange(newPhase) }
                 }

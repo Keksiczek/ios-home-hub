@@ -241,8 +241,9 @@ final class LlamaCppRuntime: LocalLLMRuntime, @unchecked Sendable {
 
                         // --- First-token latency ---
                         if firstTokenDate == nil {
-                            firstTokenDate = Date()
-                            let ttftMs = Int(firstTokenDate!.timeIntervalSince(started) * 1_000)
+                            let now = Date()
+                            firstTokenDate = now
+                            let ttftMs = Int(now.timeIntervalSince(started) * 1_000)
                             log.debug("TTFT: \(ttftMs)ms (request \(requestID, privacy: .public))")
                             await telemetry.emit(.firstToken(requestID: requestID, latencyMs: ttftMs))
                             #if DEBUG

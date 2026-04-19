@@ -62,9 +62,14 @@ final class VoiceService: ObservableObject {
         try audioSession.setCategory(.record, mode: .measurement, options: .duckOthers)
         try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
         
-        recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
-        guard let recognitionRequest = recognitionRequest else { fatalError("Unable to create request") }
+        // `SFSpeechAudioBufferRecognitionRequest()` is a non-failable init on
+        // a concrete class, so the old `guard let … else { fatalError(…) }`
+        // could never actually fire at runtime but would have crashed the app
+        // if it ever did. Bind the value directly and keep `self.recognitionRequest`
+        // in sync for the tap callback.
+        let recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
         recognitionRequest.shouldReportPartialResults = true
+        self.recognitionRequest = recognitionRequest
         
         // Configure input node
         let inputNode = audioEngine.inputNode

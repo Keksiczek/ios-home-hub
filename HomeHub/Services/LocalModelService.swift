@@ -7,12 +7,10 @@ actor LocalModelService {
     private let modelsDirectory: URL
 
     init() {
-        let support = try! FileManager.default.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        )
+        // Non-failable iOS 16+ accessor. Replaces a `try!` that would
+        // crash the app on launch in the rare case the throwing variant
+        // failed (e.g. under misconfigured sandboxing during review).
+        let support = URL.applicationSupportDirectory
         self.modelsDirectory = support.appendingPathComponent("Models", isDirectory: true)
         try? fileManager.createDirectory(at: modelsDirectory, withIntermediateDirectories: true)
     }
