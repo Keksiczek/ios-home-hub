@@ -54,6 +54,7 @@ final class MemoryService: ObservableObject {
             facts.append(fact)
         }
         try? await store.save(fact: fact)
+        WidgetBridge.updateWidget(facts: facts, keepLastMessage: true)
     }
 
     func update(_ fact: MemoryFact) async {
@@ -66,18 +67,21 @@ final class MemoryService: ObservableObject {
         }
         facts.removeAll { $0.id == id }
         try? await store.deleteMemoryFact(id: id)
+        WidgetBridge.updateWidget(facts: facts, keepLastMessage: true)
     }
 
     func setDisabled(_ disabled: Bool, for id: UUID) async {
         guard let idx = facts.firstIndex(where: { $0.id == id }) else { return }
         facts[idx].disabled = disabled
         try? await store.save(fact: facts[idx])
+        WidgetBridge.updateWidget(facts: facts, keepLastMessage: true)
     }
 
     func setPinned(_ pinned: Bool, for id: UUID) async {
         guard let idx = facts.firstIndex(where: { $0.id == id }) else { return }
         facts[idx].pinned = pinned
         try? await store.save(fact: facts[idx])
+        WidgetBridge.updateWidget(facts: facts, keepLastMessage: true)
     }
 
     // MARK: - Episode mutation
@@ -115,6 +119,7 @@ final class MemoryService: ObservableObject {
         episodes.removeAll()
         candidates.removeAll()
         await embeddings.invalidateCache()
+        WidgetBridge.updateWidget(facts: facts, keepLastMessage: true)
     }
 
     // MARK: - Retrieval

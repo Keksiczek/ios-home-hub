@@ -155,7 +155,7 @@ enum ModelCatalog {
             downloadURL: URL(string:
                 "https://huggingface.co/bartowski/gemma-3-4b-it-GGUF/resolve/main/gemma-3-4b-it-Q4_K_M.gguf"
             )!,
-            sha256: nil,
+            sha256: nil, // TODO: verify hash
             installState: .notInstalled,
             recommendedFor: [.iPhone, .iPadMSeries],
             license: "Gemma Terms of Use"
@@ -172,7 +172,7 @@ enum ModelCatalog {
             downloadURL: URL(string:
                 "https://huggingface.co/bartowski/gemma-3-12b-it-GGUF/resolve/main/gemma-3-12b-it-Q4_K_M.gguf"
             )!,
-            sha256: nil,
+            sha256: nil, // TODO: verify hash
             installState: .notInstalled,
             recommendedFor: [.iPadMSeries],
             license: "Gemma Terms of Use"
@@ -191,7 +191,7 @@ enum ModelCatalog {
             downloadURL: URL(string:
                 "https://huggingface.co/bartowski/gemma-2-2b-it-GGUF/resolve/main/gemma-2-2b-it-Q4_K_M.gguf"
             )!,
-            sha256: nil,
+            sha256: nil, // TODO: verify hash
             installState: .notInstalled,
             recommendedFor: [.iPhone, .iPadMSeries],
             license: "Gemma Terms of Use"
@@ -208,7 +208,7 @@ enum ModelCatalog {
             downloadURL: URL(string:
                 "https://huggingface.co/bartowski/gemma-2-9b-it-GGUF/resolve/main/gemma-2-9b-it-Q4_K_M.gguf"
             )!,
-            sha256: nil,
+            sha256: nil, // TODO: verify hash
             installState: .notInstalled,
             recommendedFor: [.iPadMSeries],
             license: "Gemma Terms of Use"
@@ -227,7 +227,7 @@ enum ModelCatalog {
             downloadURL: URL(string:
                 "https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf"
             )!,
-            sha256: nil,
+            sha256: nil, // TODO: verify hash
             installState: .notInstalled,
             recommendedFor: [.iPhone, .iPadMSeries],
             license: "Llama 3.2 Community License"
@@ -244,7 +244,7 @@ enum ModelCatalog {
             downloadURL: URL(string:
                 "https://huggingface.co/bartowski/Meta-Llama-3.1-8B-Instruct-GGUF/resolve/main/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf"
             )!,
-            sha256: nil,
+            sha256: nil, // TODO: verify hash
             installState: .notInstalled,
             recommendedFor: [.iPadMSeries],
             license: "Llama 3.1 Community License"
@@ -263,7 +263,7 @@ enum ModelCatalog {
             downloadURL: URL(string:
                 "https://huggingface.co/bartowski/Phi-3.5-mini-instruct-GGUF/resolve/main/Phi-3.5-mini-instruct-Q4_K_M.gguf"
             )!,
-            sha256: nil,
+            sha256: nil, // TODO: verify hash
             installState: .notInstalled,
             recommendedFor: [.iPhone, .iPadMSeries],
             license: "MIT"
@@ -280,7 +280,7 @@ enum ModelCatalog {
             downloadURL: URL(string:
                 "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q5_k_m.gguf"
             )!,
-            sha256: nil,
+            sha256: nil, // TODO: verify hash
             installState: .notInstalled,
             recommendedFor: [.iPhone, .iPadMSeries],
             license: "Apache 2.0"

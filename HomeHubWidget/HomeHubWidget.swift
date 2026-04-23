@@ -42,7 +42,7 @@ struct HomeHubTimelineProvider: TimelineProvider {
         // Read shared data from the App Group container.
         // The main app writes widget-summary.json after each conversation.
         guard let containerURL = FileManager.default.containerURL(
-            forSecurityApplicationGroupIdentifier: "group.com.homehub.shared"
+            forSecurityApplicationGroupIdentifier: "group.cz.keksiczek.homehub.shared"
         ) else { return .placeholder }
 
         let fileURL = containerURL.appendingPathComponent("widget-summary.json")
