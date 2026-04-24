@@ -12,6 +12,8 @@ struct SettingsView: View {
             Form {
                 profileSection
                 assistantSection
+                languageSection
+                toolsSection
                 memorySection
                 generationSection
                 appearanceSection
@@ -55,6 +57,61 @@ struct SettingsView: View {
             NavigationLink("System prompts") {
                 SystemPromptManagerView()
             }
+        }
+    }
+
+    // MARK: - Language & style
+
+    private var languageSection: some View {
+        Section {
+            Picker("Language", selection: Binding(
+                get: { settings.current.language },
+                set: { newValue in Task { await settings.set(\.language, to: newValue) } }
+            )) {
+                ForEach(AppLanguage.allCases) { lang in
+                    Text(lang.label).tag(lang)
+                }
+            }
+
+            Picker("Response style", selection: Binding(
+                get: { settings.current.responseStyle },
+                set: { newValue in Task { await settings.set(\.responseStyle, to: newValue) } }
+            )) {
+                ForEach(ResponseStyle.allCases) { style in
+                    Text(style.label).tag(style)
+                }
+            }
+
+            TextField("Location hint", text: Binding(
+                get: { settings.current.locationHint },
+                set: { newValue in Task { await settings.set(\.locationHint, to: newValue) } }
+            ))
+            .textInputAutocapitalization(.words)
+        } header: {
+            Text("Language & style")
+        } footer: {
+            Text("Language is enforced in the system prompt — the assistant replies in the chosen language even if you type in another. Location is injected so the model answers local-context questions correctly.")
+        }
+    }
+
+    // MARK: - Tools
+
+    private var toolsSection: some View {
+        Section {
+            ForEach(Array(AppSettings.defaultEnabledTools).sorted(), id: \.self) { toolName in
+                Toggle(toolName, isOn: Binding(
+                    get: { settings.current.enabledTools.contains(toolName) },
+                    set: { enabled in
+                        var current = settings.current.enabledTools
+                        if enabled { current.insert(toolName) } else { current.remove(toolName) }
+                        Task { await settings.set(\.enabledTools, to: current) }
+                    }
+                ))
+            }
+        } header: {
+            Text("Tools")
+        } footer: {
+            Text("Only enabled tools are advertised to the assistant. Math goes through Calculator; calendar questions go through Calendar. Anything disabled is refused even if the model tries to call it.")
         }
     }
 
@@ -123,6 +180,20 @@ struct SettingsView: View {
                     set: { newValue in Task { await settings.set(\.temperature, to: newValue) } }
                 ),
                 in: 0.0...1.5, step: 0.05
+            )
+
+            HStack {
+                Text("Top-p")
+                Spacer()
+                Text(String(format: "%.2f", settings.current.topP))
+                    .foregroundStyle(HHTheme.textSecondary)
+            }
+            Slider(
+                value: Binding(
+                    get: { settings.current.topP },
+                    set: { newValue in Task { await settings.set(\.topP, to: newValue) } }
+                ),
+                in: 0.1...1.0, step: 0.05
             )
 
             // Display preference — kept at the bottom of the section so

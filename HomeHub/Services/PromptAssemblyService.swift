@@ -119,6 +119,17 @@ final class PromptAssemblyService {
         \(package.user.preferredResponseStyle.blurb)
         """)
 
+        // L0bʹ. Context rail — date/time, location, language policy,
+        // tool policy (math is mandatory, web is tool-only), style.
+        // Single source of truth for all per-turn context constraints;
+        // lives in PromptBuilder so it can be unit-tested in isolation.
+        chunks.append(PromptBuilder.contextRail(
+            .live(
+                settings: package.settings,
+                availableTools: package.availableTools
+            )
+        ))
+
         // L0c. User profile
         appendUserProfile(from: package, to: &chunks)
 
@@ -144,8 +155,10 @@ final class PromptAssemblyService {
             chunks.append(skills)
         }
 
-        // Privacy guardrails
-        chunks.append(privacyGuardrail)
+        // Privacy guardrail — conditional: only claim "no network access"
+        // when the web-search tool isn't available. Otherwise the rail
+        // would contradict the tool policy above.
+        chunks.append(privacyGuardrail(for: package))
 
         return chunks.joined(separator: "\n\n")
     }
@@ -165,6 +178,16 @@ final class PromptAssemblyService {
         \(package.user.preferredResponseStyle.blurb)
         """)
 
+        // Context rail — keep date, language, style consistent across the
+        // tool-followup turn so the assistant doesn't "forget" that it
+        // should answer in Czech mid-loop.
+        chunks.append(PromptBuilder.contextRail(
+            .live(
+                settings: package.settings,
+                availableTools: package.availableTools
+            )
+        ))
+
         // L0c. User profile (helpful for personalised follow-up)
         appendUserProfile(from: package, to: &chunks)
 
@@ -181,7 +204,7 @@ final class PromptAssemblyService {
         Do NOT output another <tool_call> block unless absolutely necessary.
         """)
 
-        chunks.append(privacyGuardrail)
+        chunks.append(privacyGuardrail(for: package))
 
         return chunks.joined(separator: "\n\n")
     }
@@ -293,9 +316,28 @@ final class PromptAssemblyService {
         """)
     }
 
-    private let privacyGuardrail = """
-    Never fabricate personal details about the user. If you're \
-    unsure, ask or say you don't know. You run entirely on-device \
-    with no network access — don't pretend to look anything up.
-    """
+    /// Privacy rail. Wording flips depending on whether a web-search tool
+    /// is actually registered — claiming "no network access" while the
+    /// WebSearch tool is advertised (L4) trains the model on contradictory
+    /// signals and makes tool calls flaky.
+    private func privacyGuardrail(for package: PromptContextPackage) -> String {
+        let hasWebSearch = package.availableTools
+            .map { $0.lowercased() }
+            .contains("websearch")
+
+        if hasWebSearch {
+            return """
+            Never fabricate personal details about the user. If you're \
+            unsure, ask or say you don't know. You may reach the network \
+            ONLY via the WebSearch tool — never pretend to have browsed \
+            on your own, and never send personal data through the tool.
+            """
+        } else {
+            return """
+            Never fabricate personal details about the user. If you're \
+            unsure, ask or say you don't know. You run entirely on-device \
+            with no network access — don't pretend to look anything up.
+            """
+        }
+    }
 }

@@ -7,26 +7,35 @@ struct ActionCommand: Equatable {
 }
 
 /// Central registry for all tools available to the Agent.
+///
+/// The registry is **the superset**: all skills the app knows how to run
+/// live here. Which of them actually surface to the model on any given
+/// turn is decided at call time by the `enabled` allow-list (sourced
+/// from `AppSettings.enabledTools`). This lets the user toggle individual
+/// tools in Settings without forcing the prompt assembler to know about
+/// skills the manager hasn't registered yet.
 actor SkillManager {
     static let shared = SkillManager()
 
     private var skills: [String: any Skill] = [:]
 
-    /// Cached output of `buildSystemInstructions()`. Cleared on every
-    /// `register(_:)` call. Skills are otherwise immutable, so this is
-    /// safe to memoise across the per-turn calls in `ConversationService`.
-    private var cachedInstructions: String?
+    /// Cached `renderInstructions` output, keyed by the lowercased set
+    /// of enabled skill names. A different allow-list invalidates the
+    /// cache but a repeated turn with the same allow-list is free.
+    private var cachedInstructions: (enabled: Set<String>, text: String)?
 
     private init() {
-        // WebSearchSkill is intentionally omitted from the default registration.
-        // PromptAssemblyService injects an on-device privacy guardrail
-        // ("You run entirely on-device with no network access…") that directly
-        // contradicts any web-search tool instructions. The model would behave
-        // unpredictably if both were present. Register WebSearchSkill explicitly
-        // via `register(_:)` once real network-enabled search is wired up and
-        // the privacy guardrail is made conditional.
+        // WebSearchSkill stays out of the default registration: it needs
+        // explicit user consent AND an available network, and the prompt
+        // assembler's privacy rail flips based on whether it's registered.
+        // Call `register(WebSearchSkill())` from onboarding / settings once
+        // the user opts in.
         let defaults: [any Skill] = [
-            CalculatorSkill(), CalendarSkill(), HomeKitSkill(), RemindersSkill()
+            CalculatorSkill(),
+            CalendarSkill(),
+            HomeKitSkill(),
+            RemindersSkill(),
+            DeviceInfoSkill()
         ]
         for skill in defaults {
             skills[skill.name.lowercased()] = skill
@@ -38,25 +47,42 @@ actor SkillManager {
         cachedInstructions = nil
     }
 
-    /// Generates L4 Prompt string explaining all available skills.
-    /// Result is cached until the next `register(_:)` call so the
-    /// per-turn invocation in `ConversationService.performSend` is free
-    /// after the first build.
-    func buildSystemInstructions() -> String {
-        if let cachedInstructions {
-            return cachedInstructions
+    /// The names of every skill currently in the registry, in registration
+    /// order-independent form. Used by `ConversationService` to compute
+    /// the intersection with `AppSettings.enabledTools` for each turn.
+    func registeredSkillNames() -> Set<String> {
+        Set(skills.values.map(\.name))
+    }
+
+    /// Generates the L4 system-prompt block listing the *enabled* skills.
+    ///
+    /// - Parameter enabled: Allow-list of skill names (case-insensitive)
+    ///   that should surface to the model. Skills outside this set are
+    ///   omitted even if registered. Pass `nil` to include every
+    ///   registered skill (legacy behaviour for older callers).
+    func buildSystemInstructions(enabled: Set<String>? = nil) -> String {
+        let allow: Set<String> = enabled.map { Set($0.map { $0.lowercased() }) }
+            ?? Set(skills.keys)
+
+        if let cached = cachedInstructions, cached.enabled == allow {
+            return cached.text
         }
 
-        let built = renderInstructions()
-        cachedInstructions = built
+        let built = renderInstructions(enabled: allow)
+        cachedInstructions = (allow, built)
         return built
     }
 
-    private func renderInstructions() -> String {
-        guard !skills.isEmpty else { return "" }
+    private func renderInstructions(enabled: Set<String>) -> String {
+        let visible = skills
+            .filter { enabled.contains($0.key) }
+            .values
+            .sorted { $0.name < $1.name }
+
+        guard !visible.isEmpty else { return "" }
 
         var instructions = "You have access to the following native tools/skills:\n"
-        for (_, skill) in skills {
+        for skill in visible {
             instructions += "- \(skill.name): \(skill.description)\n"
         }
 
@@ -69,10 +95,11 @@ actor SkillManager {
 
         Important rules:
         1. Output ONLY the `<tool_call>` block — stop immediately after `</tool_call>`. Add nothing else.
-        2. The system executes the tool and returns the result in an `<Observation>` block.
-        3. Use the observation to write your final user-facing response.
-        4. Never fabricate an observation or guess the result. Always wait for the real `<Observation>`.
-        5. Write `input` as a plain string. Do not nest JSON or manually escape quotes inside `input`.
+        2. The `<tool_call>` block must be on a single line. No prose before or after it on that line.
+        3. `input` is a plain string. Do not nest JSON, do not manually escape quotes inside `input`.
+        4. The system executes the tool and returns the result in an `<Observation>` block.
+        5. Use the observation to write your final user-facing response.
+        6. Never fabricate an observation or guess the result. Always wait for the real `<Observation>`.
         """
 
         return instructions
@@ -85,14 +112,23 @@ actor SkillManager {
     func parseAction(from text: String) -> ActionCommand? {
         ToolCallEnvelope.parse(from: text)?.toActionCommand()
     }
-    
+
     /// Executes the specified skill command.
-    /// Errors are caught and rendered as `"Error executing …"` strings so
-    /// the LLM can incorporate them into its `<Observation>` reasoning
-    /// without crashing the agentic loop.
-    func execute(_ command: ActionCommand) async -> String {
-        guard let skill = skills[command.skillName.lowercased()] else {
+    ///
+    /// - Parameters:
+    ///   - command: Parsed envelope from the model.
+    ///   - enabled: Allow-list of skill names. A command whose skill is
+    ///     registered but disabled is rejected with an error string so
+    ///     the LLM can incorporate the refusal into its next turn
+    ///     instead of the tool silently running against user intent.
+    ///     Pass `nil` to skip the allow-list check.
+    func execute(_ command: ActionCommand, enabled: Set<String>? = nil) async -> String {
+        let key = command.skillName.lowercased()
+        guard let skill = skills[key] else {
             return "Error: Skill '\(command.skillName)' is not recognized."
+        }
+        if let enabled, !enabled.map({ $0.lowercased() }).contains(key) {
+            return "Error: Skill '\(command.skillName)' is currently disabled in Settings."
         }
 
         do {

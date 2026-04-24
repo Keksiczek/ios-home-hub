@@ -123,6 +123,8 @@ private actor FailingSettingsStore: Store {
     func delete(conversationID: UUID) async throws {}
     func loadMessages(conversationID: UUID) async throws -> [Message] { [] }
     func save(message: Message) async throws {}
+    func deleteMessage(id: UUID, conversationID: UUID) async throws {}
+    func clearMessages(conversationID: UUID) async throws {}
     func loadMemoryFacts() async throws -> [MemoryFact] { [] }
     func save(fact: MemoryFact) async throws {}
     func deleteMemoryFact(id: UUID) async throws {}

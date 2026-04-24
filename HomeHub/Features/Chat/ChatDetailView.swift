@@ -8,6 +8,7 @@ struct ChatDetailView: View {
     @State private var draft: String = ""
     @State private var showingRename = false
     @State private var showingVoiceCall = false
+    @State private var showingClearConfirm = false
     @State private var renameText: String = ""
 
     var body: some View {
@@ -20,7 +21,15 @@ struct ChatDetailView: View {
                                 message: message,
                                 onRegenerate: canRegenerate(message)
                                     ? { conversations.regenerate(in: conversationID) }
-                                    : nil
+                                    : nil,
+                                onDelete: isStreaming ? nil : {
+                                    Task {
+                                        await conversations.deleteMessage(
+                                            messageID: message.id,
+                                            in: conversationID
+                                        )
+                                    }
+                                }
                             )
                             .id(message.id)
                         }
@@ -109,6 +118,15 @@ struct ChatDetailView: View {
                             Label("Export", systemImage: "square.and.arrow.up")
                         }
                         .disabled(messages.isEmpty)
+
+                        Divider()
+
+                        Button(role: .destructive) {
+                            showingClearConfirm = true
+                        } label: {
+                            Label("Clear conversation", systemImage: "trash")
+                        }
+                        .disabled(messages.isEmpty || isStreaming)
                     } label: {
                         Image(systemName: "ellipsis.circle")
                     }
@@ -126,6 +144,18 @@ struct ChatDetailView: View {
         }
         .sheet(isPresented: $showingVoiceCall) {
             VoiceCallView(conversationID: conversationID)
+        }
+        .confirmationDialog(
+            "Clear this conversation?",
+            isPresented: $showingClearConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Clear messages", role: .destructive) {
+                Task { await conversations.clearMessages(in: conversationID) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Removes every message in this chat. The conversation itself stays in the list.")
         }
         .task {
             await conversations.loadMessages(for: conversationID)
@@ -176,18 +206,29 @@ struct ChatDetailView: View {
         )
     }
 
-    /// Formatted conversation text for the share sheet.
+    /// Formatted conversation text for the share sheet. Applies the
+    /// chat-template sanitizer and renders each turn with role label +
+    /// timestamp so the exported markdown reads as a proper transcript.
     private var exportText: String {
         let header = "# \(conversationTitle)\n\n"
         let body = messages
             .filter { $0.role != .system }
             .map { msg -> String in
                 let label = msg.role == .user ? "You" : "Assistant"
-                return "[\(label)]\n\(msg.content)"
+                let stamp = Self.exportTimestampFormatter.string(from: msg.createdAt)
+                let clean = ChatTextSanitizer.strip(msg.content)
+                return "**\(label) · \(stamp)**\n\n\(clean)"
             }
             .joined(separator: "\n\n---\n\n")
         return header + body
     }
+
+    private static let exportTimestampFormatter: DateFormatter = {
+        let df = DateFormatter()
+        df.dateStyle = .short
+        df.timeStyle = .short
+        return df
+    }()
 
     // MARK: - Actions
 

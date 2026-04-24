@@ -195,6 +195,53 @@ final class ConversationService: ObservableObject {
         streamingConversationIDs.remove(conversationID)
     }
 
+    /// Removes a single message from the in-memory list and backing store.
+    /// No-op if a generation is currently streaming in this conversation —
+    /// the caller should gate the UI action on `streamingConversationIDs`.
+    func deleteMessage(messageID: UUID, in conversationID: UUID) async {
+        guard activeStreams[conversationID] == nil else { return }
+
+        var list = messagesByConversation[conversationID] ?? []
+        let before = list.count
+        list.removeAll { $0.id == messageID }
+        guard list.count != before else { return }
+
+        messagesByConversation[conversationID] = list
+        try? await store.deleteMessage(id: messageID, conversationID: conversationID)
+
+        // Keep the conversation list preview in sync with whatever the
+        // last remaining message is (or blank it out if the chat is empty).
+        if let idx = conversations.firstIndex(where: { $0.id == conversationID }) {
+            conversations[idx].lastMessagePreview = list.last?.content ?? ""
+            conversations[idx].updatedAt = .now
+            try? await store.save(conversation: conversations[idx])
+        }
+
+        // Dropping arbitrary messages invalidates any prefix the runtime
+        // has cached for this conversation — force a fresh KV-cache build
+        // on the next turn so we don't feed the model an inconsistent prefix.
+        await runtime.invalidateSession(for: conversationID)
+    }
+
+    /// Removes every message in the conversation but leaves the
+    /// conversation itself in the list — the user can keep chatting
+    /// under the same title.
+    func clearMessages(in conversationID: UUID) async {
+        guard activeStreams[conversationID] == nil else { return }
+
+        messagesByConversation[conversationID] = []
+        try? await store.clearMessages(conversationID: conversationID)
+        summaryByConversation[conversationID] = nil
+
+        if let idx = conversations.firstIndex(where: { $0.id == conversationID }) {
+            conversations[idx].lastMessagePreview = ""
+            conversations[idx].updatedAt = .now
+            try? await store.save(conversation: conversations[idx])
+        }
+
+        await runtime.invalidateSession(for: conversationID)
+    }
+
     /// Drops the last assistant reply and re-runs generation from the
     /// preceding user message. No-op if a stream is already active.
     func regenerate(in conversationID: UUID) {
@@ -352,7 +399,15 @@ final class ConversationService: ObservableObject {
             topExcerpts.append(webSnippet)
         }
         
-        let skillInstructions = await SkillManager.shared.buildSystemInstructions()
+        // Intersect "registered" and "user-enabled" to get the allow-list
+        // that drives BOTH the L4 instructions and the runtime dispatch.
+        // Doing this once per turn keeps prompt and execution in lockstep:
+        // a skill the prompt advertised is always the skill the runtime
+        // will actually call — and vice versa.
+        let registered = await SkillManager.shared.registeredSkillNames()
+        let enabledTools = registered.intersection(settings.current.enabledTools)
+        let skillInstructions = await SkillManager.shared
+            .buildSystemInstructions(enabled: enabledTools)
 
         // Overlay the active system-prompt preset onto the persona.
         // Falls back to `AssistantProfile.defaultSystemPrompt` if the
@@ -381,6 +436,7 @@ final class ConversationService: ObservableObject {
             conversationSummary: summaryText,
             fileExcerpts: topExcerpts,
             skillInstructions: skillInstructions,
+            availableTools: enabledTools,
             modelCapabilityProfile: capabilityProfile,
             promptMode: .chat
         )
@@ -441,8 +497,10 @@ final class ConversationService: ObservableObject {
                     assistantMessage.content = originalContent + "\n\n*(Agent používá skill: \(actionCommand.skillName)...)*"
                     messagesByConversation[conversationID]?[assistantIndex] = assistantMessage
 
-                    // Execute native skill
-                    let result = await SkillManager.shared.execute(actionCommand)
+                    // Execute native skill — pass the same allow-list used to
+                    // render the L4 instructions, so a tool disabled mid-turn
+                    // refuses to run instead of silently executing.
+                    let result = await SkillManager.shared.execute(actionCommand, enabled: enabledTools)
 
                     // Seed the context for the next loop so LLM sees what it did and what came back
                     let actionMsg = Message.assistantPlaceholder(in: conversationID)

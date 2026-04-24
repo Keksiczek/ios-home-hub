@@ -22,6 +22,21 @@ struct AppSettings: Codable, Equatable {
     /// badge next to the title.
     var showTokenUsage: Bool
 
+    /// Preferred assistant language. `.auto` follows `Locale.current`
+    /// and falls back to English for unsupported locales.
+    var language: AppLanguage
+    /// Lean/CI vs. normal conversational tone. Selects which response-style
+    /// block the system-prompt builder injects.
+    var responseStyle: ResponseStyle
+    /// Names of skills the user has enabled. The SkillManager uses this as
+    /// an allow-list both when rendering L4 tool instructions and when
+    /// dispatching a parsed tool call, so a disabled skill can neither be
+    /// advertised nor silently invoked.
+    var enabledTools: Set<String>
+    /// Optional location hint injected into the system prompt. Defaults
+    /// to Nymburk, CZ for the current user; blank disables the line.
+    var locationHint: String
+
     static let `default` = AppSettings(
         memoryEnabled: true,
         autoExtractMemory: true,
@@ -34,14 +49,24 @@ struct AppSettings: Codable, Equatable {
         selectedModelID: nil,
         systemPromptPresets: [.defaultBuiltIn],
         activeSystemPromptPresetID: SystemPromptPreset.defaultBuiltInID,
-        showTokenUsage: false
+        showTokenUsage: false,
+        language: .auto,
+        responseStyle: .leanCI,
+        enabledTools: AppSettings.defaultEnabledTools,
+        locationHint: "Nymburk, CZ"
     )
+
+    /// Tools registered in `SkillManager` by default. Kept in sync with
+    /// `SkillManager.init` — order doesn't matter; the set is an allow-list.
+    static let defaultEnabledTools: Set<String> = [
+        "Calculator", "Calendar", "HomeKit", "Reminders", "DeviceInfo"
+    ]
 
     // MARK: - Codable (migration-safe)
     //
-    // Older installs persist a settings.json without the preset /
-    // token-usage fields. `decodeIfPresent` with defaults keeps those
-    // installs working without a destructive reset.
+    // Older installs persist a settings.json without the new fields.
+    // `decodeIfPresent` with defaults keeps those installs working
+    // without a destructive reset.
 
     private enum CodingKeys: String, CodingKey {
         case memoryEnabled, autoExtractMemory, streamingEnabled
@@ -49,6 +74,7 @@ struct AppSettings: Codable, Equatable {
         case selectedModelID
         case systemPromptPresets, activeSystemPromptPresetID
         case showTokenUsage
+        case language, responseStyle, enabledTools, locationHint
     }
 
     init(
@@ -63,7 +89,11 @@ struct AppSettings: Codable, Equatable {
         selectedModelID: String?,
         systemPromptPresets: [SystemPromptPreset],
         activeSystemPromptPresetID: UUID,
-        showTokenUsage: Bool
+        showTokenUsage: Bool,
+        language: AppLanguage,
+        responseStyle: ResponseStyle,
+        enabledTools: Set<String>,
+        locationHint: String
     ) {
         self.memoryEnabled = memoryEnabled
         self.autoExtractMemory = autoExtractMemory
@@ -77,6 +107,10 @@ struct AppSettings: Codable, Equatable {
         self.systemPromptPresets = systemPromptPresets
         self.activeSystemPromptPresetID = activeSystemPromptPresetID
         self.showTokenUsage = showTokenUsage
+        self.language = language
+        self.responseStyle = responseStyle
+        self.enabledTools = enabledTools
+        self.locationHint = locationHint
     }
 
     init(from decoder: Decoder) throws {
@@ -106,6 +140,11 @@ struct AppSettings: Codable, Equatable {
             : SystemPromptPreset.defaultBuiltInID
 
         self.showTokenUsage = try c.decodeIfPresent(Bool.self, forKey: .showTokenUsage) ?? fallback.showTokenUsage
+
+        self.language       = try c.decodeIfPresent(AppLanguage.self,  forKey: .language)       ?? fallback.language
+        self.responseStyle  = try c.decodeIfPresent(ResponseStyle.self, forKey: .responseStyle) ?? fallback.responseStyle
+        self.enabledTools   = try c.decodeIfPresent(Set<String>.self,  forKey: .enabledTools)   ?? fallback.enabledTools
+        self.locationHint   = try c.decodeIfPresent(String.self,       forKey: .locationHint)   ?? fallback.locationHint
     }
 }
 
@@ -141,6 +180,56 @@ enum AppTheme: String, Codable, CaseIterable, Identifiable {
         case .system: return nil
         case .light:  return .light
         case .dark:   return .dark
+        }
+    }
+}
+
+/// Hard language selector for assistant output. Resolved once per turn
+/// by `PromptBuilder` into a concrete BCP-47 tag plus a matching
+/// imperative sentence for the system prompt.
+enum AppLanguage: String, Codable, CaseIterable, Identifiable {
+    case auto
+    case cs
+    case en
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .auto: return "Automatic (system)"
+        case .cs:   return "Čeština"
+        case .en:   return "English"
+        }
+    }
+
+    /// Resolves `.auto` against the supplied locale. Only `cs`/`en` are
+    /// supported today; every other system language falls back to English
+    /// so the prompt stays deterministic.
+    func resolved(locale: Locale = .current) -> AppLanguage {
+        switch self {
+        case .cs, .en: return self
+        case .auto:
+            let code = locale.language.languageCode?.identifier.lowercased() ?? "en"
+            return code == "cs" ? .cs : .en
+        }
+    }
+}
+
+/// Selects the response-style block injected into the system prompt.
+///
+/// `leanCI` matches the user's Lean/CI workflow (VERDICT-first, tables,
+/// no filler); `casual` keeps the standard conversational style already
+/// tuned via `UserProfile.preferredResponseStyle`.
+enum ResponseStyle: String, Codable, CaseIterable, Identifiable {
+    case leanCI
+    case casual
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .leanCI: return "Lean / CI"
+        case .casual: return "Casual"
         }
     }
 }
