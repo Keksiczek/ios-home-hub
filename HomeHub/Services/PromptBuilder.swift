@@ -167,22 +167,27 @@ enum PromptBuilder {
     }
 
     static func styleBlock(_ ctx: Context) -> String {
-        switch ctx.settings.responseStyle {
-        case .leanCI:
+        switch ctx.settings.answerLength {
+        case .concise:
             return """
-            Style — Lean / CI:
-            - Start with a single line "VERDIKT: …" (CZ) or "VERDICT: …" (EN): \
-            1–2 sentences, the bottom-line answer.
-            - Then a structured body with headings, bullet lists, and tables \
-            where useful. No filler, no apologies, no "As an AI…".
-            - Prefer concrete numbers, file paths, commands.
+            Answer length — Concise:
+            Reply in 1–3 sentences. No preamble ("Sure!", "Of course"), \
+            no sign-off. If the question genuinely needs a list, keep it \
+            to 3 bullets max.
             """
-        case .casual:
+        case .balanced:
             return """
-            Style — Conversational:
-            Be friendly, natural, and concise. Use paragraphs for prose; \
-            fall back to bullet lists only when the answer is genuinely \
-            enumerable.
+            Answer length — Balanced:
+            Give a short direct answer, then 1–2 lines of supporting \
+            context. Use bullet lists for enumerations, prose for everything \
+            else. No filler.
+            """
+        case .detailed:
+            return """
+            Answer length — Detailed:
+            Give a complete answer with headings, examples, and concrete \
+            numbers or commands where useful. Still avoid filler phrases \
+            and self-references.
             """
         }
     }
@@ -193,7 +198,7 @@ enum PromptBuilder {
 // Given:
 //   var s = AppSettings.default
 //   s.language = .cs
-//   s.responseStyle = .leanCI
+//   s.answerLength = .concise
 //   s.locationHint = "Nymburk, CZ"
 //   let ctx = PromptBuilder.Context(
 //     settings: s,
@@ -210,4 +215,4 @@ enum PromptBuilder {
 //   - rail contains "Respond ONLY in Czech"
 //   - rail contains "call the Calculator tool"
 //   - rail contains "no web access" (WebSearch is not registered)
-//   - rail contains "VERDIKT:" (Lean/CI style)
+//   - rail contains "Concise" (answer-length section header)

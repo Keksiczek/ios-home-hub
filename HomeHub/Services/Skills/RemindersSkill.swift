@@ -4,7 +4,24 @@ import EventKit
 struct RemindersSkill: Skill {
     let name = "RemindersSearch"
     let description = "Čte a vytváří připomínky z Apple Připomínek. Vstupy: 'list' (vypíše nesplněné připomínky), nebo JSON pro vytvoření nové: {\"title\": \"Koupit mléko\", \"dueDate\": \"2024-05-20\", \"list\": \"Nákupy\"}."
-    
+
+    /// Reports EventKit (Reminders) authorization up-front so the
+    /// agentic loop can present a "Grant permission" UI affordance
+    /// instead of swallowing the failure inside an `<Observation>`.
+    var availability: SkillAvailability {
+        let status = EKEventStore.authorizationStatus(for: .reminder)
+        switch status {
+        case .authorized, .fullAccess, .writeOnly:
+            return .enabled
+        case .notDetermined:
+            return .permission(prompt: "Reminders")
+        case .denied, .restricted:
+            return .permission(prompt: "Reminders (open iOS Settings to grant)")
+        @unknown default:
+            return .permission(prompt: "Reminders")
+        }
+    }
+
     func execute(input: String) async throws -> String {
         let store = EKEventStore()
         

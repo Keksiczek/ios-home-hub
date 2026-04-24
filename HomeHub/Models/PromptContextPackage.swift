@@ -29,6 +29,11 @@ struct PromptContextPackage {
     /// `AppSettings.enabledTools` allows. Drives the Tool-policy block in
     /// the context rail and the conditional wording of the privacy rail.
     var availableTools: Set<String> = []
+    /// Compact `UserMemory` block — name, location, notes, preferences.
+    /// When non-nil, `PromptAssemblyService` injects it as a dedicated
+    /// section so small models see the user's own curated facts on
+    /// every turn regardless of what the retrieval heuristics surface.
+    var userMemoryBlock: String? = nil
     /// Capability profile for the model that will process this prompt.
     ///
     /// Used by `PromptAssemblyService` to apply per-family token budgets and

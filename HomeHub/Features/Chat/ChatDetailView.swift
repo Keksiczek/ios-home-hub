@@ -10,6 +10,8 @@ struct ChatDetailView: View {
     @State private var showingVoiceCall = false
     @State private var showingClearConfirm = false
     @State private var renameText: String = ""
+    @State private var editingMessageID: UUID?
+    @State private var editingText: String = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -29,7 +31,11 @@ struct ChatDetailView: View {
                                             in: conversationID
                                         )
                                     }
-                                }
+                                },
+                                onEdit: canEdit(message) ? {
+                                    editingMessageID = message.id
+                                    editingText = message.content
+                                } : nil
                             )
                             .id(message.id)
                         }
@@ -157,6 +163,23 @@ struct ChatDetailView: View {
         } message: {
             Text("Removes every message in this chat. The conversation itself stays in the list.")
         }
+        .sheet(item: Binding(
+            get: { editingMessageID.map(EditingMessage.init(id:)) },
+            set: { editingMessageID = $0?.id }
+        )) { editing in
+            EditMessageSheet(
+                text: $editingText,
+                onSave: {
+                    conversations.editAndResend(
+                        messageID: editing.id,
+                        newText: editingText,
+                        in: conversationID
+                    )
+                    editingMessageID = nil
+                },
+                onCancel: { editingMessageID = nil }
+            )
+        }
         .task {
             await conversations.loadMessages(for: conversationID)
         }
@@ -193,6 +216,14 @@ struct ChatDetailView: View {
               message.status == .complete,
               !isStreaming else { return false }
         return messages.last(where: { $0.role == .assistant })?.id == message.id
+    }
+
+    /// "Edit & resend" only makes sense on the most recent user message —
+    /// editing earlier ones in the middle of a chat would orphan
+    /// downstream replies in confusing ways. Hide while streaming.
+    private func canEdit(_ message: Message) -> Bool {
+        guard message.role == .user, !isStreaming else { return false }
+        return messages.last(where: { $0.role == .user })?.id == message.id
     }
 
     /// Estimated fraction of the context window used (0.0–1.0).
@@ -240,6 +271,46 @@ struct ChatDetailView: View {
 
     private func cancel() {
         conversations.cancelStream(in: conversationID)
+    }
+}
+
+/// Wraps a message ID into an `Identifiable` so SwiftUI's `.sheet(item:)`
+/// can drive the edit-and-resend modal. SwiftUI binds presence/absence
+/// of the sheet to the optionality of this value, which is much cleaner
+/// than juggling a separate `isPresented` Bool.
+private struct EditingMessage: Identifiable {
+    let id: UUID
+}
+
+/// Modal text editor used to amend the most recent user message before
+/// re-running the assistant turn.
+private struct EditMessageSheet: View {
+    @Binding var text: String
+    let onSave: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            VStack {
+                TextEditor(text: $text)
+                    .padding(HHTheme.spaceM)
+                    .background(HHTheme.surface)
+                    .cornerRadius(HHTheme.cornerLarge)
+                    .padding()
+            }
+            .background(HHTheme.canvas.ignoresSafeArea())
+            .navigationTitle("Edit message")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Cancel", role: .cancel, action: onCancel)
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Resend", action: onSave)
+                        .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+        }
     }
 }
 

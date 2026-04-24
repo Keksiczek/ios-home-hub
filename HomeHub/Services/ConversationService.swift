@@ -25,6 +25,7 @@ final class ConversationService: ObservableObject {
     private let memory: MemoryService
     private let settings: SettingsService
     private let personalization: PersonalizationService
+    private let userMemory: UserMemoryStore?
     private let summarizer: SummarizationService
     private let embeddingService: EmbeddingService
 
@@ -38,6 +39,7 @@ final class ConversationService: ObservableObject {
         memory: MemoryService,
         settings: SettingsService,
         personalization: PersonalizationService,
+        userMemory: UserMemoryStore? = nil,
         summarizer: SummarizationService? = nil,
         embeddingService: EmbeddingService = EmbeddingService()
     ) {
@@ -47,6 +49,7 @@ final class ConversationService: ObservableObject {
         self.memory = memory
         self.settings = settings
         self.personalization = personalization
+        self.userMemory = userMemory
         // Default-construct the summarizer when callers (tests/previews)
         // don't supply one. Production goes through `AppContainer` which
         // always injects the shared instance.
@@ -242,6 +245,54 @@ final class ConversationService: ObservableObject {
         await runtime.invalidateSession(for: conversationID)
     }
 
+    /// Replaces the text of an existing user message and re-runs the
+    /// assistant reply. The classic "edit and resend" flow: drop every
+    /// message after the edited one, persist the new text, and stream a
+    /// fresh assistant turn. No-op if a stream is currently active in
+    /// this conversation.
+    func editAndResend(messageID: UUID, newText: String, in conversationID: UUID) {
+        let trimmed = newText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard activeStreams[conversationID] == nil, !trimmed.isEmpty else { return }
+
+        var list = messagesByConversation[conversationID] ?? []
+        guard let idx = list.firstIndex(where: { $0.id == messageID }),
+              list[idx].role == .user else { return }
+
+        // Snapshot the attachments — the user is editing the text, but
+        // they almost certainly still mean the same files / photos.
+        let attachments = list[idx].attachments
+
+        // Drop every message that came after the edited one. Persist the
+        // deletes so the on-disk transcript stays consistent with the
+        // in-memory list.
+        let dropped = list.suffix(from: idx + 1).map(\.id)
+        list.removeLast(list.count - (idx + 1))
+        list[idx].content = trimmed
+        list[idx].createdAt = .now
+
+        messagesByConversation[conversationID] = list
+        Task {
+            for did in dropped {
+                try? await store.deleteMessage(id: did, conversationID: conversationID)
+            }
+            try? await store.save(message: list[idx])
+        }
+
+        // Edited prefix invalidates whatever the runtime had cached for
+        // this conversation.
+        Task { await runtime.invalidateSession(for: conversationID) }
+
+        activeStreams[conversationID] = Task { [weak self] in
+            guard let self else { return }
+            await self.performSend(
+                userInput: trimmed,
+                in: conversationID,
+                attachments: attachments,
+                skipUserMessage: true
+            )
+        }
+    }
+
     /// Drops the last assistant reply and re-runs generation from the
     /// preceding user message. No-op if a stream is already active.
     func regenerate(in conversationID: UUID) {
@@ -269,6 +320,17 @@ final class ConversationService: ObservableObject {
     }
 
     // MARK: - Internals
+
+    /// Short localised status line shown inside the assistant bubble
+    /// while a tool runs. Uses the current `AppLanguage` so the label
+    /// doesn't clash with the language rail in the system prompt.
+    private func toolRunningLabel(_ skillName: String) -> String {
+        let resolved = settings.current.language.resolved()
+        switch resolved {
+        case .cs: return "Používám nástroj: \(skillName)…"
+        case .en, .auto: return "Using tool: \(skillName)…"
+        }
+    }
 
     /// Returns the appropriate stop sequences for the currently loaded model.
     /// These are checked at the text level in addition to the EOS token check
@@ -437,6 +499,7 @@ final class ConversationService: ObservableObject {
             fileExcerpts: topExcerpts,
             skillInstructions: skillInstructions,
             availableTools: enabledTools,
+            userMemoryBlock: userMemory?.promptBlock(),
             modelCapabilityProfile: capabilityProfile,
             promptMode: .chat
         )
@@ -492,15 +555,16 @@ final class ConversationService: ObservableObject {
             // Check for Agentic Action
             if assistantMessage.status == .complete {
                 if let actionCommand = await SkillManager.shared.parseAction(from: assistantMessage.content) {
-                    // Show temporary UI indicator
+                    HHLog.tool.info("loop \(currentLoop) → \(actionCommand.skillName, privacy: .public)")
+
                     let originalContent = assistantMessage.content
-                    assistantMessage.content = originalContent + "\n\n*(Agent používá skill: \(actionCommand.skillName)...)*"
+                    assistantMessage.content = originalContent + "\n\n*(\(toolRunningLabel(actionCommand.skillName)))*"
                     messagesByConversation[conversationID]?[assistantIndex] = assistantMessage
 
-                    // Execute native skill — pass the same allow-list used to
-                    // render the L4 instructions, so a tool disabled mid-turn
-                    // refuses to run instead of silently executing.
-                    let result = await SkillManager.shared.execute(actionCommand, enabled: enabledTools)
+                    // Execute via the structured API — timeout + typed failure
+                    // reasons so we can decide whether to loop once more or
+                    // bail out.
+                    let result = await SkillManager.shared.run(actionCommand, enabled: enabledTools)
 
                     // Seed the context for the next loop so LLM sees what it did and what came back
                     let actionMsg = Message.assistantPlaceholder(in: conversationID)
@@ -508,7 +572,10 @@ final class ConversationService: ObservableObject {
                     actionMsgCopy.content = originalContent
                     actionMsgCopy.status = .complete
 
-                    let obsMsg = Message.user("<Observation>\n\(result)\n</Observation>", in: conversationID)
+                    let obsMsg = Message.user(
+                        "<Observation>\n\(result.observationText)\n</Observation>",
+                        in: conversationID
+                    )
 
                     loopPackage.recentMessages.append(actionMsgCopy)
                     loopPackage.recentMessages.append(obsMsg)
@@ -518,6 +585,14 @@ final class ConversationService: ObservableObject {
                     assistantMessage.content = ""
                     assistantMessage.status = .streaming
                     messagesByConversation[conversationID]?[assistantIndex] = assistantMessage
+
+                    // Non-recoverable failures (unknown / disabled / permission)
+                    // break out — forcing another pass would just have the
+                    // model re-emit the same call and hit the same wall.
+                    if case .error(_, let reason) = result, reason != .timeout && reason != .executionFailed {
+                        HHLog.tool.info("loop \(currentLoop) aborting — \(reason.rawValue, privacy: .public)")
+                        break
+                    }
 
                     continue
                 }

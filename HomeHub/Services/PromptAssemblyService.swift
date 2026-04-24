@@ -130,8 +130,16 @@ final class PromptAssemblyService {
             )
         ))
 
-        // L0c. User profile
+        // L0c. User profile (from onboarding — name, pronouns, interests…).
         appendUserProfile(from: package, to: &chunks)
+
+        // L0d. User memory — user-curated notes + preferences from the
+        // UserDefaults-backed `UserMemoryStore`. Injected verbatim so
+        // small models see the user's own hand-written facts on every
+        // turn regardless of retrieval ranking.
+        if let block = package.userMemoryBlock, !block.isEmpty {
+            chunks.append(block)
+        }
 
         // L0.5: Summary of older messages
         if let summary = package.conversationSummary {

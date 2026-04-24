@@ -45,6 +45,7 @@ actor SkillManager {
     func register(_ skill: any Skill) {
         skills[skill.name.lowercased()] = skill
         cachedInstructions = nil
+        HHLog.tool.info("registered skill \(skill.name, privacy: .public)")
     }
 
     /// The names of every skill currently in the registry, in registration
@@ -52,6 +53,15 @@ actor SkillManager {
     /// the intersection with `AppSettings.enabledTools` for each turn.
     func registeredSkillNames() -> Set<String> {
         Set(skills.values.map(\.name))
+    }
+
+    /// Snapshot of `(name, availability)` for every registered skill.
+    /// Consumed by Settings so the user sees "Needs permission — Calendar
+    /// access" next to a toggle instead of a silent failure at call time.
+    func availabilitySnapshot() -> [(name: String, availability: SkillAvailability)] {
+        skills.values
+            .map { (name: $0.name, availability: $0.availability) }
+            .sorted { $0.name < $1.name }
     }
 
     /// Generates the L4 system-prompt block listing the *enabled* skills.
@@ -108,35 +118,110 @@ actor SkillManager {
     /// Parses the first `<tool_call>` envelope in `text`.
     ///
     /// Returns `nil` if no valid envelope is present, the JSON is malformed,
-    /// or either the `name` or `input` field is missing.
+    /// or either the `name` or `input` field is missing. Logs the drop at
+    /// `debug` so agentic-loop regressions leave a trace in Console.app.
     func parseAction(from text: String) -> ActionCommand? {
-        ToolCallEnvelope.parse(from: text)?.toActionCommand()
+        if let cmd = ToolCallEnvelope.parse(from: text)?.toActionCommand() {
+            return cmd
+        }
+        // Only log when the text actually contained what LOOKS like a
+        // tool call — otherwise every plain assistant turn generates noise.
+        if text.contains(ToolCallEnvelope.openTag) {
+            HHLog.tool.error("malformed <tool_call> envelope — skipping")
+        }
+        return nil
     }
 
-    /// Executes the specified skill command.
+    /// Structured execution. Dispatches to the registered skill, enforces
+    /// the allow-list and per-skill availability, and wraps the outcome
+    /// in a `ToolExecutionResult` the agentic loop can branch on.
     ///
     /// - Parameters:
     ///   - command: Parsed envelope from the model.
-    ///   - enabled: Allow-list of skill names. A command whose skill is
-    ///     registered but disabled is rejected with an error string so
-    ///     the LLM can incorporate the refusal into its next turn
-    ///     instead of the tool silently running against user intent.
-    ///     Pass `nil` to skip the allow-list check.
-    func execute(_ command: ActionCommand, enabled: Set<String>? = nil) async -> String {
+    ///   - enabled: Optional allow-list (case-insensitive). Missing → no
+    ///     allow-list filtering (legacy callers).
+    ///   - timeout: Per-call budget. Default is generous (10 s) because
+    ///     tools like WebSearch can legitimately take a few seconds;
+    ///     Calculator / DeviceInfo finish in microseconds anyway.
+    func run(
+        _ command: ActionCommand,
+        enabled: Set<String>? = nil,
+        timeout: Duration = .seconds(10)
+    ) async -> ToolExecutionResult {
         let key = command.skillName.lowercased()
         guard let skill = skills[key] else {
-            return "Error: Skill '\(command.skillName)' is not recognized."
+            HHLog.tool.error("unknown skill '\(command.skillName, privacy: .public)'")
+            return .error(
+                message: "Skill '\(command.skillName)' is not recognised.",
+                reason: .unknownTool
+            )
         }
         if let enabled, !enabled.map({ $0.lowercased() }).contains(key) {
-            return "Error: Skill '\(command.skillName)' is currently disabled in Settings."
+            HHLog.tool.info("skill '\(command.skillName, privacy: .public)' disabled — refusing")
+            return .error(
+                message: "Skill '\(command.skillName)' is disabled in Settings.",
+                reason: .disabled
+            )
+        }
+        if case .permission(let prompt) = skill.availability {
+            HHLog.tool.info("skill '\(skill.name, privacy: .public)' needs permission: \(prompt, privacy: .public)")
+            return .error(
+                message: "This tool needs permission: \(prompt). Open Settings to grant it.",
+                reason: .permissionMissing
+            )
+        }
+        if case .unavailable(let reason) = skill.availability {
+            return .error(
+                message: "\(skill.name) is unavailable: \(reason)",
+                reason: .executionFailed
+            )
         }
 
+        HHLog.tool.info("executing \(skill.name, privacy: .public)")
         do {
-            return try await skill.execute(input: command.input)
+            let text = try await withThrowingTaskGroup(of: String.self) { group in
+                group.addTask { try await skill.execute(input: command.input) }
+                group.addTask {
+                    try await Task.sleep(for: timeout)
+                    throw ToolTimeoutError()
+                }
+                guard let first = try await group.next() else {
+                    throw ToolTimeoutError()
+                }
+                group.cancelAll()
+                return first
+            }
+            return .success(text)
+        } catch is ToolTimeoutError {
+            HHLog.tool.error("skill '\(skill.name, privacy: .public)' timed out")
+            return .error(
+                message: "\(skill.name) took longer than \(timeout).",
+                reason: .timeout
+            )
         } catch {
-            return "Error executing \(command.skillName): \(error.localizedDescription)"
+            HHLog.tool.error("skill '\(skill.name, privacy: .public)' threw: \(error.localizedDescription, privacy: .public)")
+            return .error(
+                message: "\(skill.name): \(error.localizedDescription)",
+                reason: .executionFailed
+            )
         }
     }
+
+    /// Legacy flat-string execute. Kept for callers (tests, widgets)
+    /// that don't want to branch on `ToolExecutionResult`. Internally
+    /// routes through `run(_:enabled:)` so error shaping stays in one
+    /// place.
+    func execute(_ command: ActionCommand, enabled: Set<String>? = nil) async -> String {
+        let result = await run(command, enabled: enabled)
+        switch result {
+        case .success(let text):
+            return text
+        case .error(let message, _):
+            return "Error: \(message)"
+        }
+    }
+
+    private struct ToolTimeoutError: Error {}
 
     /// Like `execute(_:)` but rethrows the underlying skill error instead
     /// of stringifying it. Used by callers (widget action handler, App

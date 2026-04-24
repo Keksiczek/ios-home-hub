@@ -25,9 +25,12 @@ struct AppSettings: Codable, Equatable {
     /// Preferred assistant language. `.auto` follows `Locale.current`
     /// and falls back to English for unsupported locales.
     var language: AppLanguage
-    /// Lean/CI vs. normal conversational tone. Selects which response-style
-    /// block the system-prompt builder injects.
-    var responseStyle: ResponseStyle
+    /// How long the assistant's answers should be. Selects the length
+    /// block that `PromptBuilder` injects into every chat turn. Kept
+    /// separate from `UserProfile.preferredResponseStyle` (which shapes
+    /// *tone*, not length) so the user can tweak one without disturbing
+    /// the other.
+    var answerLength: AnswerLength
     /// Names of skills the user has enabled. The SkillManager uses this as
     /// an allow-list both when rendering L4 tool instructions and when
     /// dispatching a parsed tool call, so a disabled skill can neither be
@@ -51,7 +54,7 @@ struct AppSettings: Codable, Equatable {
         activeSystemPromptPresetID: SystemPromptPreset.defaultBuiltInID,
         showTokenUsage: false,
         language: .auto,
-        responseStyle: .leanCI,
+        answerLength: .balanced,
         enabledTools: AppSettings.defaultEnabledTools,
         locationHint: "Nymburk, CZ"
     )
@@ -74,7 +77,9 @@ struct AppSettings: Codable, Equatable {
         case selectedModelID
         case systemPromptPresets, activeSystemPromptPresetID
         case showTokenUsage
-        case language, responseStyle, enabledTools, locationHint
+        case language, answerLength, enabledTools, locationHint
+        // Retained only for migration from the previous schema.
+        case responseStyle
     }
 
     init(
@@ -91,7 +96,7 @@ struct AppSettings: Codable, Equatable {
         activeSystemPromptPresetID: UUID,
         showTokenUsage: Bool,
         language: AppLanguage,
-        responseStyle: ResponseStyle,
+        answerLength: AnswerLength,
         enabledTools: Set<String>,
         locationHint: String
     ) {
@@ -108,7 +113,7 @@ struct AppSettings: Codable, Equatable {
         self.activeSystemPromptPresetID = activeSystemPromptPresetID
         self.showTokenUsage = showTokenUsage
         self.language = language
-        self.responseStyle = responseStyle
+        self.answerLength = answerLength
         self.enabledTools = enabledTools
         self.locationHint = locationHint
     }
@@ -141,10 +146,24 @@ struct AppSettings: Codable, Equatable {
 
         self.showTokenUsage = try c.decodeIfPresent(Bool.self, forKey: .showTokenUsage) ?? fallback.showTokenUsage
 
-        self.language       = try c.decodeIfPresent(AppLanguage.self,  forKey: .language)       ?? fallback.language
-        self.responseStyle  = try c.decodeIfPresent(ResponseStyle.self, forKey: .responseStyle) ?? fallback.responseStyle
-        self.enabledTools   = try c.decodeIfPresent(Set<String>.self,  forKey: .enabledTools)   ?? fallback.enabledTools
-        self.locationHint   = try c.decodeIfPresent(String.self,       forKey: .locationHint)   ?? fallback.locationHint
+        self.language       = try c.decodeIfPresent(AppLanguage.self,   forKey: .language)     ?? fallback.language
+        self.enabledTools   = try c.decodeIfPresent(Set<String>.self,   forKey: .enabledTools) ?? fallback.enabledTools
+        self.locationHint   = try c.decodeIfPresent(String.self,        forKey: .locationHint) ?? fallback.locationHint
+
+        // Migration path for installs that persisted the previous
+        // `responseStyle: "leanCI" | "casual"` field. Map leanCI→concise
+        // and casual→balanced so the user's intent survives the rename.
+        if let decoded = try c.decodeIfPresent(AnswerLength.self, forKey: .answerLength) {
+            self.answerLength = decoded
+        } else if let legacy = try c.decodeIfPresent(String.self, forKey: .responseStyle) {
+            switch legacy {
+            case "leanCI": self.answerLength = .concise
+            case "casual": self.answerLength = .balanced
+            default:       self.answerLength = fallback.answerLength
+            }
+        } else {
+            self.answerLength = fallback.answerLength
+        }
     }
 }
 
@@ -215,21 +234,29 @@ enum AppLanguage: String, Codable, CaseIterable, Identifiable {
     }
 }
 
-/// Selects the response-style block injected into the system prompt.
-///
-/// `leanCI` matches the user's Lean/CI workflow (VERDICT-first, tables,
-/// no filler); `casual` keeps the standard conversational style already
-/// tuned via `UserProfile.preferredResponseStyle`.
-enum ResponseStyle: String, Codable, CaseIterable, Identifiable {
-    case leanCI
-    case casual
+/// How much the assistant should write per turn. Length is orthogonal
+/// to tone (`UserProfile.preferredResponseStyle`) — an "analytical" tone
+/// can still be concise, and a "warm" tone can still be detailed.
+enum AnswerLength: String, Codable, CaseIterable, Identifiable {
+    case concise
+    case balanced
+    case detailed
 
     var id: String { rawValue }
 
     var label: String {
         switch self {
-        case .leanCI: return "Lean / CI"
-        case .casual: return "Casual"
+        case .concise:  return "Concise"
+        case .balanced: return "Balanced"
+        case .detailed: return "Detailed"
+        }
+    }
+
+    var blurb: String {
+        switch self {
+        case .concise:  return "1–3 sentences. No preamble."
+        case .balanced: return "A short answer with a line or two of supporting detail."
+        case .detailed: return "Full answer with headings and examples where useful."
         }
     }
 }

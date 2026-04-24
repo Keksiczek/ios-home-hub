@@ -4,7 +4,27 @@ import EventKit
 struct CalendarSkill: Skill {
     let name = "CalendarSearch"
     let description = "Queries Apple Calendar for today's or tomorrow's events. Valid inputs: 'today', 'tomorrow', or a specific date like '2024-05-20'."
-    
+
+    /// Reports whether EventKit access is actually granted. The old code
+    /// asked for permission lazily on first execution, which meant the
+    /// model could emit a tool call and receive a generic "permission
+    /// denied" observation — confusing both the user and the LLM. We
+    /// now surface `.permission` up-front so the UI can show a "Grant
+    /// calendar access" button instead.
+    var availability: SkillAvailability {
+        let status = EKEventStore.authorizationStatus(for: .event)
+        switch status {
+        case .authorized, .fullAccess, .writeOnly:
+            return .enabled
+        case .notDetermined:
+            return .permission(prompt: "Calendar")
+        case .denied, .restricted:
+            return .permission(prompt: "Calendar (open iOS Settings to grant)")
+        @unknown default:
+            return .permission(prompt: "Calendar")
+        }
+    }
+
     func execute(input: String) async throws -> String {
         let store = EKEventStore()
         

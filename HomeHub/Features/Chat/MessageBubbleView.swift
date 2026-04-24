@@ -8,6 +8,10 @@ struct MessageBubbleView: View {
     /// Called when the user picks "Delete" from the context menu. Pass
     /// `nil` on read-only views (e.g. previews) to hide the action.
     var onDelete: (() -> Void)? = nil
+    /// Called when the user picks "Edit" on one of their own messages.
+    /// The handler is responsible for showing an editor, then invoking
+    /// `ConversationService.editAndResend(...)` with the new text.
+    var onEdit: (() -> Void)? = nil
 
     /// Content with chat-template control tokens (`<start_of_turn>`,
     /// `<|eot_id|>`, `</s>` …) removed. Applied at render time so the raw
@@ -17,7 +21,26 @@ struct MessageBubbleView: View {
         ChatTextSanitizer.strip(message.content)
     }
 
+    /// Tool observations are smuggled in as user-role messages (so the
+    /// LLM sees them in the next turn) but should render in the chat as
+    /// compact "tool result" chips, not as a confusing user bubble.
+    private var observation: ToolObservation? {
+        ToolObservation.parse(from: message.content)
+    }
+
     var body: some View {
+        // Tool observations get a distinct compact chip layout — they're
+        // not really "messages" the user sent, even though the runtime
+        // smuggles them in under the user role for prompt-shape reasons.
+        if let observation {
+            ToolResultChip(observation: observation)
+                .padding(.horizontal, HHTheme.spaceM)
+        } else {
+            bubble
+        }
+    }
+
+    private var bubble: some View {
         HStack {
             if message.role == .user { Spacer(minLength: 40) }
 
@@ -61,6 +84,14 @@ struct MessageBubbleView: View {
                     UIPasteboard.general.string = displayContent
                 } label: {
                     Label("Copy", systemImage: "doc.on.doc")
+                }
+
+                if let onEdit {
+                    Button {
+                        onEdit()
+                    } label: {
+                        Label("Edit & resend", systemImage: "pencil")
+                    }
                 }
 
                 if let onRegenerate {
