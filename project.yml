@@ -38,6 +38,14 @@ targets:
       - framework: /Users/keks/Developer/llama.xcframework
         embed: true
         codeSign: true
+      # System frameworks required by llama.cpp's Metal backend.
+      # Without explicit linking, the linker emits auto-link-failure warnings
+      # for Accelerate (BLAS/vDSP), Metal compute, and CoreAudio.
+      - sdk: Accelerate.framework
+      - sdk: Metal.framework
+      - sdk: MetalKit.framework
+      - sdk: MetalPerformanceShaders.framework
+      - sdk: CoreAudio.framework
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: cz.keksiczek.homehub

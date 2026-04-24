@@ -9,6 +9,14 @@ final class ConversationService: ObservableObject {
     @Published private(set) var conversations: [Conversation] = []
     @Published private(set) var messagesByConversation: [UUID: [Message]] = [:]
     @Published private(set) var streamingConversationIDs: Set<UUID> = []
+    /// Inline send-blocked feedback keyed by conversation ID.
+    /// Set when the user tries to send while a generation is active;
+    /// auto-cleared after 3 seconds. UI observes this to show an
+    /// inline hint rather than silently dropping the message.
+    @Published private(set) var sendFeedback: [UUID: String] = [:]
+
+    /// True when any conversation is currently streaming.
+    var isAnyStreaming: Bool { !streamingConversationIDs.isEmpty }
 
     private let store: any Store
     private let runtime: RuntimeManager
@@ -49,6 +57,11 @@ final class ConversationService: ObservableObject {
 
     func load() async {
         conversations = (try? await store.loadConversations()) ?? []
+        // Discard any Task handles left over from before launch (crash or
+        // process restart).  The tasks themselves are gone; keeping the
+        // dictionary entries would permanently block new sends.
+        activeStreams.removeAll()
+        streamingConversationIDs.removeAll()
     }
 
     func messages(in conversationID: UUID) -> [Message] {
@@ -56,8 +69,21 @@ final class ConversationService: ObservableObject {
     }
 
     func loadMessages(for conversationID: UUID) async {
-        if let loaded = try? await store.loadMessages(conversationID: conversationID) {
+        if var loaded = try? await store.loadMessages(conversationID: conversationID) {
+            // A crash while streaming leaves messages with .streaming status on disk.
+            // Fix them to .cancelled so the UI doesn't display a stale spinner and
+            // so the conversation is immediately usable after restart.
+            var hadStale = false
+            for i in loaded.indices where loaded[i].status == .streaming {
+                loaded[i].status = .cancelled
+                hadStale = true
+            }
             messagesByConversation[conversationID] = loaded
+            if hadStale {
+                for msg in loaded where msg.status == .cancelled {
+                    try? await store.save(message: msg)
+                }
+            }
         }
     }
 
@@ -99,11 +125,31 @@ final class ConversationService: ObservableObject {
     func send(userInput: String, in conversationID: UUID, attachments: [Message.Attachment]? = nil, isWebSearchEnabled: Bool = false) {
         let trimmed = userInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty || (attachments?.isEmpty == false) else { return }
-        guard activeStreams[conversationID] == nil else { return }
+
+        // Same conversation already streaming — show inline hint, don't drop silently.
+        if activeStreams[conversationID] != nil {
+            showSendFeedback("Počkejte na dokončení odpovědi", for: conversationID)
+            return
+        }
+
+        // Another conversation is streaming — llama.cpp allows only one
+        // concurrent generation.  Show a cross-conversation hint.
+        if !activeStreams.isEmpty {
+            showSendFeedback("Model je zaneprázdněn jiným rozhovorem", for: conversationID)
+            return
+        }
 
         activeStreams[conversationID] = Task { [weak self] in
             guard let self else { return }
             await self.performSend(userInput: trimmed, in: conversationID, attachments: attachments, isWebSearchEnabled: isWebSearchEnabled)
+        }
+    }
+
+    private func showSendFeedback(_ message: String, for conversationID: UUID) {
+        sendFeedback[conversationID] = message
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(3))
+            self?.sendFeedback[conversationID] = nil
         }
     }
 
@@ -112,6 +158,7 @@ final class ConversationService: ObservableObject {
         let trimmed = userInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty || (attachments?.isEmpty == false) else { return }
         guard activeStreams[conversationID] == nil else { return }
+        guard activeStreams.isEmpty else { return }
 
         let task = Task { [weak self] in
             guard let self else { return }

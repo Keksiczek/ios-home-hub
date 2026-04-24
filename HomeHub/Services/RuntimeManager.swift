@@ -35,6 +35,17 @@ final class RuntimeManager: ObservableObject {
     }
 
     func load(_ model: LocalModel) async {
+        // Skip redundant loads — prevents race where two callers both see
+        // activeModel == nil (e.g., bootstrap + first active-phase event)
+        // and both trigger a load, causing double llama_model_load_from_file
+        // (wasted RAM + potential SIGBUS if the second load fires while the
+        // first generation is still running).
+        switch state {
+        case .loading(let id) where id == model.id: return
+        case .ready(let id)   where id == model.id: return
+        default: break
+        }
+
         state = .loading(modelID: model.id)
         do {
             try await runtime.load(model: model)
