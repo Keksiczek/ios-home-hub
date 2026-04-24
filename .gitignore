@@ -1,0 +1,43 @@
+# macOS
+.DS_Store
+
+# Xcode / SwiftPM build output
+build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+*.xcworkspace/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+
+# XcodeGen-generated project (regenerated from project.yml)
+*.xcodeproj
+
+# Swift Package Manager
+.build/
+.swiftpm/
+Packages/
+Package.pins
+
+# CocoaPods
+Pods/
+
+# Carthage
+Carthage/Build/
+
+# Editor / IDE backups and temp files
+*.bak
+*.bak2
+*.orig
+*.swp
+*.swo
+*~
+
+# Logs and profile data
+*.log
+*.profraw
+*.xccovreport
+*.xcresult
+
+# Local environment / secrets
+.env
+*.local

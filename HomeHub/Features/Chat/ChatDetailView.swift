@@ -147,9 +147,13 @@ struct ChatDetailView: View {
     }
 
     private var canSend: Bool {
+        // Intentionally does NOT check `conversations.isAnyStreaming`: when
+        // another conversation is streaming, the Send button stays tappable
+        // so that ConversationService.send() can surface the cross-conversation
+        // "Model je zaneprázdněn…" inline feedback. Disabling the button
+        // would silently swallow the user's intent.
         !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !isStreaming
-            && !conversations.isAnyStreaming
             && runtime.activeModel != nil
     }
 
