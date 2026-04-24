@@ -42,6 +42,27 @@ struct ChatDetailView: View {
                 }
             }
 
+            // Inline busy-model feedback — shown when the user taps Send while
+            // a generation is active (same or another conversation).
+            // Wrapped in a Group so the .animation drives the transition on
+            // the whole block rather than only animating property changes
+            // within an already-visible view.
+            Group {
+                if let feedback = conversations.sendFeedback[conversationID] {
+                    HStack(spacing: 6) {
+                        Image(systemName: "hourglass")
+                        Text(feedback)
+                            .font(HHTheme.caption)
+                    }
+                    .foregroundStyle(HHTheme.warning)
+                    .padding(.horizontal, HHTheme.spaceL)
+                    .padding(.vertical, HHTheme.spaceS)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+            }
+            .animation(.easeOut(duration: 0.2), value: conversations.sendFeedback[conversationID] != nil)
+
             MessageComposerView(
                 draft: $draft,
                 isStreaming: isStreaming,
@@ -126,6 +147,11 @@ struct ChatDetailView: View {
     }
 
     private var canSend: Bool {
+        // Intentionally does NOT check `conversations.isAnyStreaming`: when
+        // another conversation is streaming, the Send button stays tappable
+        // so that ConversationService.send() can surface the cross-conversation
+        // "Model je zaneprázdněn…" inline feedback. Disabling the button
+        // would silently swallow the user's intent.
         !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !isStreaming
             && runtime.activeModel != nil

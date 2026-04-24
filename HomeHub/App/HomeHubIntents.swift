@@ -26,15 +26,26 @@ struct AskAssistantIntent: AppIntent {
         let tempConversation = await conversationService.createConversation(title: "Siri Dotaz")
         
         // Send the input and await completion natively (no polling)
-        await conversationService.sendAndWait(userInput: message, in: tempConversation.id)
-        
+        let result = await conversationService.sendAndWait(userInput: message, in: tempConversation.id)
+
+        switch result {
+        case .sent:
+            break
+        case .emptyInput:
+            return .result(value: "Zpráva je prázdná.")
+        case .modelNotReady:
+            return .result(value: "Lokální model ještě není načten. Otevři aplikaci a počkej, až bude připraven.")
+        case .blockedSameConversation, .blockedOtherConversation:
+            return .result(value: "Asistent zrovna odpovídá na předchozí dotaz. Zkus to prosím za chvíli.")
+        }
+
         // Fetch the final generated message
         let messages = conversationService.messages(in: tempConversation.id)
         guard let lastAssistantMessage = messages.last(where: { $0.role == .assistant }),
               !lastAssistantMessage.content.isEmpty else {
             return .result(value: "Promiň, asistent nedokázal vygenerovat odpověď.")
         }
-        
+
         return .result(value: lastAssistantMessage.content)
     }
 }

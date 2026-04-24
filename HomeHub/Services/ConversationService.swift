@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import UIKit
 
 /// Orchestrates chat. This is where the runtime, memory, prompt
 /// assembly, and persistence meet. UI never calls the runtime
@@ -9,6 +10,14 @@ final class ConversationService: ObservableObject {
     @Published private(set) var conversations: [Conversation] = []
     @Published private(set) var messagesByConversation: [UUID: [Message]] = [:]
     @Published private(set) var streamingConversationIDs: Set<UUID> = []
+    /// Inline send-blocked feedback keyed by conversation ID.
+    /// Set when the user tries to send while a generation is active;
+    /// auto-cleared after 3 seconds. UI observes this to show an
+    /// inline hint rather than silently dropping the message.
+    @Published private(set) var sendFeedback: [UUID: String] = [:]
+
+    /// True when any conversation is currently streaming.
+    var isAnyStreaming: Bool { !streamingConversationIDs.isEmpty }
 
     private let store: any Store
     private let runtime: RuntimeManager
@@ -49,6 +58,11 @@ final class ConversationService: ObservableObject {
 
     func load() async {
         conversations = (try? await store.loadConversations()) ?? []
+        // Discard any Task handles left over from before launch (crash or
+        // process restart).  The tasks themselves are gone; keeping the
+        // dictionary entries would permanently block new sends.
+        activeStreams.removeAll()
+        streamingConversationIDs.removeAll()
     }
 
     func messages(in conversationID: UUID) -> [Message] {
@@ -56,8 +70,20 @@ final class ConversationService: ObservableObject {
     }
 
     func loadMessages(for conversationID: UUID) async {
-        if let loaded = try? await store.loadMessages(conversationID: conversationID) {
+        if var loaded = try? await store.loadMessages(conversationID: conversationID) {
+            // A crash while streaming leaves messages with .streaming status on disk.
+            // Mark them `.failed` — not `.cancelled` — because the user didn't
+            // intentionally stop the stream; the process died. This lets the UI
+            // show a retry affordance instead of a benign "cancelled" pill.
+            var staleIndexes: [Int] = []
+            for i in loaded.indices where loaded[i].status == .streaming {
+                loaded[i].status = .failed
+                staleIndexes.append(i)
+            }
             messagesByConversation[conversationID] = loaded
+            for i in staleIndexes {
+                try? await store.save(message: loaded[i])
+            }
         }
     }
 
@@ -99,7 +125,19 @@ final class ConversationService: ObservableObject {
     func send(userInput: String, in conversationID: UUID, attachments: [Message.Attachment]? = nil, isWebSearchEnabled: Bool = false) {
         let trimmed = userInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty || (attachments?.isEmpty == false) else { return }
-        guard activeStreams[conversationID] == nil else { return }
+
+        // Same conversation already streaming — show inline hint, don't drop silently.
+        if activeStreams[conversationID] != nil {
+            showSendFeedback("Počkejte na dokončení odpovědi", for: conversationID)
+            return
+        }
+
+        // Another conversation is streaming — llama.cpp allows only one
+        // concurrent generation.  Show a cross-conversation hint.
+        if !activeStreams.isEmpty {
+            showSendFeedback("Model je zaneprázdněn jiným rozhovorem", for: conversationID)
+            return
+        }
 
         activeStreams[conversationID] = Task { [weak self] in
             guard let self else { return }
@@ -107,11 +145,40 @@ final class ConversationService: ObservableObject {
         }
     }
 
-    /// Odeslání zprávy se synchronním čekáním na výsledek (vhodné pro App Intents a widgety)
-    func sendAndWait(userInput: String, in conversationID: UUID, attachments: [Message.Attachment]? = nil, isWebSearchEnabled: Bool = false) async {
+    private func showSendFeedback(_ message: String, for conversationID: UUID) {
+        sendFeedback[conversationID] = message
+        // Snapshot the message so a concurrent tap that overwrites the
+        // feedback with a DIFFERENT string doesn't get cleared early by
+        // this Task's delayed reset. Only clear if the value hasn't changed.
+        let snapshot = message
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(3))
+            if self?.sendFeedback[conversationID] == snapshot {
+                self?.sendFeedback[conversationID] = nil
+            }
+        }
+    }
+
+    /// Result of a `sendAndWait` call — exposed to App Intents / widgets so
+    /// Shortcuts.app (or the widget) can show a meaningful message instead of
+    /// silently swallowing the send.
+    enum SendResult: Equatable {
+        case sent
+        case emptyInput
+        case blockedSameConversation
+        case blockedOtherConversation
+        case modelNotReady
+    }
+
+    /// Odeslání zprávy se synchronním čekáním na výsledek (vhodné pro App Intents a widgety).
+    /// Vrací `SendResult`, aby volající mohl zobrazit smysluplnou chybovou hlášku.
+    @discardableResult
+    func sendAndWait(userInput: String, in conversationID: UUID, attachments: [Message.Attachment]? = nil, isWebSearchEnabled: Bool = false) async -> SendResult {
         let trimmed = userInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty || (attachments?.isEmpty == false) else { return }
-        guard activeStreams[conversationID] == nil else { return }
+        guard !trimmed.isEmpty || (attachments?.isEmpty == false) else { return .emptyInput }
+        guard runtime.activeModel != nil else { return .modelNotReady }
+        guard activeStreams[conversationID] == nil else { return .blockedSameConversation }
+        guard activeStreams.isEmpty else { return .blockedOtherConversation }
 
         let task = Task { [weak self] in
             guard let self else { return }
@@ -119,6 +186,7 @@ final class ConversationService: ObservableObject {
         }
         activeStreams[conversationID] = task
         await task.value
+        return .sent
     }
 
     func cancelStream(in conversationID: UUID) {
@@ -176,8 +244,17 @@ final class ConversationService: ObservableObject {
         isWebSearchEnabled: Bool = false,
         skipUserMessage: Bool = false
     ) async {
+        // Ask iOS for extra background runtime so an in-flight generation
+        // can finish if the user puts the phone to sleep or switches apps.
+        // iOS grants roughly 30 s; when it runs out we stop the stream so
+        // the process isn't killed. We always call endBackgroundTask on exit.
+        let bgTaskID = Self.beginBackgroundTask { [weak self] in
+            self?.cancelStream(in: conversationID)
+        }
+
         streamingConversationIDs.insert(conversationID)
         defer {
+            Self.endBackgroundTask(bgTaskID)
             streamingConversationIDs.remove(conversationID)
             activeStreams[conversationID] = nil
         }
@@ -433,4 +510,22 @@ final class ConversationService: ObservableObject {
         )
     }
 
+    // MARK: - Background task helpers
+
+    /// Registers a background task so iOS grants extra runtime when the app
+    /// is backgrounded mid-generation. The `expirationHandler` fires when the
+    /// OS is about to kill the task (typically ~30 s after backgrounding);
+    /// we use it to cancel the stream gracefully rather than get terminated.
+    private static func beginBackgroundTask(expirationHandler: @escaping @MainActor () -> Void) -> UIBackgroundTaskIdentifier {
+        UIApplication.shared.beginBackgroundTask(withName: "HomeHub.inference") {
+            // UIKit invokes this on the main thread, but dispatch through an
+            // explicit @MainActor Task so the handler can safely touch UI state.
+            Task { @MainActor in expirationHandler() }
+        }
+    }
+
+    private static func endBackgroundTask(_ id: UIBackgroundTaskIdentifier) {
+        guard id != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(id)
+    }
 }

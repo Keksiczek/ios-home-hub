@@ -18,6 +18,14 @@ final class RuntimeManager: ObservableObject {
 
     let runtime: any LocalLLMRuntime
 
+    /// In-flight load serialisation handle. A second `load(_:)` caller whose
+    /// idempotence check doesn't match the in-flight model awaits this task
+    /// first, then re-evaluates state before deciding whether to proceed.
+    /// Prevents interleaved load() calls from multiple sites (bootstrap,
+    /// scene-phase events, widget intents, catalog install callbacks) from
+    /// issuing concurrent `llama_model_load_from_file` requests.
+    private var loadTask: Task<Void, Never>?
+
     /// Structured telemetry channel for the active runtime.
     ///
     /// Provides a live `AsyncStream<RuntimeTelemetryEvent>` covering load
@@ -35,6 +43,39 @@ final class RuntimeManager: ObservableObject {
     }
 
     func load(_ model: LocalModel) async {
+        // Fast-path idempotence — prevents the common duplicate-call race
+        // where two callers both see activeModel == nil (e.g. bootstrap +
+        // first active-phase event) and both trigger a load.
+        switch state {
+        case .loading(let id) where id == model.id: return
+        case .ready(let id)   where id == model.id: return
+        default: break
+        }
+
+        // Wait for any in-flight load to finish before starting a new one.
+        // The loop handles the case where multiple callers arrive while a
+        // single load is running: each re-checks state after the wait and
+        // bails out if the in-flight load left us in the desired state.
+        while let inflight = loadTask {
+            await inflight.value
+            switch state {
+            case .loading(let id) where id == model.id: return
+            case .ready(let id)   where id == model.id: return
+            default: break
+            }
+        }
+
+        let task = Task { [weak self] in
+            await self?._performLoad(model)
+        }
+        loadTask = task
+        await task.value
+        // Clear only if still ours — an unload() or subsequent load() may
+        // have already overwritten `loadTask`.
+        if loadTask == task { loadTask = nil }
+    }
+
+    private func _performLoad(_ model: LocalModel) async {
         state = .loading(modelID: model.id)
         do {
             try await runtime.load(model: model)
@@ -46,6 +87,9 @@ final class RuntimeManager: ObservableObject {
     }
 
     func unload() async {
+        // Wait for any in-flight load before unloading — unloading mid-load
+        // could leave the actor in a half-initialised state.
+        if let inflight = loadTask { await inflight.value }
         await runtime.unload()
         activeModel = nil
         state = .idle

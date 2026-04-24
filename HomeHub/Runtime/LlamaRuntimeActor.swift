@@ -98,7 +98,16 @@ actor LlamaRuntimeActor {
     /// Prevents concurrent access to the C++ llama_context*.
     /// llama.cpp is single-threaded — only one generate() may run at a time.
     private var isGenerating = false
+
+    /// `pendingClose` is true when unload()/load() was called while a generation
+    /// was active. The actual close() is deferred to returnFromGeneration() so
+    /// llama_decode never races with llama_free (SIGBUS).
     private var pendingClose = false
+
+    /// Contexts that must be closed once the active generation finishes.
+    /// A list (not a single slot) so rapid unload→load sequences don't lose
+    /// a context reference if both arrive before returnFromGeneration() fires.
+    private var contextsToClose: [LlamaContextHandle] = []
 
     // MARK: - Load
 
@@ -120,7 +129,17 @@ actor LlamaRuntimeActor {
         currentCancellationToken.cancel()
         currentCancellationToken = GenerationCancellationToken()
 
-        context?.close()
+        if isGenerating, let old = context {
+            // A generation task is still running — it holds a copy of `old`
+            // and may be inside llama_decode right now. Calling old.close()
+            // here would race with that decode and cause a SIGBUS / use-after-free.
+            // Defer close() to returnFromGeneration(), which is called from the
+            // generation task's defer block — i.e., after the task exits C++.
+            contextsToClose.append(old)
+            pendingClose = true
+        } else {
+            context?.close()
+        }
         context = nil
         loadedModel = nil
 
@@ -143,22 +162,24 @@ actor LlamaRuntimeActor {
     ///
     /// Idempotent: safe to call when nothing is loaded. Cancels the current
     /// generation token so in-flight generation tasks terminate cleanly.
+    ///
+    /// When a generation is active, `close()` is deferred to
+    /// `returnFromGeneration()` to prevent a SIGBUS race with `llama_decode`.
     func unload() {
         currentCancellationToken.cancel()
         currentCancellationToken = GenerationCancellationToken()
-        // Signal that we want to close. The actual close() is deferred
-        // until returnFromGeneration() is called, which happens AFTER
-        // the generating Task has stopped calling into the C++ context.
-        // This prevents the SIGBUS race between llama_decode and close().
-        pendingClose = true
-        if !isGenerating {
+
+        if isGenerating, let old = context {
+            // Same deferred-close pattern as load(): don't touch the C++ pointer
+            // while the generation task may be inside llama_decode.
+            contextsToClose.append(old)
+            pendingClose = true
+            // isGenerating stays true — returnFromGeneration() will clear it.
+        } else {
             context?.close()
-            pendingClose = false
         }
-        // If isGenerating == true, close() will be called from returnFromGeneration()
         context = nil
         loadedModel = nil
-        isGenerating = false
         sessions.removeAll()
     }
 
@@ -206,8 +227,10 @@ actor LlamaRuntimeActor {
     func returnFromGeneration() {
         isGenerating = false
         if pendingClose {
-            context?.close()
-            context = nil
+            // The generation task has exited — it is safe to free the C++ contexts
+            // that were queued while the task was alive.
+            contextsToClose.forEach { $0.close() }
+            contextsToClose.removeAll()
             pendingClose = false
         }
     }
