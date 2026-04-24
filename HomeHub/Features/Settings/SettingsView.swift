@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct SettingsView: View {
     @EnvironmentObject private var settings: SettingsService
@@ -7,11 +8,19 @@ struct SettingsView: View {
     @EnvironmentObject private var onboarding: OnboardingService
     @EnvironmentObject private var runtime: RuntimeManager
 
+    /// Cached snapshot of `SkillManager.availabilitySnapshot()` so the
+    /// row UI can render synchronously while the Settings screen is on
+    /// screen. Refreshed on appear and after the user comes back from
+    /// the iOS Settings app.
+    @State private var toolAvailability: [String: SkillAvailability] = [:]
+
     var body: some View {
         NavigationStack {
             Form {
                 profileSection
                 assistantSection
+                languageSection
+                toolsSection
                 memorySection
                 generationSection
                 appearanceSection
@@ -24,6 +33,14 @@ struct SettingsView: View {
                 ToolbarItem(placement: .topBarLeading) {
                     SidebarMenuButton()
                 }
+            }
+            // Refresh the cached availability snapshot every time the
+            // Settings screen comes into focus — covers the "user
+            // granted Calendar access, tapped back to the app" case.
+            .onReceive(NotificationCenter.default.publisher(
+                for: UIApplication.didBecomeActiveNotification
+            )) { _ in
+                Task { await refreshToolAvailability() }
             }
         }
     }
@@ -58,11 +75,86 @@ struct SettingsView: View {
         }
     }
 
+    // MARK: - Language & style
+
+    private var languageSection: some View {
+        Section {
+            Picker("Language", selection: Binding(
+                get: { settings.current.language },
+                set: { newValue in Task { await settings.set(\.language, to: newValue) } }
+            )) {
+                ForEach(AppLanguage.allCases) { lang in
+                    Text(lang.label).tag(lang)
+                }
+            }
+
+            Picker("Answer length", selection: Binding(
+                get: { settings.current.answerLength },
+                set: { newValue in Task { await settings.set(\.answerLength, to: newValue) } }
+            )) {
+                ForEach(AnswerLength.allCases) { length in
+                    Text(length.label).tag(length)
+                }
+            }
+
+            TextField("Location hint", text: Binding(
+                get: { settings.current.locationHint },
+                set: { newValue in Task { await settings.set(\.locationHint, to: newValue) } }
+            ))
+            .textInputAutocapitalization(.words)
+        } header: {
+            Text("Language & style")
+        } footer: {
+            Text("Language is enforced in the system prompt — the assistant replies in the chosen language even if you type in another. Location is injected so the model answers local-context questions correctly.")
+        }
+    }
+
+    // MARK: - Tools
+
+    private var toolsSection: some View {
+        Section {
+            ForEach(Array(AppSettings.defaultEnabledTools).sorted(), id: \.self) { toolName in
+                ToolRow(
+                    toolName: toolName,
+                    isEnabled: settings.current.enabledTools.contains(toolName),
+                    availability: toolAvailability[toolName] ?? .enabled,
+                    onToggle: { enabled in
+                        var current = settings.current.enabledTools
+                        if enabled { current.insert(toolName) } else { current.remove(toolName) }
+                        Task { await settings.set(\.enabledTools, to: current) }
+                    },
+                    onGrantPermission: { openAppSettings() }
+                )
+            }
+        } header: {
+            Text("Tools")
+        } footer: {
+            Text("Only enabled tools are offered to the assistant. Math goes through Calculator, calendar questions through Calendar. Disabled tools are refused even if the model tries to call them.")
+        }
+        .task { await refreshToolAvailability() }
+    }
+
+    private func refreshToolAvailability() async {
+        let snapshot = await SkillManager.shared.availabilitySnapshot()
+        var dict: [String: SkillAvailability] = [:]
+        for entry in snapshot { dict[entry.name] = entry.availability }
+        toolAvailability = dict
+    }
+
+    private func openAppSettings() {
+        guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+        UIApplication.shared.open(url)
+    }
+
     // MARK: - Memory
 
     private var memorySection: some View {
         Section {
-            Toggle("Enable memory", isOn: Binding(
+            NavigationLink("My memory") {
+                UserMemoryView()
+            }
+
+            Toggle("Enable retrieval memory", isOn: Binding(
                 get: { settings.current.memoryEnabled },
                 set: { newValue in
                     Task { await settings.set(\.memoryEnabled, to: newValue) }
@@ -79,12 +171,12 @@ struct SettingsView: View {
             Button(role: .destructive) {
                 Task { await memory.clearAll() }
             } label: {
-                Text("Clear all memory")
+                Text("Clear retrieval memory")
             }
         } header: {
             Text("Memory")
         } footer: {
-            Text("The assistant can recall facts you've approved. Nothing is saved unless you accept it. Memory never leaves this device.")
+            Text("Two layers: \"My memory\" holds facts you type yourself. \"Retrieval memory\" captures facts the assistant proposes after each chat — nothing is saved unless you accept it. Both stay on this device.")
         }
     }
 
@@ -123,6 +215,20 @@ struct SettingsView: View {
                     set: { newValue in Task { await settings.set(\.temperature, to: newValue) } }
                 ),
                 in: 0.0...1.5, step: 0.05
+            )
+
+            HStack {
+                Text("Top-p")
+                Spacer()
+                Text(String(format: "%.2f", settings.current.topP))
+                    .foregroundStyle(HHTheme.textSecondary)
+            }
+            Slider(
+                value: Binding(
+                    get: { settings.current.topP },
+                    set: { newValue in Task { await settings.set(\.topP, to: newValue) } }
+                ),
+                in: 0.1...1.0, step: 0.05
             )
 
             // Display preference — kept at the bottom of the section so
@@ -261,6 +367,65 @@ private struct ProfileEditor: View {
                     dismiss()
                 }
             }
+        }
+    }
+}
+
+/// Single-tool row in the Settings → Tools section.
+///
+/// Shows:
+///   * the tool name,
+///   * a status line tuned to the skill's `availability` (Enabled,
+///     needs permission, or unavailable),
+///   * a toggle that flips the user allow-list,
+///   * a "Grant…" button on permission-missing rows that bounces the
+///     user to the iOS Settings app (we don't own the prompt for
+///     most permissions — the tool will trigger it on first run).
+private struct ToolRow: View {
+    let toolName: String
+    let isEnabled: Bool
+    let availability: SkillAvailability
+    let onToggle: (Bool) -> Void
+    let onGrantPermission: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Toggle(isOn: Binding(
+                    get: { isEnabled },
+                    set: onToggle
+                )) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(toolName)
+                        Text(statusLine)
+                            .font(HHTheme.caption)
+                            .foregroundStyle(statusColor)
+                    }
+                }
+            }
+
+            if case .permission = availability {
+                Button("Grant permission in Settings", action: onGrantPermission)
+                    .font(HHTheme.caption.weight(.semibold))
+                    .buttonStyle(.borderless)
+                    .padding(.leading, 0)
+            }
+        }
+    }
+
+    private var statusLine: String {
+        switch availability {
+        case .enabled:                 return "Ready"
+        case .unavailable(let reason): return "Unavailable — \(reason)"
+        case .permission(let prompt):  return "Needs permission — \(prompt)"
+        }
+    }
+
+    private var statusColor: Color {
+        switch availability {
+        case .enabled:     return HHTheme.textSecondary
+        case .unavailable: return HHTheme.danger
+        case .permission:  return HHTheme.warning
         }
     }
 }

@@ -29,6 +29,7 @@ final class AppContainer: ObservableObject {
     @Published private(set) var lastUnloadNotification: String?
 
     let settingsService: SettingsService
+    let userMemoryStore: UserMemoryStore
     let personalizationService: PersonalizationService
     let modelCatalogService: ModelCatalogService
     let localModelService: LocalModelService
@@ -52,6 +53,7 @@ final class AppContainer: ObservableObject {
         self.store = store
 
         let settings = SettingsService(store: store)
+        let userMemory = UserMemoryStore()
         let personalization = PersonalizationService(
             store: store,
             defaultUser: UserProfile.blank,
@@ -79,6 +81,7 @@ final class AppContainer: ObservableObject {
             memory: memory,
             settings: settings,
             personalization: personalization,
+            userMemory: userMemory,
             summarizer: summarizer,
             embeddingService: embedding
         )
@@ -90,6 +93,7 @@ final class AppContainer: ObservableObject {
         )
 
         self.settingsService = settings
+        self.userMemoryStore = userMemory
         self.personalizationService = personalization
         self.modelCatalogService = catalog
         self.localModelService = localModels

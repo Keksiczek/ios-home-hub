@@ -22,6 +22,12 @@ protocol Store: AnyObject, Sendable {
 
     func loadMessages(conversationID: UUID) async throws -> [Message]
     func save(message: Message) async throws
+    /// Removes a single message from the given conversation. No-op if
+    /// the message isn't present.
+    func deleteMessage(id: UUID, conversationID: UUID) async throws
+    /// Removes every message in the given conversation while keeping
+    /// the conversation itself. Used by "Clear conversation".
+    func clearMessages(conversationID: UUID) async throws
 
     func loadMemoryFacts() async throws -> [MemoryFact]
     func save(fact: MemoryFact) async throws

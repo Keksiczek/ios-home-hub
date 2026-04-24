@@ -8,7 +8,10 @@ struct ChatDetailView: View {
     @State private var draft: String = ""
     @State private var showingRename = false
     @State private var showingVoiceCall = false
+    @State private var showingClearConfirm = false
     @State private var renameText: String = ""
+    @State private var editingMessageID: UUID?
+    @State private var editingText: String = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -20,7 +23,19 @@ struct ChatDetailView: View {
                                 message: message,
                                 onRegenerate: canRegenerate(message)
                                     ? { conversations.regenerate(in: conversationID) }
-                                    : nil
+                                    : nil,
+                                onDelete: isStreaming ? nil : {
+                                    Task {
+                                        await conversations.deleteMessage(
+                                            messageID: message.id,
+                                            in: conversationID
+                                        )
+                                    }
+                                },
+                                onEdit: canEdit(message) ? {
+                                    editingMessageID = message.id
+                                    editingText = message.content
+                                } : nil
                             )
                             .id(message.id)
                         }
@@ -109,6 +124,15 @@ struct ChatDetailView: View {
                             Label("Export", systemImage: "square.and.arrow.up")
                         }
                         .disabled(messages.isEmpty)
+
+                        Divider()
+
+                        Button(role: .destructive) {
+                            showingClearConfirm = true
+                        } label: {
+                            Label("Clear conversation", systemImage: "trash")
+                        }
+                        .disabled(messages.isEmpty || isStreaming)
                     } label: {
                         Image(systemName: "ellipsis.circle")
                     }
@@ -126,6 +150,35 @@ struct ChatDetailView: View {
         }
         .sheet(isPresented: $showingVoiceCall) {
             VoiceCallView(conversationID: conversationID)
+        }
+        .confirmationDialog(
+            "Clear this conversation?",
+            isPresented: $showingClearConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Clear messages", role: .destructive) {
+                Task { await conversations.clearMessages(in: conversationID) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Removes every message in this chat. The conversation itself stays in the list.")
+        }
+        .sheet(item: Binding(
+            get: { editingMessageID.map(EditingMessage.init(id:)) },
+            set: { editingMessageID = $0?.id }
+        )) { editing in
+            EditMessageSheet(
+                text: $editingText,
+                onSave: {
+                    conversations.editAndResend(
+                        messageID: editing.id,
+                        newText: editingText,
+                        in: conversationID
+                    )
+                    editingMessageID = nil
+                },
+                onCancel: { editingMessageID = nil }
+            )
         }
         .task {
             await conversations.loadMessages(for: conversationID)
@@ -165,6 +218,14 @@ struct ChatDetailView: View {
         return messages.last(where: { $0.role == .assistant })?.id == message.id
     }
 
+    /// "Edit & resend" only makes sense on the most recent user message —
+    /// editing earlier ones in the middle of a chat would orphan
+    /// downstream replies in confusing ways. Hide while streaming.
+    private func canEdit(_ message: Message) -> Bool {
+        guard message.role == .user, !isStreaming else { return false }
+        return messages.last(where: { $0.role == .user })?.id == message.id
+    }
+
     /// Estimated fraction of the context window used (0.0–1.0).
     /// Delegates to the shared `TokenEstimator` so the badge, the
     /// composer's context-fill bar, and `ConversationService`'s
@@ -176,18 +237,29 @@ struct ChatDetailView: View {
         )
     }
 
-    /// Formatted conversation text for the share sheet.
+    /// Formatted conversation text for the share sheet. Applies the
+    /// chat-template sanitizer and renders each turn with role label +
+    /// timestamp so the exported markdown reads as a proper transcript.
     private var exportText: String {
         let header = "# \(conversationTitle)\n\n"
         let body = messages
             .filter { $0.role != .system }
             .map { msg -> String in
                 let label = msg.role == .user ? "You" : "Assistant"
-                return "[\(label)]\n\(msg.content)"
+                let stamp = Self.exportTimestampFormatter.string(from: msg.createdAt)
+                let clean = ChatTextSanitizer.strip(msg.content)
+                return "**\(label) · \(stamp)**\n\n\(clean)"
             }
             .joined(separator: "\n\n---\n\n")
         return header + body
     }
+
+    private static let exportTimestampFormatter: DateFormatter = {
+        let df = DateFormatter()
+        df.dateStyle = .short
+        df.timeStyle = .short
+        return df
+    }()
 
     // MARK: - Actions
 
@@ -199,6 +271,46 @@ struct ChatDetailView: View {
 
     private func cancel() {
         conversations.cancelStream(in: conversationID)
+    }
+}
+
+/// Wraps a message ID into an `Identifiable` so SwiftUI's `.sheet(item:)`
+/// can drive the edit-and-resend modal. SwiftUI binds presence/absence
+/// of the sheet to the optionality of this value, which is much cleaner
+/// than juggling a separate `isPresented` Bool.
+private struct EditingMessage: Identifiable {
+    let id: UUID
+}
+
+/// Modal text editor used to amend the most recent user message before
+/// re-running the assistant turn.
+private struct EditMessageSheet: View {
+    @Binding var text: String
+    let onSave: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            VStack {
+                TextEditor(text: $text)
+                    .padding(HHTheme.spaceM)
+                    .background(HHTheme.surface)
+                    .cornerRadius(HHTheme.cornerLarge)
+                    .padding()
+            }
+            .background(HHTheme.canvas.ignoresSafeArea())
+            .navigationTitle("Edit message")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Cancel", role: .cancel, action: onCancel)
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Resend", action: onSave)
+                        .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+        }
     }
 }
 

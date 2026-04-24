@@ -22,6 +22,24 @@ struct AppSettings: Codable, Equatable {
     /// badge next to the title.
     var showTokenUsage: Bool
 
+    /// Preferred assistant language. `.auto` follows `Locale.current`
+    /// and falls back to English for unsupported locales.
+    var language: AppLanguage
+    /// How long the assistant's answers should be. Selects the length
+    /// block that `PromptBuilder` injects into every chat turn. Kept
+    /// separate from `UserProfile.preferredResponseStyle` (which shapes
+    /// *tone*, not length) so the user can tweak one without disturbing
+    /// the other.
+    var answerLength: AnswerLength
+    /// Names of skills the user has enabled. The SkillManager uses this as
+    /// an allow-list both when rendering L4 tool instructions and when
+    /// dispatching a parsed tool call, so a disabled skill can neither be
+    /// advertised nor silently invoked.
+    var enabledTools: Set<String>
+    /// Optional location hint injected into the system prompt. Defaults
+    /// to Nymburk, CZ for the current user; blank disables the line.
+    var locationHint: String
+
     static let `default` = AppSettings(
         memoryEnabled: true,
         autoExtractMemory: true,
@@ -34,14 +52,24 @@ struct AppSettings: Codable, Equatable {
         selectedModelID: nil,
         systemPromptPresets: [.defaultBuiltIn],
         activeSystemPromptPresetID: SystemPromptPreset.defaultBuiltInID,
-        showTokenUsage: false
+        showTokenUsage: false,
+        language: .auto,
+        answerLength: .balanced,
+        enabledTools: AppSettings.defaultEnabledTools,
+        locationHint: "Nymburk, CZ"
     )
+
+    /// Tools registered in `SkillManager` by default. Kept in sync with
+    /// `SkillManager.init` — order doesn't matter; the set is an allow-list.
+    static let defaultEnabledTools: Set<String> = [
+        "Calculator", "Calendar", "HomeKit", "Reminders", "DeviceInfo"
+    ]
 
     // MARK: - Codable (migration-safe)
     //
-    // Older installs persist a settings.json without the preset /
-    // token-usage fields. `decodeIfPresent` with defaults keeps those
-    // installs working without a destructive reset.
+    // Older installs persist a settings.json without the new fields.
+    // `decodeIfPresent` with defaults keeps those installs working
+    // without a destructive reset.
 
     private enum CodingKeys: String, CodingKey {
         case memoryEnabled, autoExtractMemory, streamingEnabled
@@ -49,6 +77,9 @@ struct AppSettings: Codable, Equatable {
         case selectedModelID
         case systemPromptPresets, activeSystemPromptPresetID
         case showTokenUsage
+        case language, answerLength, enabledTools, locationHint
+        // Retained only for migration from the previous schema.
+        case responseStyle
     }
 
     init(
@@ -63,7 +94,11 @@ struct AppSettings: Codable, Equatable {
         selectedModelID: String?,
         systemPromptPresets: [SystemPromptPreset],
         activeSystemPromptPresetID: UUID,
-        showTokenUsage: Bool
+        showTokenUsage: Bool,
+        language: AppLanguage,
+        answerLength: AnswerLength,
+        enabledTools: Set<String>,
+        locationHint: String
     ) {
         self.memoryEnabled = memoryEnabled
         self.autoExtractMemory = autoExtractMemory
@@ -77,6 +112,10 @@ struct AppSettings: Codable, Equatable {
         self.systemPromptPresets = systemPromptPresets
         self.activeSystemPromptPresetID = activeSystemPromptPresetID
         self.showTokenUsage = showTokenUsage
+        self.language = language
+        self.answerLength = answerLength
+        self.enabledTools = enabledTools
+        self.locationHint = locationHint
     }
 
     init(from decoder: Decoder) throws {
@@ -106,6 +145,25 @@ struct AppSettings: Codable, Equatable {
             : SystemPromptPreset.defaultBuiltInID
 
         self.showTokenUsage = try c.decodeIfPresent(Bool.self, forKey: .showTokenUsage) ?? fallback.showTokenUsage
+
+        self.language       = try c.decodeIfPresent(AppLanguage.self,   forKey: .language)     ?? fallback.language
+        self.enabledTools   = try c.decodeIfPresent(Set<String>.self,   forKey: .enabledTools) ?? fallback.enabledTools
+        self.locationHint   = try c.decodeIfPresent(String.self,        forKey: .locationHint) ?? fallback.locationHint
+
+        // Migration path for installs that persisted the previous
+        // `responseStyle: "leanCI" | "casual"` field. Map leanCI→concise
+        // and casual→balanced so the user's intent survives the rename.
+        if let decoded = try c.decodeIfPresent(AnswerLength.self, forKey: .answerLength) {
+            self.answerLength = decoded
+        } else if let legacy = try c.decodeIfPresent(String.self, forKey: .responseStyle) {
+            switch legacy {
+            case "leanCI": self.answerLength = .concise
+            case "casual": self.answerLength = .balanced
+            default:       self.answerLength = fallback.answerLength
+            }
+        } else {
+            self.answerLength = fallback.answerLength
+        }
     }
 }
 
@@ -141,6 +199,64 @@ enum AppTheme: String, Codable, CaseIterable, Identifiable {
         case .system: return nil
         case .light:  return .light
         case .dark:   return .dark
+        }
+    }
+}
+
+/// Hard language selector for assistant output. Resolved once per turn
+/// by `PromptBuilder` into a concrete BCP-47 tag plus a matching
+/// imperative sentence for the system prompt.
+enum AppLanguage: String, Codable, CaseIterable, Identifiable {
+    case auto
+    case cs
+    case en
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .auto: return "Automatic (system)"
+        case .cs:   return "Čeština"
+        case .en:   return "English"
+        }
+    }
+
+    /// Resolves `.auto` against the supplied locale. Only `cs`/`en` are
+    /// supported today; every other system language falls back to English
+    /// so the prompt stays deterministic.
+    func resolved(locale: Locale = .current) -> AppLanguage {
+        switch self {
+        case .cs, .en: return self
+        case .auto:
+            let code = locale.language.languageCode?.identifier.lowercased() ?? "en"
+            return code == "cs" ? .cs : .en
+        }
+    }
+}
+
+/// How much the assistant should write per turn. Length is orthogonal
+/// to tone (`UserProfile.preferredResponseStyle`) — an "analytical" tone
+/// can still be concise, and a "warm" tone can still be detailed.
+enum AnswerLength: String, Codable, CaseIterable, Identifiable {
+    case concise
+    case balanced
+    case detailed
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .concise:  return "Concise"
+        case .balanced: return "Balanced"
+        case .detailed: return "Detailed"
+        }
+    }
+
+    var blurb: String {
+        switch self {
+        case .concise:  return "1–3 sentences. No preamble."
+        case .balanced: return "A short answer with a line or two of supporting detail."
+        case .detailed: return "Full answer with headings and examples where useful."
         }
     }
 }

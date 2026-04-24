@@ -103,6 +103,16 @@ actor InMemoryStore: Store {
         messages[message.conversationID] = list
     }
 
+    func deleteMessage(id: UUID, conversationID: UUID) async throws {
+        var list = messages[conversationID] ?? []
+        list.removeAll { $0.id == id }
+        messages[conversationID] = list
+    }
+
+    func clearMessages(conversationID: UUID) async throws {
+        messages[conversationID] = []
+    }
+
     func loadMemoryFacts() async throws -> [MemoryFact] { facts }
     func save(fact: MemoryFact) async throws {
         if let idx = facts.firstIndex(where: { $0.id == fact.id }) {

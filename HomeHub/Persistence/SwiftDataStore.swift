@@ -281,6 +281,20 @@ actor SwiftDataStore: Store {
         try context.save()
     }
 
+    func deleteMessage(id: UUID, conversationID: UUID) async throws {
+        let predicate = #Predicate<SDMessage> {
+            $0.id == id && $0.conversationID == conversationID
+        }
+        try context.delete(model: SDMessage.self, where: predicate)
+        try context.save()
+    }
+
+    func clearMessages(conversationID: UUID) async throws {
+        let predicate = #Predicate<SDMessage> { $0.conversationID == conversationID }
+        try context.delete(model: SDMessage.self, where: predicate)
+        try context.save()
+    }
+
     // MARK: - Memory Facts
 
     func loadMemoryFacts() async throws -> [MemoryFact] {

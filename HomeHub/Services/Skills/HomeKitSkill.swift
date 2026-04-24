@@ -42,6 +42,13 @@ struct HomeKitSkill: Skill {
     /// human-readable suffix for the LLM and chat UI.
     static let successPrefix = "OK"
 
+    /// HomeKit doesn't expose a synchronous "is permission granted?"
+    /// API the same way EventKit does — the answer comes through the
+    /// `HMHomeManager` delegate after a round-trip. We optimistically
+    /// report `.enabled`; the actual call inside `execute(input:)`
+    /// will surface a `.noHomeFound` error if the user revoked access.
+    var availability: SkillAvailability { .enabled }
+
     func execute(input: String) async throws -> String {
         let manager = await HomeKitManager.shared.ensureReady()
 

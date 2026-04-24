@@ -7,26 +7,35 @@ struct ActionCommand: Equatable {
 }
 
 /// Central registry for all tools available to the Agent.
+///
+/// The registry is **the superset**: all skills the app knows how to run
+/// live here. Which of them actually surface to the model on any given
+/// turn is decided at call time by the `enabled` allow-list (sourced
+/// from `AppSettings.enabledTools`). This lets the user toggle individual
+/// tools in Settings without forcing the prompt assembler to know about
+/// skills the manager hasn't registered yet.
 actor SkillManager {
     static let shared = SkillManager()
 
     private var skills: [String: any Skill] = [:]
 
-    /// Cached output of `buildSystemInstructions()`. Cleared on every
-    /// `register(_:)` call. Skills are otherwise immutable, so this is
-    /// safe to memoise across the per-turn calls in `ConversationService`.
-    private var cachedInstructions: String?
+    /// Cached `renderInstructions` output, keyed by the lowercased set
+    /// of enabled skill names. A different allow-list invalidates the
+    /// cache but a repeated turn with the same allow-list is free.
+    private var cachedInstructions: (enabled: Set<String>, text: String)?
 
     private init() {
-        // WebSearchSkill is intentionally omitted from the default registration.
-        // PromptAssemblyService injects an on-device privacy guardrail
-        // ("You run entirely on-device with no network access…") that directly
-        // contradicts any web-search tool instructions. The model would behave
-        // unpredictably if both were present. Register WebSearchSkill explicitly
-        // via `register(_:)` once real network-enabled search is wired up and
-        // the privacy guardrail is made conditional.
+        // WebSearchSkill stays out of the default registration: it needs
+        // explicit user consent AND an available network, and the prompt
+        // assembler's privacy rail flips based on whether it's registered.
+        // Call `register(WebSearchSkill())` from onboarding / settings once
+        // the user opts in.
         let defaults: [any Skill] = [
-            CalculatorSkill(), CalendarSkill(), HomeKitSkill(), RemindersSkill()
+            CalculatorSkill(),
+            CalendarSkill(),
+            HomeKitSkill(),
+            RemindersSkill(),
+            DeviceInfoSkill()
         ]
         for skill in defaults {
             skills[skill.name.lowercased()] = skill
@@ -36,27 +45,54 @@ actor SkillManager {
     func register(_ skill: any Skill) {
         skills[skill.name.lowercased()] = skill
         cachedInstructions = nil
+        HHLog.tool.info("registered skill \(skill.name, privacy: .public)")
     }
 
-    /// Generates L4 Prompt string explaining all available skills.
-    /// Result is cached until the next `register(_:)` call so the
-    /// per-turn invocation in `ConversationService.performSend` is free
-    /// after the first build.
-    func buildSystemInstructions() -> String {
-        if let cachedInstructions {
-            return cachedInstructions
+    /// The names of every skill currently in the registry, in registration
+    /// order-independent form. Used by `ConversationService` to compute
+    /// the intersection with `AppSettings.enabledTools` for each turn.
+    func registeredSkillNames() -> Set<String> {
+        Set(skills.values.map(\.name))
+    }
+
+    /// Snapshot of `(name, availability)` for every registered skill.
+    /// Consumed by Settings so the user sees "Needs permission — Calendar
+    /// access" next to a toggle instead of a silent failure at call time.
+    func availabilitySnapshot() -> [(name: String, availability: SkillAvailability)] {
+        skills.values
+            .map { (name: $0.name, availability: $0.availability) }
+            .sorted { $0.name < $1.name }
+    }
+
+    /// Generates the L4 system-prompt block listing the *enabled* skills.
+    ///
+    /// - Parameter enabled: Allow-list of skill names (case-insensitive)
+    ///   that should surface to the model. Skills outside this set are
+    ///   omitted even if registered. Pass `nil` to include every
+    ///   registered skill (legacy behaviour for older callers).
+    func buildSystemInstructions(enabled: Set<String>? = nil) -> String {
+        let allow: Set<String> = enabled.map { Set($0.map { $0.lowercased() }) }
+            ?? Set(skills.keys)
+
+        if let cached = cachedInstructions, cached.enabled == allow {
+            return cached.text
         }
 
-        let built = renderInstructions()
-        cachedInstructions = built
+        let built = renderInstructions(enabled: allow)
+        cachedInstructions = (allow, built)
         return built
     }
 
-    private func renderInstructions() -> String {
-        guard !skills.isEmpty else { return "" }
+    private func renderInstructions(enabled: Set<String>) -> String {
+        let visible = skills
+            .filter { enabled.contains($0.key) }
+            .values
+            .sorted { $0.name < $1.name }
+
+        guard !visible.isEmpty else { return "" }
 
         var instructions = "You have access to the following native tools/skills:\n"
-        for (_, skill) in skills {
+        for skill in visible {
             instructions += "- \(skill.name): \(skill.description)\n"
         }
 
@@ -69,10 +105,11 @@ actor SkillManager {
 
         Important rules:
         1. Output ONLY the `<tool_call>` block — stop immediately after `</tool_call>`. Add nothing else.
-        2. The system executes the tool and returns the result in an `<Observation>` block.
-        3. Use the observation to write your final user-facing response.
-        4. Never fabricate an observation or guess the result. Always wait for the real `<Observation>`.
-        5. Write `input` as a plain string. Do not nest JSON or manually escape quotes inside `input`.
+        2. The `<tool_call>` block must be on a single line. No prose before or after it on that line.
+        3. `input` is a plain string. Do not nest JSON, do not manually escape quotes inside `input`.
+        4. The system executes the tool and returns the result in an `<Observation>` block.
+        5. Use the observation to write your final user-facing response.
+        6. Never fabricate an observation or guess the result. Always wait for the real `<Observation>`.
         """
 
         return instructions
@@ -81,26 +118,110 @@ actor SkillManager {
     /// Parses the first `<tool_call>` envelope in `text`.
     ///
     /// Returns `nil` if no valid envelope is present, the JSON is malformed,
-    /// or either the `name` or `input` field is missing.
+    /// or either the `name` or `input` field is missing. Logs the drop at
+    /// `debug` so agentic-loop regressions leave a trace in Console.app.
     func parseAction(from text: String) -> ActionCommand? {
-        ToolCallEnvelope.parse(from: text)?.toActionCommand()
+        if let cmd = ToolCallEnvelope.parse(from: text)?.toActionCommand() {
+            return cmd
+        }
+        // Only log when the text actually contained what LOOKS like a
+        // tool call — otherwise every plain assistant turn generates noise.
+        if text.contains(ToolCallEnvelope.openTag) {
+            HHLog.tool.error("malformed <tool_call> envelope — skipping")
+        }
+        return nil
     }
-    
-    /// Executes the specified skill command.
-    /// Errors are caught and rendered as `"Error executing …"` strings so
-    /// the LLM can incorporate them into its `<Observation>` reasoning
-    /// without crashing the agentic loop.
-    func execute(_ command: ActionCommand) async -> String {
-        guard let skill = skills[command.skillName.lowercased()] else {
-            return "Error: Skill '\(command.skillName)' is not recognized."
+
+    /// Structured execution. Dispatches to the registered skill, enforces
+    /// the allow-list and per-skill availability, and wraps the outcome
+    /// in a `ToolExecutionResult` the agentic loop can branch on.
+    ///
+    /// - Parameters:
+    ///   - command: Parsed envelope from the model.
+    ///   - enabled: Optional allow-list (case-insensitive). Missing → no
+    ///     allow-list filtering (legacy callers).
+    ///   - timeout: Per-call budget. Default is generous (10 s) because
+    ///     tools like WebSearch can legitimately take a few seconds;
+    ///     Calculator / DeviceInfo finish in microseconds anyway.
+    func run(
+        _ command: ActionCommand,
+        enabled: Set<String>? = nil,
+        timeout: Duration = .seconds(10)
+    ) async -> ToolExecutionResult {
+        let key = command.skillName.lowercased()
+        guard let skill = skills[key] else {
+            HHLog.tool.error("unknown skill '\(command.skillName, privacy: .public)'")
+            return .error(
+                message: "Skill '\(command.skillName)' is not recognised.",
+                reason: .unknownTool
+            )
+        }
+        if let enabled, !enabled.map({ $0.lowercased() }).contains(key) {
+            HHLog.tool.info("skill '\(command.skillName, privacy: .public)' disabled — refusing")
+            return .error(
+                message: "Skill '\(command.skillName)' is disabled in Settings.",
+                reason: .disabled
+            )
+        }
+        if case .permission(let prompt) = skill.availability {
+            HHLog.tool.info("skill '\(skill.name, privacy: .public)' needs permission: \(prompt, privacy: .public)")
+            return .error(
+                message: "This tool needs permission: \(prompt). Open Settings to grant it.",
+                reason: .permissionMissing
+            )
+        }
+        if case .unavailable(let reason) = skill.availability {
+            return .error(
+                message: "\(skill.name) is unavailable: \(reason)",
+                reason: .executionFailed
+            )
         }
 
+        HHLog.tool.info("executing \(skill.name, privacy: .public)")
         do {
-            return try await skill.execute(input: command.input)
+            let text = try await withThrowingTaskGroup(of: String.self) { group in
+                group.addTask { try await skill.execute(input: command.input) }
+                group.addTask {
+                    try await Task.sleep(for: timeout)
+                    throw ToolTimeoutError()
+                }
+                guard let first = try await group.next() else {
+                    throw ToolTimeoutError()
+                }
+                group.cancelAll()
+                return first
+            }
+            return .success(text)
+        } catch is ToolTimeoutError {
+            HHLog.tool.error("skill '\(skill.name, privacy: .public)' timed out")
+            return .error(
+                message: "\(skill.name) took longer than \(timeout).",
+                reason: .timeout
+            )
         } catch {
-            return "Error executing \(command.skillName): \(error.localizedDescription)"
+            HHLog.tool.error("skill '\(skill.name, privacy: .public)' threw: \(error.localizedDescription, privacy: .public)")
+            return .error(
+                message: "\(skill.name): \(error.localizedDescription)",
+                reason: .executionFailed
+            )
         }
     }
+
+    /// Legacy flat-string execute. Kept for callers (tests, widgets)
+    /// that don't want to branch on `ToolExecutionResult`. Internally
+    /// routes through `run(_:enabled:)` so error shaping stays in one
+    /// place.
+    func execute(_ command: ActionCommand, enabled: Set<String>? = nil) async -> String {
+        let result = await run(command, enabled: enabled)
+        switch result {
+        case .success(let text):
+            return text
+        case .error(let message, _):
+            return "Error: \(message)"
+        }
+    }
+
+    private struct ToolTimeoutError: Error {}
 
     /// Like `execute(_:)` but rethrows the underlying skill error instead
     /// of stringifying it. Used by callers (widget action handler, App

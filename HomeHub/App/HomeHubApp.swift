@@ -12,6 +12,7 @@ struct HomeHubApp: App {
                 .environmentObject(container)
                 .environmentObject(container.appState)
                 .environmentObject(container.settingsService)
+                .environmentObject(container.userMemoryStore)
                 .environmentObject(container.personalizationService)
                 .environmentObject(container.modelCatalogService)
                 .environmentObject(container.modelDownloadService)

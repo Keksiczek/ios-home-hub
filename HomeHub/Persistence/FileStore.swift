@@ -116,6 +116,19 @@ actor FileStore: Store {
         try write(all, to: file)
     }
 
+    func deleteMessage(id: UUID, conversationID: UUID) async throws {
+        let file = "messages-\(conversationID.uuidString).json"
+        var all = (try read([Message].self, from: file)) ?? []
+        let before = all.count
+        all.removeAll { $0.id == id }
+        guard all.count != before else { return }
+        try write(all, to: file)
+    }
+
+    func clearMessages(conversationID: UUID) async throws {
+        try remove("messages-\(conversationID.uuidString).json")
+    }
+
     // MARK: - Memory
 
     func loadMemoryFacts() async throws -> [MemoryFact] {
