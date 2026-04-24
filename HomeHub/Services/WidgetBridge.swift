@@ -40,14 +40,14 @@ enum WidgetBridge {
             forSecurityApplicationGroupIdentifier: appGroupID
         ) else { return }
 
-        let fileURL = containerURL.appendingPathComponent(fileName)
+        let widgetfileURL = containerURL.appendingPathComponent(fileName)
 
         var existingTotalFacts = 0
         var existingTotalConversations = 0
         var existingLastMessage: String? = nil
         var existingTopFacts: [WidgetMemoryFact] = []
 
-        if let data = try? Data(contentsOf: fileURL),
+        if let data = try? Data(contentsOf: widgetfileURL),
            let existing = try? JSONDecoder().decode(WidgetDaySummary.self, from: data) {
             existingTotalFacts = existing.totalFacts
             existingTotalConversations = existing.totalConversations

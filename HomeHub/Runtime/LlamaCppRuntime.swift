@@ -96,7 +96,7 @@ final class LlamaCppRuntime: LocalLLMRuntime, @unchecked Sendable {
 
     /// Controls automatic unloading on lifecycle events.
     /// Default: `.onBackgroundOrMemoryPressure`.
-    var unloadPolicy: UnloadPolicy = .onBackgroundOrMemoryPressure
+    var unloadPolicy: UnloadPolicy = .manual  // Keep model loaded
 
     // MARK: - State
 
@@ -183,6 +183,13 @@ final class LlamaCppRuntime: LocalLLMRuntime, @unchecked Sendable {
                 } catch {
                     continuation.finish(throwing: error)
                     return
+                }
+
+                // Uvolní isGenerating na VŠECH exit paths tohoto Task
+                // (normální konec, cancel, throw, CancellationError)
+                defer {
+                    let localActor = actor
+                    Task { await localActor.returnFromGeneration() }
                 }
 
                 // Emit generationStarted only after successful borrow so

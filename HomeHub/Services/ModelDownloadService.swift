@@ -420,8 +420,9 @@ final class ModelDownloadService: ObservableObject {
             active[modelID]?.phase = .validating
             catalog.setInstallState(.downloading(progress: 1.0), for: modelID)
             do {
+                let hashURL = tempURL  // lokální kopie pro capture
                 let actualHash = try await Task.detached(priority: .userInitiated) {
-                    try ModelDownloadService.sha256Hash(of: tempURL)
+                    try await ModelDownloadService.sha256Hash(of: hashURL)
                 }.value
                 guard actualHash.lowercased() == expectedHash.lowercased() else {
                     let err = DownloadError.checksumMismatch(expected: expectedHash, actual: actualHash)

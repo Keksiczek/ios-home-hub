@@ -95,11 +95,6 @@ actor LlamaRuntimeActor {
     /// a freshly-loaded model always starts with an empty KV cache.
     private var sessions: [UUID: ConversationRuntimeSession] = [:]
 
-    /// Prevents concurrent access to the C++ llama_context*.
-    /// llama.cpp is single-threaded — only one generate() may run at a time.
-    private var isGenerating = false
-    private var pendingClose = false
-
     // MARK: - Load
 
     /// Closes any existing context and loads `model` from `path`.
@@ -146,19 +141,9 @@ actor LlamaRuntimeActor {
     func unload() {
         currentCancellationToken.cancel()
         currentCancellationToken = GenerationCancellationToken()
-        // Signal that we want to close. The actual close() is deferred
-        // until returnFromGeneration() is called, which happens AFTER
-        // the generating Task has stopped calling into the C++ context.
-        // This prevents the SIGBUS race between llama_decode and close().
-        pendingClose = true
-        if !isGenerating {
-            context?.close()
-            pendingClose = false
-        }
-        // If isGenerating == true, close() will be called from returnFromGeneration()
+        context?.close()
         context = nil
         loadedModel = nil
-        isGenerating = false
         sessions.removeAll()
     }
 
@@ -198,17 +183,6 @@ actor LlamaRuntimeActor {
     /// - Throws: `RuntimeError.noModelLoaded` if no model is loaded.
     func borrowForGeneration() throws -> (context: LlamaContextHandle, token: GenerationCancellationToken) {
         guard let ctx = context else { throw RuntimeError.noModelLoaded }
-        guard !isGenerating else { throw RuntimeError.noModelLoaded }
-        isGenerating = true
         return (ctx, currentCancellationToken)
-    }
-
-    func returnFromGeneration() {
-        isGenerating = false
-        if pendingClose {
-            context?.close()
-            context = nil
-            pendingClose = false
-        }
     }
 }

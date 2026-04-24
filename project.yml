@@ -34,9 +34,15 @@ targets:
           - group.cz.keksiczek.homehub.shared
     sources:
       - path: HomeHub
+    dependencies:
+      - framework: /Users/keks/Developer/llama.xcframework
+        embed: true
+        codeSign: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: cz.keksiczek.homehub
+        HEADER_SEARCH_PATHS: "$(inherited) /Users/keks/Developer/llama.xcframework/ios-arm64/Headers"
+        OTHER_LDFLAGS: "$(inherited) -lc++"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES

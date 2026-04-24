@@ -86,7 +86,7 @@ struct LlamaContextHandle: @unchecked Sendable {
         ctxParams.n_ctx      = UInt32(contextLength)
         ctxParams.n_batch    = 512                             // keep large for prompt eval
         ctxParams.n_ubatch   = UInt32(capabilities.nUBatch)   // smaller for generation TTFT
-        ctxParams.flash_attn = capabilities.supportsFlashAttention
+        //ctxParams.flash_attn = capabilities.supportsFlashAttention
 
         guard let ctx = llama_init_from_model(model, ctxParams) else {
             llama_model_free(model)
@@ -120,7 +120,7 @@ struct LlamaContextHandle: @unchecked Sendable {
                     var tokens = [llama_token](repeating: 0, count: maxTokenCount)
                     let nTokens = tokens.withUnsafeMutableBufferPointer { buf in
                         llama_tokenize(
-                            model,
+                            llama_model_get_vocab(model),
                             promptBytes, Int32(promptBytes.count - 1), // exclude null terminator
                             buf.baseAddress!, Int32(maxTokenCount),
                             true,  // add_special (BOS)
@@ -179,7 +179,7 @@ struct LlamaContextHandle: @unchecked Sendable {
                     }
 
                     if prefixLen == 0 {
-                        llama_kv_cache_clear(ctx)
+                        llama_memory_clear(llama_get_memory(ctx), false)
                     }
 
                     // --- 3. Evaluate prompt in batches (skip already-cached prefix) ---

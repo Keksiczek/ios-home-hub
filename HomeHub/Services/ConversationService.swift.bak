@@ -232,21 +232,21 @@ final class ConversationService: ObservableObject {
         )
 
         var summaryText: String? = summaryByConversation[conversationID]?.summary
-        // DISABLED: if priorMessages.count > 20 && estimatedFill > 0.6 && summaryByConversation[conversationID] == nil {
-        // DISABLED: // Summarise the older portion; keep the last 10 messages intact in
-        // DISABLED: // the history window so recent context stays verbatim.
-        // DISABLED: let olderMessages = Array(priorMessages.dropLast(10))
-        // DISABLED: if let generated = await summarizer.summarize(messages: olderMessages) {
-        // DISABLED: let summary = ConversationSummary(
-        // DISABLED: conversationID: conversationID,
-        // DISABLED: summary: generated,
-        // DISABLED: coversMessageIDs: olderMessages.map(\.id),
-        // DISABLED: generatedAt: .now
-        // DISABLED: )
-        // DISABLED: summaryByConversation[conversationID] = summary
-        // DISABLED: summaryText = generated
-        // DISABLED: }
-        // DISABLED: }
+        if priorMessages.count > 20 && estimatedFill > 0.6 && summaryByConversation[conversationID] == nil {
+            // Summarise the older portion; keep the last 10 messages intact in
+            // the history window so recent context stays verbatim.
+            let olderMessages = Array(priorMessages.dropLast(10))
+            if let generated = await summarizer.summarize(messages: olderMessages) {
+                let summary = ConversationSummary(
+                    conversationID: conversationID,
+                    summary: generated,
+                    coversMessageIDs: olderMessages.map(\.id),
+                    generatedAt: .now
+                )
+                summaryByConversation[conversationID] = summary
+                summaryText = generated
+            }
+        }
         
         // Build prompt context with layered memory.
         let facts = await memory.relevantFacts(for: userInput, limit: 8)
@@ -420,9 +420,9 @@ final class ConversationService: ObservableObject {
             // stream. Without this decoupling, every user message triggers a
             // second full inference run at the same priority as the hot path —
             // doubling perceived latency and battery draw.
-                // DISABLED: Task.detached(priority: .background) { [memory] in
-                // DISABLED: await memory.consider(message: msg)
-                // DISABLED: }
+            Task.detached(priority: .background) { [memory] in
+                await memory.consider(message: msg)
+            }
         }
 
         // Update the home/lock screen widget with latest state.

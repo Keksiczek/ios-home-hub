@@ -420,9 +420,9 @@ final class ConversationService: ObservableObject {
             // stream. Without this decoupling, every user message triggers a
             // second full inference run at the same priority as the hot path —
             // doubling perceived latency and battery draw.
-                // DISABLED: Task.detached(priority: .background) { [memory] in
-                // DISABLED: await memory.consider(message: msg)
-                // DISABLED: }
+            Task.detached(priority: .background) { [memory] in
+                await memory.consider(message: msg)
+            }
         }
 
         // Update the home/lock screen widget with latest state.
