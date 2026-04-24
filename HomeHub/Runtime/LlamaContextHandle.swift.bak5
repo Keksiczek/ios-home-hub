@@ -245,26 +245,18 @@ struct LlamaContextHandle: @unchecked Sendable {
 
                         // Convert token to text
                         var pieceBuffer = [CChar](repeating: 0, count: 4096)
-                        var pieceLen = llama_token_to_piece(llama_model_get_vocab(model), newToken,
+                        let pieceLen = llama_token_to_piece(llama_model_get_vocab(model), newToken,
                             &pieceBuffer, Int32(pieceBuffer.count),
                             0,     // lstrip
                             false  // special
                         )
 
-                        if pieceLen < 0 {
-                            let needed = Int(-pieceLen)
-                            pieceBuffer = [CChar](repeating: 0, count: max(needed, 4096))
-                            pieceLen = llama_token_to_piece(llama_model_get_vocab(model), newToken,
-                                &pieceBuffer, Int32(pieceBuffer.count),
-                                0,
-                                false
-                            )
-                        }
-
                         guard pieceLen > 0 else { continue }
 
-                        let pieceBytes = pieceBuffer.prefix(Int(pieceLen)).map { UInt8(bitPattern: $0) }
-                        let piece = String(decoding: pieceBytes, as: UTF8.self)
+                        let piece = String(
+                            bytes: pieceBuffer.prefix(Int(pieceLen)).map { UInt8(bitPattern: $0) },
+                            encoding: .utf8
+                        ) ?? ""
 
                         // Stop sequence detection
                         if !stopSequences.isEmpty {

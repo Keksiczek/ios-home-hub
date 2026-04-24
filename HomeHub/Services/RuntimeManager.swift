@@ -65,7 +65,7 @@ final class RuntimeManager: ObservableObject {
             }
         }
 
-        let task = Task { [weak self] in
+        let task: Task<Void, Never> = Task { [weak self] in
             await self?._performLoad(model)
         }
         loadTask = task
