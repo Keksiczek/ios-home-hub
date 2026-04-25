@@ -190,6 +190,21 @@ final class ModelDownloadService: ObservableObject {
             throw URLImportError.invalidURL
         }
 
+        // Normalise the URL. Two transformations are worth doing here so the
+        // typical user-pasted Hugging Face URL just works:
+        //
+        //   1. `https://huggingface.co/<repo>/blob/<rev>/file.gguf`
+        //      → `https://huggingface.co/<repo>/resolve/<rev>/file.gguf`
+        //      (the `blob` URL serves an HTML preview page; `resolve` serves
+        //      the raw bytes)
+        //
+        //   2. Reject obvious dead-ends — directory listings, .json sidecars,
+        //      `tree/` URLs — early so the user gets a clear error instead of
+        //      a 250 KB HTML file failing the GGUF magic check after a
+        //      multi-second download.
+        let normalisedURL = Self.normaliseModelURL(url)
+        try Self.validateModelURL(normalisedURL)
+
         // Build a stable ID from the name: lowercase, spaces → hyphens, alphanum only.
         let sanitized = trimmedName.lowercased()
             .replacingOccurrences(of: " ", with: "-")
@@ -205,7 +220,7 @@ final class ModelDownloadService: ObservableObject {
             quantization: "?",
             sizeBytes: 0,
             contextLength: contextLength,
-            downloadURL: url,
+            downloadURL: normalisedURL,
             sha256: nil,
             installState: .notInstalled,
             recommendedFor: [.iPhone, .iPadMSeries],
@@ -217,14 +232,58 @@ final class ModelDownloadService: ObservableObject {
         start(model)
     }
 
+    /// Rewrites Hugging Face `blob/` URLs to `resolve/` so the download
+    /// returns raw bytes instead of an HTML preview. Other URLs pass through
+    /// unchanged. Static so `importFromURL` callers (and tests) can use it
+    /// without instantiating the service.
+    static func normaliseModelURL(_ url: URL) -> URL {
+        guard url.host?.contains("huggingface.co") == true else { return url }
+        let path = url.path
+        guard path.contains("/blob/") else { return url }
+        let rewritten = path.replacingOccurrences(of: "/blob/", with: "/resolve/")
+        var comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        comps?.path = rewritten
+        return comps?.url ?? url
+    }
+
+    /// Throws `URLImportError.unsupportedURL` for URLs that obviously can't
+    /// produce a GGUF — directory listings, model card pages, sidecar
+    /// metadata files. Keeps the user out of the slow-fail loop where a
+    /// download succeeds, validation fails, and they have to start over.
+    static func validateModelURL(_ url: URL) throws {
+        let path = url.path.lowercased()
+        // Hugging Face repo-overview / file-tree pages.
+        if path.contains("/tree/") || path.hasSuffix("/main") || path.hasSuffix("/master") {
+            throw URLImportError.unsupportedURL(
+                "URL points to a Hugging Face directory listing. " +
+                "Open the .gguf file on Hugging Face and copy its 'Download' link."
+            )
+        }
+        // Sidecar metadata. We can't run inference on a .json or a tokenizer.
+        let badSuffixes = [".json", ".md", ".txt", ".html", ".bin", ".safetensors"]
+        if let suffix = badSuffixes.first(where: { path.hasSuffix($0) }) {
+            throw URLImportError.unsupportedURL(
+                "Model files must be GGUF — \(suffix) files aren't supported here."
+            )
+        }
+        // A bare repo URL with no file path.
+        if url.pathComponents.count <= 3 {
+            throw URLImportError.unsupportedURL(
+                "URL must point at a specific .gguf file, not a repository."
+            )
+        }
+    }
+
     enum URLImportError: LocalizedError {
         case invalidName
         case invalidURL
+        case unsupportedURL(String)
 
         var errorDescription: String? {
             switch self {
-            case .invalidName: return "Model name is required."
-            case .invalidURL:  return "URL must start with http:// or https://."
+            case .invalidName:                return "Model name is required."
+            case .invalidURL:                 return "URL must start with http:// or https://."
+            case .unsupportedURL(let detail): return detail
             }
         }
     }

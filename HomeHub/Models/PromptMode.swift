@@ -58,21 +58,37 @@ enum PromptMode: String, Sendable, Hashable, CaseIterable {
                 maxTokens: settings.maxResponseTokens,
                 temperature: settings.temperature,
                 topP: settings.topP,
-                stopSequences: stopSequences
+                stopSequences: stopSequences,
+                topK: settings.topK,
+                minP: settings.minP,
+                repeatPenalty: settings.repeatPenalty,
+                repeatPenaltyLastN: settings.repeatPenaltyLastN
             )
         case .summarization:
+            // Tight, deterministic parameters; we still want a touch of repeat
+            // penalty so summaries don't loop on a single phrase.
             return RuntimeParameters(
                 maxTokens: 200,
                 temperature: 0.2,
                 topP: 0.9,
-                stopSequences: stopSequences
+                stopSequences: stopSequences,
+                topK: 40,
+                minP: 0.05,
+                repeatPenalty: 1.1,
+                repeatPenaltyLastN: 64
             )
         case .memoryExtraction:
+            // Strict JSON output. Disable repeat penalty so legitimately
+            // repeating field names (`"content":`, `"confidence":`) survive.
             return RuntimeParameters(
                 maxTokens: 384,
                 temperature: 0.1,
                 topP: 0.9,
-                stopSequences: []
+                stopSequences: [],
+                topK: 40,
+                minP: 0.0,
+                repeatPenalty: 1.0,
+                repeatPenaltyLastN: 0
             )
         }
     }

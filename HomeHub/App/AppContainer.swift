@@ -118,6 +118,13 @@ final class AppContainer: ObservableObject {
         await onboardingService.load()
         await conversationService.load()
 
+        // WebSearch is the one tool that's NOT registered by default in
+        // `SkillManager.init` — it needs explicit user consent, and the
+        // privacy rail in `PromptAssemblyService` flips based on whether
+        // it's actually registered. Now that settings have loaded we know
+        // whether the user has it enabled, so register it here once.
+        await registerWebSearchIfEnabled()
+
         // 1. Merge user-added models into the catalog before reconciling disk state.
         modelCatalogService.loadUserModels()
 
@@ -175,6 +182,45 @@ final class AppContainer: ObservableObject {
             await runtimeManager.load(model)
         } else if selected == model.id {
             await runtimeManager.load(model)
+        }
+    }
+
+    /// Registers `WebSearchSkill(engine: DuckDuckGoLiteEngine())` with the
+    /// shared `SkillManager` iff the user has `WebSearch` in
+    /// `AppSettings.enabledTools`. Idempotent — re-registering with the
+    /// same name just replaces the engine.
+    ///
+    /// Called from `bootstrap()` after settings load, and from
+    /// `setWebSearchEnabled(_:)` whenever the user toggles the row in
+    /// Settings. The toggle path keeps the registry aligned with the
+    /// allow-list without forcing a relaunch.
+    private func registerWebSearchIfEnabled() async {
+        let enabled = settingsService.current.enabledTools
+            .map { $0.lowercased() }
+            .contains("websearch")
+        if enabled {
+            await SkillManager.shared.register(WebSearchSkill(engine: DuckDuckGoLiteEngine()))
+        }
+    }
+
+    /// Convenience: toggle the WebSearch tool from Settings UI without
+    /// reaching into both `SettingsService` and `SkillManager` directly.
+    /// Persists the allow-list change AND registers/unregisters the skill
+    /// so the next prompt assembly reflects the user's choice.
+    func setWebSearchEnabled(_ enabled: Bool) async {
+        var tools = settingsService.current.enabledTools
+        if enabled {
+            tools.insert("WebSearch")
+            await settingsService.set(\.enabledTools, to: tools)
+            await SkillManager.shared.register(WebSearchSkill(engine: DuckDuckGoLiteEngine()))
+        } else {
+            tools.remove("WebSearch")
+            await settingsService.set(\.enabledTools, to: tools)
+            // Note: SkillManager has no `unregister`. Leaving the skill
+            // registered is harmless — the allow-list (`enabledTools`) is
+            // the single source of truth at call time, so a registered-but-
+            // disabled skill is filtered out of the L4 instructions and
+            // refused at dispatch time.
         }
     }
 

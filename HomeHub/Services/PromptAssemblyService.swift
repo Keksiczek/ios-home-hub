@@ -112,6 +112,34 @@ final class PromptAssemblyService {
         // L0a. Assistant persona base
         chunks.append(package.assistant.systemPromptBase)
 
+        // L0a'. Hard rules. Placed RIGHT after the persona so they sit at the
+        // top of the context where small models pay attention. These are the
+        // instructions that tackle the "weird characters / hallucinations /
+        // bad formatting" issues most directly:
+        //   1. Plain Markdown only — no chat-template tokens.
+        //   2. Don't invent facts; admit uncertainty.
+        //   3. One coherent answer, no echo of the user's question.
+        //   4. Stop after answering — don't keep talking to yourself.
+        chunks.append("""
+        Hard rules (follow ALL of them):
+        1. Output plain Markdown only. NEVER emit chat-template control \
+        tokens (e.g. <|im_start|>, <|eot_id|>, <start_of_turn>, [INST], </s>) \
+        or role headers like "assistant:" / "user:". Those are wire-format \
+        only and must never appear in your visible reply.
+        2. If you don't know something, say so plainly. Do NOT invent names, \
+        dates, prices, URLs, or quotes. When uncertain, ask a clarifying \
+        question or state the limit of your knowledge.
+        3. Match the user's language. If they wrote in Czech, answer in Czech \
+        with correct diacritics; if they wrote in English, answer in English. \
+        Never mix scripts inside a single reply unless quoting.
+        4. Write ONE coherent answer. Do not repeat the user's question, do \
+        not roleplay both sides of the conversation, do not continue with a \
+        new "User:" turn after your reply.
+        5. Use Markdown sparingly: short paragraphs, lists only when they \
+        help, fenced code blocks for code. Never wrap a one-line answer in \
+        a list or heading.
+        """)
+
         // L0b. Tone + style hints
         chunks.append("""
         Tone: \(package.assistant.tone.label.lowercased()). \

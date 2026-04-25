@@ -102,6 +102,30 @@ struct RuntimeParameters: Sendable {
     var temperature: Double
     var topP: Double
     var stopSequences: [String]
+    /// Top-K cutoff. `0` disables the sampler. Small values (20–60) cut the
+    /// long tail of low-probability tokens that drive most "weird character"
+    /// and broken-Czech artifacts on small (≤ 4B) models.
+    var topK: Int = 40
+    /// Minimum-probability cutoff for nucleus sampling. Tokens whose
+    /// probability is below `minP × p_max` are dropped before sampling.
+    /// `0.0` disables the sampler. 0.05 is a sensible default that
+    /// suppresses garbage tokens without hurting creativity.
+    var minP: Double = 0.05
+    /// Repetition penalty over the last `repeatPenaltyLastN` tokens.
+    /// `1.0` disables it. 1.1 is the de-facto llama.cpp default and the
+    /// single biggest fix for "the model keeps repeating itself" on small
+    /// models.
+    var repeatPenalty: Double = 1.1
+    /// How many of the most recent tokens the repeat penalty applies to.
+    /// `0` disables it (treated as no penalty).
+    var repeatPenaltyLastN: Int = 64
+    /// Frequency penalty (OpenAI-style; subtracted from logits proportional
+    /// to occurrence count). `0.0` disables. Tiny values (0.0–0.2) further
+    /// reduce loops without hurting fluency.
+    var frequencyPenalty: Double = 0.0
+    /// Presence penalty (OpenAI-style; flat penalty if token has appeared
+    /// at all in the last window). `0.0` disables.
+    var presencePenalty: Double = 0.0
     /// Conversation the generation belongs to.
     /// When set, `LlamaCppRuntime` attempts KV-cache prefix reuse across turns.
     var conversationID: UUID?
