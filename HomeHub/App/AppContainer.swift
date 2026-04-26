@@ -134,6 +134,12 @@ final class AppContainer: ObservableObject {
         //    a model that was downloaded in a previous session.
         await modelCatalogService.reconcileInstallStates(localModels: localModelService)
 
+        // 3. Drop resume data that's either too old to be useful or
+        //    attached to models that no longer exist in the catalog.
+        //    Has to run AFTER user-models load + disk reconciliation so
+        //    we don't accidentally treat a still-known model as gone.
+        modelDownloadService.pruneStaleResumeData()
+
         if onboardingService.state.isCompleted {
             appState.phase = .ready
             // Auto-load the last selected model if it's installed.

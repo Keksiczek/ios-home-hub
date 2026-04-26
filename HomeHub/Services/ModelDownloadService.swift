@@ -676,14 +676,71 @@ final class ModelDownloadService: ObservableObject {
 
     private func saveResumeData(_ data: Data, for modelID: String) {
         UserDefaults.standard.set(data, forKey: resumeDataKey(for: modelID))
+        UserDefaults.standard.set(
+            Date().timeIntervalSince1970,
+            forKey: resumeTimestampKey(for: modelID)
+        )
     }
 
     func clearResumeData(for modelID: String) {
         UserDefaults.standard.removeObject(forKey: resumeDataKey(for: modelID))
+        UserDefaults.standard.removeObject(forKey: resumeTimestampKey(for: modelID))
     }
 
     private func resumeDataKey(for modelID: String) -> String {
         "com.homehub.app.resumeData.\(modelID)"
+    }
+
+    private func resumeTimestampKey(for modelID: String) -> String {
+        "com.homehub.app.resumeTimestamp.\(modelID)"
+    }
+
+    /// Drops resume blobs that are either older than `maxAge` or attached
+    /// to a model the catalog no longer knows about. Without this, a
+    /// failed download can leave a multi-megabyte resume blob in
+    /// UserDefaults forever — and on subsequent app launches the "Paused"
+    /// badge keeps appearing on a model the server has long since
+    /// renamed or removed.
+    ///
+    /// Called from `AppContainer.bootstrap()` after the catalog has been
+    /// reconciled against disk. Safe to call repeatedly; idempotent.
+    ///
+    /// - Parameter maxAge: How long a resume blob is considered fresh.
+    ///   Default 7 days — long enough that a user who started a download
+    ///   on the train can finish it the next morning, short enough that
+    ///   stale blobs from old test runs don't accumulate.
+    func pruneStaleResumeData(maxAge: TimeInterval = 7 * 24 * 60 * 60) {
+        let prefix = "com.homehub.app.resumeData."
+        let timestampPrefix = "com.homehub.app.resumeTimestamp."
+        let knownIDs = Set(catalog.models.map(\.id))
+        let cutoff = Date().timeIntervalSince1970 - maxAge
+
+        var droppedCount = 0
+        for key in UserDefaults.standard.dictionaryRepresentation().keys
+            where key.hasPrefix(prefix) {
+            let modelID = String(key.dropFirst(prefix.count))
+            let timestampKey = "\(timestampPrefix)\(modelID)"
+            let timestamp = UserDefaults.standard.double(forKey: timestampKey)
+
+            // Drop when:
+            //   * the model isn't in the catalog any more (deleted or renamed), OR
+            //   * we have a timestamp and it's older than the cutoff, OR
+            //   * we don't have a timestamp at all (legacy blobs from before
+            //     this commit — they predate observability so we can't tell
+            //     how stale they are; safer to drop).
+            let modelGone = !knownIDs.contains(modelID)
+            let stale = timestamp == 0 || timestamp < cutoff
+
+            if modelGone || stale {
+                UserDefaults.standard.removeObject(forKey: key)
+                UserDefaults.standard.removeObject(forKey: timestampKey)
+                droppedCount += 1
+            }
+        }
+
+        if droppedCount > 0 {
+            log.info("Pruned \(droppedCount, privacy: .public) stale resume-data blob(s) from UserDefaults.")
+        }
     }
 
     static func sha256Hash(of url: URL) throws -> String {
