@@ -180,7 +180,136 @@ final class ModelDownloadService: ObservableObject {
     ///   - url: Direct HTTPS/HTTP download URL for the .gguf file.
     ///   - contextLength: Context window size; defaults to 4096 if unknown.
     /// - Throws: `URLImportError.invalidName` / `.invalidURL` when inputs are rejected.
-    func importFromURL(name: String, url: URL, contextLength: Int = 4096) throws {
+    /// Result of a pre-download URL probe. Surfaced in the import sheet
+    /// so the user gets fast feedback ("285 MB, valid GGUF") instead of
+    /// waiting for a full download to fail validation.
+    struct URLProbe: Equatable, Sendable {
+        var sizeBytes: Int64?
+        var isGGUF: Bool
+        var suggestedName: String?
+        var statusCode: Int
+        var detail: String?
+    }
+
+    /// Performs a HEAD + Range-GET to validate a candidate model URL
+    /// without downloading the whole file. Returns:
+    ///   * `sizeBytes` from `Content-Length` (used for disk-space preflight)
+    ///   * `isGGUF` from the first 4 bytes — the GGUF magic header
+    ///   * `suggestedName` derived from the URL's last path component
+    ///
+    /// Throws on transport errors or non-2xx status codes; the sheet
+    /// renders the message verbatim. HF gated models return 401 here, so
+    /// the user sees "Gated repo — needs auth" instead of a cryptic
+    /// validation failure 5 minutes into a 4 GB download.
+    nonisolated static func probeURL(_ rawURL: URL) async throws -> URLProbe {
+        let url = Self.normaliseModelURL(rawURL)
+        try Self.validateModelURL(url)
+
+        // HEAD first — most servers respect it and we get Content-Length
+        // without burning bytes. HF actually serves Content-Length from
+        // GETs only; a few CDNs reject HEAD entirely. The Range fallback
+        // below picks up the slack.
+        var headRequest = URLRequest(url: url, timeoutInterval: 10)
+        headRequest.httpMethod = "HEAD"
+        headRequest.setValue(
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) " +
+            "AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148",
+            forHTTPHeaderField: "User-Agent"
+        )
+
+        var sizeFromHead: Int64?
+        var statusCode = 0
+        do {
+            let (_, response) = try await URLSession.shared.data(for: headRequest)
+            if let http = response as? HTTPURLResponse {
+                statusCode = http.statusCode
+                if let len = http.value(forHTTPHeaderField: "Content-Length"),
+                   let parsed = Int64(len) {
+                    sizeFromHead = parsed
+                }
+            }
+        } catch {
+            // Some servers (Cloudflare in particular) reject HEAD with
+            // a 400/403 — fall through to the Range probe rather than
+            // giving up. The Range request gives us both validation and
+            // a size from `Content-Range: bytes 0-3/<total>`.
+        }
+
+        // Range-GET for the first 4 bytes. Doubles as a connectivity
+        // check AND a GGUF validation in a single request — typically
+        // returns in under 200 ms on Wi-Fi.
+        var rangeRequest = URLRequest(url: url, timeoutInterval: 10)
+        rangeRequest.httpMethod = "GET"
+        rangeRequest.setValue("bytes=0-3", forHTTPHeaderField: "Range")
+        rangeRequest.setValue(
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) " +
+            "AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148",
+            forHTTPHeaderField: "User-Agent"
+        )
+
+        let (data, response) = try await URLSession.shared.data(for: rangeRequest)
+        var size = sizeFromHead
+        var isGGUF = false
+        var detail: String?
+
+        if let http = response as? HTTPURLResponse {
+            statusCode = http.statusCode
+            // Parse `Content-Range: bytes 0-3/<total>` — present when the
+            // server honoured the Range request (status 206).
+            if let cr = http.value(forHTTPHeaderField: "Content-Range"),
+               let slash = cr.lastIndex(of: "/"),
+               let total = Int64(cr[cr.index(after: slash)...]) {
+                size = total
+            } else if size == nil,
+                      let len = http.value(forHTTPHeaderField: "Content-Length"),
+                      let parsed = Int64(len) {
+                size = parsed
+            }
+
+            switch http.statusCode {
+            case 200, 206: break    // OK
+            case 401, 403:
+                detail = "Gated repository — sign in on Hugging Face and use a public mirror, or pick a non-gated model."
+            case 404:
+                detail = "URL returned 404 (file not found)."
+            case 429:
+                detail = "Rate-limited (429). Try again in a few minutes."
+            default:
+                detail = "Server returned status \(http.statusCode)."
+            }
+        }
+
+        // GGUF magic test — 0x47475546 in big-endian = "GGUF".
+        if data.count >= 4 {
+            isGGUF = data.prefix(4) == Data([0x47, 0x47, 0x55, 0x46])
+        }
+
+        return URLProbe(
+            sizeBytes: size,
+            isGGUF: isGGUF,
+            suggestedName: Self.suggestedName(from: url),
+            statusCode: statusCode,
+            detail: detail
+        )
+    }
+
+    /// Derives a friendly model name from a URL's filename:
+    /// `Llama-3.2-3B-Instruct-Q4_K_M.gguf` → `Llama 3.2 3B Instruct Q4_K_M`.
+    /// Returns nil when the URL has no obvious filename component.
+    nonisolated static func suggestedName(from url: URL) -> String? {
+        let raw = url.lastPathComponent
+        guard !raw.isEmpty, raw != "/" else { return nil }
+        var name = raw
+        if let dot = name.lastIndex(of: ".") {
+            name = String(name[..<dot])
+        }
+        // Hyphens between words read better as spaces; underscores stay
+        // (they're idiomatic in quantisation labels like Q4_K_M).
+        name = name.replacingOccurrences(of: "-", with: " ")
+        return name.trimmingCharacters(in: .whitespaces).isEmpty ? nil : name
+    }
+
+    func importFromURL(name: String, url: URL, contextLength: Int = 4096, knownSizeBytes: Int64? = nil) throws {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty else {
             throw URLImportError.invalidName
@@ -218,7 +347,11 @@ final class ModelDownloadService: ObservableObject {
             family: "Custom",
             parameterCount: "?",
             quantization: "?",
-            sizeBytes: 0,
+            // Populating sizeBytes from the URL probe lets the disk-space
+            // preflight in `start(_:)` actually catch "phone is full"
+            // for user-added models. A `nil` falls back to the legacy
+            // sentinel (0) which skips the preflight gracefully.
+            sizeBytes: knownSizeBytes ?? 0,
             contextLength: contextLength,
             downloadURL: normalisedURL,
             sha256: nil,
@@ -236,7 +369,7 @@ final class ModelDownloadService: ObservableObject {
     /// returns raw bytes instead of an HTML preview. Other URLs pass through
     /// unchanged. Static so `importFromURL` callers (and tests) can use it
     /// without instantiating the service.
-    static func normaliseModelURL(_ url: URL) -> URL {
+    nonisolated static func normaliseModelURL(_ url: URL) -> URL {
         guard url.host?.contains("huggingface.co") == true else { return url }
         let path = url.path
         guard path.contains("/blob/") else { return url }
@@ -250,7 +383,7 @@ final class ModelDownloadService: ObservableObject {
     /// produce a GGUF — directory listings, model card pages, sidecar
     /// metadata files. Keeps the user out of the slow-fail loop where a
     /// download succeeds, validation fails, and they have to start over.
-    static func validateModelURL(_ url: URL) throws {
+    nonisolated static func validateModelURL(_ url: URL) throws {
         let path = url.path.lowercased()
         // Hugging Face repo-overview / file-tree pages.
         if path.contains("/tree/") || path.hasSuffix("/main") || path.hasSuffix("/master") {

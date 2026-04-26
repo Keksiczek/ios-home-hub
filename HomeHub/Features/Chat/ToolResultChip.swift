@@ -36,13 +36,56 @@ struct ToolObservation: Equatable {
     var isError: Bool {
         body.lowercased().hasPrefix("[tool error")
     }
+
+    /// URLs scraped out of the observation body. Used by the chip to
+    /// render tap-able citations underneath search results, so the user
+    /// can verify what the model is summarising without copying the
+    /// link out of the assistant's prose.
+    ///
+    /// Deliberately conservative: we only pick up `http(s)://` URLs that
+    /// match a strict scheme/host/path pattern. Markdown link syntax
+    /// (`[text](url)`) is NOT supported here — the agentic loop renders
+    /// search hits as plain `URL` lines, and we want to avoid swallowing
+    /// punctuation that follows a link in prose.
+    var citations: [Citation] {
+        let pattern = #"https?://[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+        let ns = body as NSString
+        let matches = regex.matches(in: body, range: NSRange(location: 0, length: ns.length))
+        var seen = Set<String>()
+        var out: [Citation] = []
+        for match in matches {
+            var raw = ns.substring(with: match.range)
+            // Trim trailing punctuation that the regex eagerly includes
+            // when the URL ends a sentence (").", "),"  etc.).
+            while let last = raw.last, ".,);!?\"]'>".contains(last) {
+                raw.removeLast()
+            }
+            guard !seen.contains(raw), let url = URL(string: raw) else { continue }
+            seen.insert(raw)
+            out.append(Citation(url: url, host: url.host ?? raw))
+            if out.count >= 5 { break }   // chip stays compact
+        }
+        return out
+    }
+
+    struct Citation: Hashable {
+        let url: URL
+        let host: String
+    }
 }
 
 /// Compact chip shown in place of a regular bubble when a message body
 /// is actually a tool observation.
+///
+/// When the observation contains URLs (typically web-search results) the
+/// chip renders each one as a tap-able citation under the body text so
+/// the user can verify the model's summary without scrolling the prose
+/// for the hyperlink.
 struct ToolResultChip: View {
     let observation: ToolObservation
     @State private var expanded = false
+    @Environment(\.openURL) private var openURL
 
     var body: some View {
         HStack(alignment: .top, spacing: HHTheme.spaceM) {
@@ -66,6 +109,11 @@ struct ToolResultChip: View {
                         .foregroundStyle(HHTheme.textPrimary)
                         .lineLimit(2)
                 }
+
+                let citations = observation.citations
+                if !citations.isEmpty {
+                    citationList(citations)
+                }
             }
 
             Spacer(minLength: 0)
@@ -88,5 +136,31 @@ struct ToolResultChip: View {
             RoundedRectangle(cornerRadius: HHTheme.cornerLarge, style: .continuous)
                 .stroke(observation.isError ? HHTheme.danger.opacity(0.3) : HHTheme.stroke, lineWidth: 1)
         )
+    }
+
+    /// Renders citations as a single tappable column. Each row shows the
+    /// host (`example.com`) so the user can recognise the source at a
+    /// glance — the full URL is preserved in the link's destination.
+    @ViewBuilder
+    private func citationList(_ citations: [ToolObservation.Citation]) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(citations, id: \.self) { citation in
+                Button {
+                    openURL(citation.url)
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "link")
+                            .font(.caption2)
+                        Text(citation.host)
+                            .font(HHTheme.caption.weight(.medium))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    .foregroundStyle(HHTheme.accent)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.top, 2)
     }
 }

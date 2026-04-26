@@ -210,11 +210,12 @@ struct ChatDetailView: View {
             && runtime.activeModel != nil
     }
 
-    /// Returns true only for the last completed assistant message (shows "Regenerate").
+    /// True for the most recent assistant message regardless of status —
+    /// completed replies show "Regenerate", failed/cancelled ones show
+    /// "Try again". Either way the underlying `ConversationService.regenerate`
+    /// drops the bubble and re-runs from the preceding user message.
     private func canRegenerate(_ message: Message) -> Bool {
-        guard message.role == .assistant,
-              message.status == .complete,
-              !isStreaming else { return false }
+        guard message.role == .assistant, !isStreaming else { return false }
         return messages.last(where: { $0.role == .assistant })?.id == message.id
     }
 
