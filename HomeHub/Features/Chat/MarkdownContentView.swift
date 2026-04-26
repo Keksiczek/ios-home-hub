@@ -128,6 +128,10 @@ struct InlineMarkdownColumn: View {
                     BlockquoteView(text: text, textColor: textColor)
                 case .paragraph(let text):
                     InlineParagraphView(text: text, textColor: textColor)
+                case .table(let headers, let rows):
+                    MarkdownTableView(headers: headers, rows: rows, textColor: textColor)
+                case .horizontalRule:
+                    HorizontalRuleView()
                 }
             }
         }
@@ -151,11 +155,22 @@ enum InlineBlock: Equatable {
     /// paragraphs at the parser stage so each `.paragraph(...)` is one
     /// logical paragraph.
     case paragraph(text: String)
+    /// GitHub-flavored markdown table. `headers` always populated;
+    /// `rows` may have heterogeneous cell counts (real models sometimes
+    /// emit ragged tables — the renderer pads short rows to the header
+    /// length so the layout stays grid-aligned).
+    case table(headers: [String], rows: [[String]])
+    /// Thematic break — a `---` / `***` / `___` line on its own.
+    case horizontalRule
 
     /// Parses a plain-text segment (already stripped of fenced code blocks)
     /// into a sequence of block-level elements. Tolerant of partial
     /// content during streaming — anything that doesn't match a block
     /// pattern falls through to a paragraph line.
+    ///
+    /// Walks lines with an explicit index so table detection can peek at
+    /// `lines[i+1]` for the GFM separator pattern (`|---|---|`) without
+    /// resorting to a multi-pass parser.
     static func parse(_ text: String) -> [InlineBlock] {
         var out: [InlineBlock] = []
         var bullets: [String] = []
@@ -185,13 +200,53 @@ enum InlineBlock: Equatable {
             flushBullets(); flushOrdered(); flushQuote(); flushParagraph()
         }
 
-        for raw in text.split(separator: "\n", omittingEmptySubsequences: false) {
-            let line = String(raw)
+        let lines = text
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map(String.init)
+
+        var i = 0
+        while i < lines.count {
+            // --- GFM table detection (header row + separator row + body) ---
+            //
+            // We commit to a table only when line `i+1` matches the
+            // separator pattern `|---|---|` (alignment markers OK). That
+            // anchors us against false positives — a paragraph mentioning
+            // pipes ("dog | cat") won't get hijacked as a table.
+            if i + 1 < lines.count,
+               isTableSeparator(lines[i + 1]) {
+                let headerCells = parseTableRow(lines[i])
+                if headerCells.count >= 2 {
+                    flushAll()
+                    var rows: [[String]] = []
+                    var j = i + 2
+                    while j < lines.count, lines[j].contains("|") {
+                        let cells = parseTableRow(lines[j])
+                        if !cells.isEmpty { rows.append(cells) }
+                        j += 1
+                    }
+                    out.append(.table(headers: headerCells, rows: rows))
+                    i = j
+                    continue
+                }
+            }
+
+            let line = lines[i]
             let trimmed = line.trimmingCharacters(in: .whitespaces)
 
             // Empty line: paragraph break / list separator.
             if trimmed.isEmpty {
                 flushAll()
+                i += 1
+                continue
+            }
+
+            // Horizontal rule — `---` / `***` / `___` alone on a line.
+            // Cheap to short-circuit before heading detection so a `---`
+            // doesn't accidentally trigger anything else.
+            if isHorizontalRule(trimmed) {
+                flushAll()
+                out.append(.horizontalRule)
+                i += 1
                 continue
             }
 
@@ -199,6 +254,7 @@ enum InlineBlock: Equatable {
             if let heading = parseHeading(trimmed) {
                 flushAll()
                 out.append(heading)
+                i += 1
                 continue
             }
 
@@ -206,6 +262,7 @@ enum InlineBlock: Equatable {
             if let item = parseBullet(trimmed) {
                 flushOrdered(); flushQuote(); flushParagraph()
                 bullets.append(item)
+                i += 1
                 continue
             }
 
@@ -213,6 +270,7 @@ enum InlineBlock: Equatable {
             if let item = parseOrdered(trimmed) {
                 flushBullets(); flushQuote(); flushParagraph()
                 ordered.append(item)
+                i += 1
                 continue
             }
 
@@ -220,12 +278,14 @@ enum InlineBlock: Equatable {
             if let quoteLine = parseQuote(trimmed) {
                 flushBullets(); flushOrdered(); flushParagraph()
                 quote.append(quoteLine)
+                i += 1
                 continue
             }
 
             // Plain paragraph line — fall through.
             flushBullets(); flushOrdered(); flushQuote()
             paragraph.append(line)
+            i += 1
         }
         flushAll()
         return out
@@ -271,6 +331,53 @@ enum InlineBlock: Equatable {
         if trimmed == ">" { return "" }
         if trimmed.hasPrefix("> ") { return String(trimmed.dropFirst(2)) }
         return nil
+    }
+
+    /// True when a trimmed line is a horizontal rule — three or more of
+    /// the same marker (`-`, `*`, `_`), optionally interleaved with
+    /// spaces, and nothing else. Distinct from a heading-underline (`===`,
+    /// `---` *under* a paragraph) which Setext-style headings use; we
+    /// don't support Setext so a bare `---` is unambiguously a rule.
+    static func isHorizontalRule(_ trimmed: String) -> Bool {
+        let allowed: Set<Character> = ["-", "*", "_", " "]
+        guard trimmed.count >= 3,
+              trimmed.unicodeScalars.allSatisfy({ allowed.contains(Character($0)) })
+        else { return false }
+        let nonSpace = trimmed.filter { $0 != " " }
+        guard nonSpace.count >= 3,
+              Set(nonSpace).count == 1 else { return false }
+        return true
+    }
+
+    /// True when a line is the GFM table separator that immediately
+    /// follows the header row: `| --- | :---: | ---: |` etc. Cells must
+    /// be optional left/right alignment colons around three or more
+    /// dashes; anything else fails.
+    static func isTableSeparator(_ line: String) -> Bool {
+        guard line.contains("|") else { return false }
+        let cells = parseTableRow(line)
+        guard cells.count >= 2 else { return false }
+        // Each cell must match `:?-{1,}:?` after trimming spaces.
+        return cells.allSatisfy { cell in
+            let c = cell.trimmingCharacters(in: .whitespaces)
+            guard !c.isEmpty else { return false }
+            return c.range(of: #"^:?-+:?$"#, options: .regularExpression) != nil
+        }
+    }
+
+    /// Splits a markdown table line into trimmed cells. Strips leading
+    /// and trailing pipe wrappers (so both `| a | b |` and `a | b`
+    /// parse to `["a", "b"]`). Returns an empty list when the line has
+    /// no real cells, so the caller can short-circuit cleanly.
+    static func parseTableRow(_ line: String) -> [String] {
+        var t = line.trimmingCharacters(in: .whitespaces)
+        if t.hasPrefix("|") { t = String(t.dropFirst()) }
+        if t.hasSuffix("|") { t = String(t.dropLast()) }
+        let cells = t.split(separator: "|", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+        // `parseTableRow("")` should yield `[]`, not `[""]`.
+        if cells.count == 1, cells[0].isEmpty { return [] }
+        return cells
     }
 }
 
@@ -361,6 +468,91 @@ private struct InlineParagraphView: View {
             .fixedSize(horizontal: false, vertical: true)
             .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// GFM table renderer. Wraps the grid in a horizontal `ScrollView` so
+/// wide tables don't blow out the chat bubble — the rest of the chat
+/// still flows top-to-bottom while the table itself scrolls sideways.
+///
+/// Inline markdown (`**bold**`, `` `code` ``, `[link](url)`) inside a
+/// cell is parsed with the same `InlineMarkdownText.attributed` helper
+/// every other block uses, so cells with bold-emphasised values look
+/// the way you'd expect.
+private struct MarkdownTableView: View {
+    let headers: [String]
+    let rows: [[String]]
+    let textColor: Color
+
+    /// Pads a row to the header length so a ragged response doesn't
+    /// produce a jagged grid. Models occasionally drop a trailing pipe
+    /// or skip a column; rendering empty cells is friendlier than
+    /// silently dropping the row.
+    private func padded(_ row: [String]) -> [String] {
+        if row.count >= headers.count { return Array(row.prefix(headers.count)) }
+        return row + Array(repeating: "", count: headers.count - row.count)
+    }
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 0) {
+                headerRow
+                Divider()
+                ForEach(Array(rows.enumerated()), id: \.offset) { idx, row in
+                    bodyRow(row: padded(row), zebra: idx.isMultiple(of: 2))
+                    if idx < rows.count - 1 {
+                        Divider().opacity(0.5)
+                    }
+                }
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: HHTheme.cornerSmall, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: HHTheme.cornerSmall, style: .continuous)
+                .stroke(HHTheme.stroke, lineWidth: 1)
+        )
+    }
+
+    private var headerRow: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 0) {
+            ForEach(Array(headers.enumerated()), id: \.offset) { _, header in
+                Text(InlineMarkdownText.attributed(header))
+                    .font(HHTheme.subheadline.weight(.semibold))
+                    .foregroundStyle(textColor)
+                    .frame(minWidth: 80, alignment: .leading)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+            }
+        }
+        .background(Color(.systemGray5))
+    }
+
+    private func bodyRow(row: [String], zebra: Bool) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 0) {
+            ForEach(Array(row.enumerated()), id: \.offset) { _, cell in
+                Text(InlineMarkdownText.attributed(cell))
+                    .font(HHTheme.body)
+                    .foregroundStyle(textColor)
+                    .frame(minWidth: 80, alignment: .leading)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .background(zebra ? Color(.systemGray6).opacity(0.5) : .clear)
+    }
+}
+
+/// Thematic break — rendered as a thin tinted line that takes the full
+/// content width. Distinct from `Divider()` so the chat-bubble background
+/// shows through evenly even when the bubble itself is dark.
+private struct HorizontalRuleView: View {
+    var body: some View {
+        Rectangle()
+            .fill(HHTheme.stroke)
+            .frame(height: 1)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, HHTheme.spaceXS)
     }
 }
 
