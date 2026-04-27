@@ -5,6 +5,7 @@ struct ChatDetailView: View {
     @EnvironmentObject private var conversations: ConversationService
     @EnvironmentObject private var runtime: RuntimeManager
     @EnvironmentObject private var settings: SettingsService
+    @EnvironmentObject private var container: AppContainer
     @State private var draft: String = ""
     @State private var showingRename = false
     @State private var showingVoiceCall = false
@@ -15,6 +16,7 @@ struct ChatDetailView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            unloadBanner
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: HHTheme.spaceM) {
@@ -182,6 +184,65 @@ struct ChatDetailView: View {
         }
         .task {
             await conversations.loadMessages(for: conversationID)
+        }
+    }
+
+    // MARK: - Unload banner
+
+    /// Non-blocking banner shown above the chat scroll view when the OS
+    /// (memory pressure / thermal critical) forced the model out of
+    /// memory. Lets the user one-tap reload back into the chat instead
+    /// of hunting for the Models tab and figuring out what happened.
+    ///
+    /// Hidden when:
+    /// - There's no pending notice (`pendingUnloadNotice == nil`).
+    /// - The runtime has a model loaded again — in that case the
+    ///   problem already resolved itself, so the banner would only
+    ///   confuse the user.
+    @ViewBuilder
+    private var unloadBanner: some View {
+        if let notice = container.pendingUnloadNotice,
+           runtime.activeModel == nil {
+            HStack(spacing: HHTheme.spaceM) {
+                Image(systemName: "memorychip")
+                    .font(.system(size: 18))
+                    .foregroundStyle(HHTheme.warning)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(notice.reason.label)
+                        .font(HHTheme.subheadline.weight(.semibold))
+                    Text("'\(notice.displayName)' will need to reload before chatting.")
+                        .font(HHTheme.caption)
+                        .foregroundStyle(HHTheme.textSecondary)
+                        .lineLimit(2)
+                }
+                Spacer(minLength: 0)
+                Button("Reload") {
+                    Task { await container.reloadFromUnloadNotice() }
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .tint(HHTheme.accent)
+
+                Button {
+                    container.acknowledgeUnloadNotice()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(HHTheme.textSecondary)
+                        .padding(6)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Dismiss")
+            }
+            .padding(.horizontal, HHTheme.spaceL)
+            .padding(.vertical, HHTheme.spaceM)
+            .background(HHTheme.warning.opacity(0.12))
+            .overlay(alignment: .bottom) {
+                Rectangle()
+                    .fill(HHTheme.warning.opacity(0.35))
+                    .frame(height: 1)
+            }
+            .transition(.move(edge: .top).combined(with: .opacity))
         }
     }
 

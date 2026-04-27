@@ -28,6 +28,40 @@ final class AppContainer: ObservableObject {
     /// (memory pressure or app-background). Nil until the first unload occurs.
     @Published private(set) var lastUnloadNotification: String?
 
+    /// Structured snapshot of the most recent automatic unload, surfaced
+    /// to the chat UI as a non-blocking banner ("Model unloaded — Reload?").
+    /// `nil` once the user dismisses the banner OR once the model is
+    /// successfully reloaded — both reset paths run through
+    /// `acknowledgeUnloadNotice()`.
+    @Published private(set) var pendingUnloadNotice: UnloadNotice?
+
+    /// Single unload event ready to be rendered as a recovery banner. We
+    /// keep the `modelID` alongside the display name so the Reload button
+    /// can route to the same model the runtime had loaded — the user may
+    /// have switched their selection between unload and dismiss.
+    struct UnloadNotice: Equatable {
+        let modelID: String
+        let displayName: String
+        let reason: Reason
+        let occurredAt: Date
+
+        enum Reason: String, Equatable {
+            case memoryPressure
+            case thermalCritical
+            case appBackground
+
+            /// User-facing one-liner. Localised informally because this
+            /// shows up in the chat surface, not Settings.
+            var label: String {
+                switch self {
+                case .memoryPressure:  return "Low memory — model unloaded."
+                case .thermalCritical: return "Device too hot — model unloaded."
+                case .appBackground:   return "App was backgrounded — model unloaded."
+                }
+            }
+        }
+    }
+
     let settingsService: SettingsService
     let userMemoryStore: UserMemoryStore
     let personalizationService: PersonalizationService
@@ -230,6 +264,26 @@ final class AppContainer: ObservableObject {
         }
     }
 
+    /// Dismisses the in-chat unload banner without reloading. Used by
+    /// the banner's "x" button when the user wants to acknowledge the
+    /// event but defer recovery (e.g. they're done with the chat for now).
+    func acknowledgeUnloadNotice() {
+        pendingUnloadNotice = nil
+    }
+
+    /// Re-loads the model referenced by the pending banner. Looks the
+    /// model up in the catalog by ID rather than trusting a captured
+    /// `LocalModel`, so download-state changes between unload and reload
+    /// (e.g. the user re-imported it under a new ID) don't blow up.
+    func reloadFromUnloadNotice() async {
+        guard let notice = pendingUnloadNotice else { return }
+        defer { pendingUnloadNotice = nil }
+        if let model = modelCatalogService.model(withID: notice.modelID),
+           model.installState.isReady {
+            await runtimeManager.load(model)
+        }
+    }
+
     // MARK: - Lifecycle
 
     /// Forward memory-pressure notification to the runtime via RuntimeManager.
@@ -242,6 +296,12 @@ final class AppContainer: ObservableObject {
         if let unloaded = await runtimeManager.handleMemoryPressure() {
             let time = DateFormatter.localizedString(from: .now, dateStyle: .none, timeStyle: .medium)
             lastUnloadNotification = "\(time) – '\(unloaded.displayName)' unloaded (memory pressure #\(memoryWarningCount))"
+            pendingUnloadNotice = UnloadNotice(
+                modelID: unloaded.id,
+                displayName: unloaded.displayName,
+                reason: .memoryPressure,
+                occurredAt: .now
+            )
         }
     }
 
@@ -257,6 +317,12 @@ final class AppContainer: ObservableObject {
             if let unloaded = await runtimeManager.handleThermalCritical() {
                 let time = DateFormatter.localizedString(from: .now, dateStyle: .none, timeStyle: .medium)
                 lastUnloadNotification = "\(time) – '\(unloaded.displayName)' unloaded (thermal critical)"
+                pendingUnloadNotice = UnloadNotice(
+                    modelID: unloaded.id,
+                    displayName: unloaded.displayName,
+                    reason: .thermalCritical,
+                    occurredAt: .now
+                )
             }
         case .serious, .fair, .nominal:
             break
@@ -272,11 +338,23 @@ final class AppContainer: ObservableObject {
             if let unloaded = await runtimeManager.handleBackground() {
                 let time = DateFormatter.localizedString(from: .now, dateStyle: .none, timeStyle: .medium)
                 lastUnloadNotification = "\(time) – '\(unloaded.displayName)' unloaded (app backgrounded)"
+                // Note: we DON'T set `pendingUnloadNotice` for the
+                // app-background case — the next foreground transition
+                // (`.active` below) auto-reloads the model, so the user
+                // never sees the chat in a broken state and a banner
+                // would only flash on screen for a fraction of a second.
             }
         case .active:
             // Reload model if it was unloaded while backgrounded.
             if runtimeManager.activeModel == nil {
                 await autoLoadSelectedModel()
+            }
+            // If the auto-reload (or the user's earlier action) restored
+            // the model the banner is referring to, drop the banner — its
+            // recovery suggestion is no longer useful.
+            if let notice = pendingUnloadNotice,
+               runtimeManager.activeModel?.id == notice.modelID {
+                pendingUnloadNotice = nil
             }
             // Handle "New chat" intent fired via Siri / Shortcuts.
             if UserDefaults.standard.bool(forKey: "homeHub.pendingNewChat") {
