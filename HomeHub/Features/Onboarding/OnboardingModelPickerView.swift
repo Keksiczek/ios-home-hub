@@ -17,6 +17,11 @@ struct OnboardingModelPickerView: View {
                     ModelPickerRow(
                         model: model,
                         isSelected: drafts.selectedModelID == model.id,
+                        // Resume picks up an interrupted download from
+                        // its saved bytes; bare retry starts over. Both
+                        // funnel through `downloads.start(_:)` which
+                        // looks up the resume blob internally.
+                        hasResumeData: downloads.hasResumeData(for: model.id),
                         onSelect: { drafts.selectedModelID = model.id },
                         onDownload: { downloads.start(model) }
                     )
@@ -58,6 +63,11 @@ struct OnboardingModelPickerView: View {
 private struct ModelPickerRow: View {
     let model: LocalModel
     let isSelected: Bool
+    /// True when a previous download for this model failed but resume
+    /// data is still around. Toggles the recovery button label between
+    /// "Resume" and "Retry" so the user knows whether the second attempt
+    /// continues the previous bytes or starts over.
+    let hasResumeData: Bool
     let onSelect: () -> Void
     let onDownload: () -> Void
 
@@ -119,10 +129,18 @@ private struct ModelPickerRow: View {
                 .font(HHTheme.caption)
                 .foregroundStyle(HHTheme.accent)
         case .failed(let reason):
-            Label(reason, systemImage: "exclamationmark.triangle.fill")
-                .font(HHTheme.caption)
-                .foregroundStyle(HHTheme.warning)
-                .lineLimit(2)
+            // Failed downloads must surface a recovery affordance —
+            // without one, the only path forward is "Reset all models"
+            // in dev diagnostics, which is brutal during onboarding.
+            VStack(alignment: .leading, spacing: 6) {
+                Label(reason, systemImage: "exclamationmark.triangle.fill")
+                    .font(HHTheme.caption)
+                    .foregroundStyle(HHTheme.warning)
+                    .lineLimit(3)
+                Button(hasResumeData ? "Resume" : "Try again", action: onDownload)
+                    .font(HHTheme.subheadline)
+                    .tint(HHTheme.accent)
+            }
         }
     }
 }

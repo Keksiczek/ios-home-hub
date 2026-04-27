@@ -20,6 +20,7 @@ struct DeveloperDiagnosticsView: View {
     @EnvironmentObject private var catalog: ModelCatalogService
     @EnvironmentObject private var downloads: ModelDownloadService
     @EnvironmentObject private var promptBudget: PromptBudgetReporter
+    @EnvironmentObject private var settings: SettingsService
 
     @State private var stubModelIDs: [String] = []
     @State private var isScanning = false
@@ -28,6 +29,7 @@ struct DeveloperDiagnosticsView: View {
     @State private var lastTTFTms: Int? = nil
     @State private var lastThroughput: Double? = nil
     @State private var lastDurationMs: Int? = nil
+    @State private var diagnosticsCopied = false
 
     var body: some View {
         List {
@@ -39,6 +41,7 @@ struct DeveloperDiagnosticsView: View {
             tokenBudgetSection
             integritySection
             actionsSection
+            exportSection
             smokeTestSection
         }
         .navigationTitle("Developer Diagnostics")
@@ -267,6 +270,44 @@ struct DeveloperDiagnosticsView: View {
         }
     }
 
+    // MARK: - Export
+
+    /// Diagnostic export — gives you a single shareable JSON blob that
+    /// captures the same fields the rest of this screen renders.
+    /// Bug-report friendly: paste it into an issue and the reader has
+    /// the full runtime / settings context without having to ask back
+    /// twenty questions.
+    private var exportSection: some View {
+        Section {
+            Button {
+                copyDiagnostics()
+            } label: {
+                Label(
+                    diagnosticsCopied ? "Copied to clipboard" : "Copy diagnostics JSON",
+                    systemImage: diagnosticsCopied ? "checkmark" : "doc.on.doc"
+                )
+                .foregroundStyle(diagnosticsCopied ? HHTheme.success : .primary)
+                .animation(.easeInOut(duration: 0.15), value: diagnosticsCopied)
+            }
+
+            ShareLink(
+                item: buildReport().jsonString(),
+                preview: SharePreview("HomeHub diagnostics")
+            ) {
+                Label("Share diagnostics JSON…", systemImage: "square.and.arrow.up")
+            }
+        } header: {
+            Text("Export")
+        } footer: {
+            Text(
+                "Captures runtime state, settings (sampler params, model), " +
+                "device info, last generation perf, and the recent telemetry " +
+                "events. Conversation contents and memory facts are NEVER " +
+                "included."
+            )
+        }
+    }
+
     // MARK: - Smoke test
 
     private var smokeTestSection: some View {
@@ -401,6 +442,147 @@ struct DeveloperDiagnosticsView: View {
             telemetryLog.append(entry)
             if telemetryLog.count > 12 { telemetryLog.removeFirst() }
         }
+    }
+
+    // MARK: - Report builder
+
+    /// Snapshots the current diagnostics-screen state into a Codable
+    /// report. Assembled at action time (not eagerly) so the JSON
+    /// reflects whatever the user is looking at when they tap.
+    private func buildReport() -> DiagnosticReport {
+        let s = settings.current
+
+        let runtimeState: String
+        var failureReason: String?
+        switch runtime.state {
+        case .idle:                       runtimeState = "idle"
+        case .loading(let id):            runtimeState = "loading: \(id)"
+        case .ready(let id):              runtimeState = "ready: \(id)"
+        case .failed(let id, let reason):
+            runtimeState = "failed: \(id)"
+            failureReason = reason
+        }
+
+        let active = runtime.activeModel.map {
+            DiagnosticReport.ActiveModel(
+                id: $0.id,
+                displayName: $0.displayName,
+                family: $0.family,
+                parameterCount: $0.parameterCount,
+                quantization: $0.quantization,
+                sizeBytes: $0.sizeBytes,
+                contextLength: $0.contextLength
+            )
+        }
+
+        let installState: (LocalModel) -> String = { m in
+            switch m.installState {
+            case .notInstalled: return "notInstalled"
+            case .downloading:  return "downloading"
+            case .installed:    return "installed"
+            case .loaded:       return "loaded"
+            case .failed:       return "failed"
+            }
+        }
+        let installCounts = catalog.models.reduce(into: (installed: 0, downloading: 0, failed: 0)) { acc, m in
+            switch installState(m) {
+            case "installed", "loaded": acc.installed += 1
+            case "downloading":          acc.downloading += 1
+            case "failed":               acc.failed += 1
+            default: break
+            }
+        }
+
+        let budget = promptBudget.lastReport.map {
+            DiagnosticReport.Budget(
+                family: $0.family,
+                mode: $0.mode.rawValue,
+                totalPromptTokens: $0.totalPromptTokens,
+                historyKept: $0.historyMessagesKept,
+                historyDropped: $0.historyMessagesDropped
+            )
+        }
+
+        let appVersion = (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "unknown"
+
+        return DiagnosticReport(
+            generatedAt: .now,
+            appVersion: appVersion,
+            device: .init(
+                modelName: UIDevice.current.model,
+                systemVersion: UIDevice.current.systemVersion,
+                isPhone: UIDevice.current.userInterfaceIdiom == .phone,
+                isSimulator: isSimulatorBuild
+            ),
+            build: .init(
+                cppBridge: cppBridgeLabel,
+                downloadMode: downloadModeLabel,
+                realRuntimeFlag: realRuntimeFlag
+            ),
+            runtime: .init(
+                identifier: runtime.runtime.identifier,
+                state: runtimeState,
+                failureReason: failureReason
+            ),
+            activeModel: active,
+            lastGeneration: .init(
+                ttftMs: lastTTFTms,
+                tokensPerSecond: lastThroughput,
+                totalDurationMs: lastDurationMs
+            ),
+            memory: .init(
+                memoryWarningCount: container.memoryWarningCount,
+                lastUnloadNotification: container.lastUnloadNotification
+            ),
+            settings: .init(
+                temperature: s.temperature,
+                topP: s.topP,
+                topK: s.topK,
+                minP: s.minP,
+                repeatPenalty: s.repeatPenalty,
+                repeatPenaltyLastN: s.repeatPenaltyLastN,
+                maxResponseTokens: s.maxResponseTokens,
+                answerLength: s.answerLength.rawValue,
+                language: s.language.rawValue
+            ),
+            catalog: .init(
+                total: catalog.models.count,
+                installed: installCounts.installed,
+                downloading: installCounts.downloading,
+                failed: installCounts.failed,
+                userAdded: catalog.models.filter(\.isUserAdded).count
+            ),
+            lastBudget: budget,
+            recentTelemetry: telemetryLog
+        )
+    }
+
+    /// Pushes the JSON report onto the system pasteboard and flips the
+    /// button label to confirm. Resets after 1.5 s so a follow-up tap
+    /// produces fresh output.
+    private func copyDiagnostics() {
+        UIPasteboard.general.string = buildReport().jsonString()
+        withAnimation(.easeInOut(duration: 0.15)) { diagnosticsCopied = true }
+        Task {
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            withAnimation(.easeInOut(duration: 0.15)) { diagnosticsCopied = false }
+        }
+    }
+
+    private var isSimulatorBuild: Bool {
+        #if targetEnvironment(simulator)
+        return true
+        #else
+        return false
+        #endif
+    }
+
+    private var realRuntimeFlag: Bool {
+        #if HOMEHUB_REAL_RUNTIME
+        return true
+        #else
+        return false
+        #endif
     }
 
     private func telemetryEntry(for event: RuntimeTelemetryEvent) -> String {

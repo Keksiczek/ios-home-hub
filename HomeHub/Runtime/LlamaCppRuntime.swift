@@ -226,6 +226,12 @@ final class LlamaCppRuntime: LocalLLMRuntime, @unchecked Sendable {
                         temperature: Float(parameters.temperature),
                         topP: Float(parameters.topP),
                         stopSequences: parameters.stopSequences,
+                        topK: Int32(parameters.topK),
+                        minP: Float(parameters.minP),
+                        repeatPenalty: Float(parameters.repeatPenalty),
+                        repeatPenaltyLastN: Int32(parameters.repeatPenaltyLastN),
+                        frequencyPenalty: Float(parameters.frequencyPenalty),
+                        presencePenalty: Float(parameters.presencePenalty),
                         cachedTokens: cachedTokens,
                         cacheBox: cacheBox
                     )

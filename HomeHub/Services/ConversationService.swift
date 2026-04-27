@@ -294,7 +294,11 @@ final class ConversationService: ObservableObject {
     }
 
     /// Drops the last assistant reply and re-runs generation from the
-    /// preceding user message. No-op if a stream is already active.
+    /// preceding user message. Works regardless of the dropped message's
+    /// status — completed replies, failed turns, and cancelled streams
+    /// all funnel through the same path so the chat UI can offer
+    /// "Try again" on a failed bubble without a separate code path.
+    /// No-op if a stream is already active in this conversation.
     func regenerate(in conversationID: UUID) {
         guard activeStreams[conversationID] == nil else { return }
         var list = messagesByConversation[conversationID] ?? []
@@ -305,8 +309,21 @@ final class ConversationService: ObservableObject {
 
         let userInput = list[lastAssistantIdx - 1].content
         let attachments = list[lastAssistantIdx - 1].attachments
+        let droppedID = list[lastAssistantIdx].id
         list.remove(at: lastAssistantIdx)
         messagesByConversation[conversationID] = list
+
+        // Persist the deletion AND invalidate the KV cache before launching
+        // the new stream. Without the disk delete the failed/cancelled
+        // bubble would reappear on the next app launch (bootstrap reloads
+        // every persisted message). Without the cache invalidation the
+        // runtime would happily reuse a prefix that includes tokens from
+        // the dropped assistant turn — fine for a clean reply, wrong for
+        // a turn the user just disowned.
+        Task {
+            try? await store.deleteMessage(id: droppedID, conversationID: conversationID)
+            await runtime.invalidateSession(for: conversationID)
+        }
 
         activeStreams[conversationID] = Task { [weak self] in
             guard let self else { return }

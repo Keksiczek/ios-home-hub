@@ -104,6 +104,12 @@ struct LlamaContextHandle: @unchecked Sendable {
         temperature: Float,
         topP: Float,
         stopSequences: [String],
+        topK: Int32 = 40,
+        minP: Float = 0.05,
+        repeatPenalty: Float = 1.1,
+        repeatPenaltyLastN: Int32 = 64,
+        frequencyPenalty: Float = 0.0,
+        presencePenalty: Float = 0.0,
         cachedTokens: [Int32] = [],
         cacheBox: StreamCacheBox? = nil
     ) throws -> AsyncThrowingStream<String, Error> {
@@ -209,6 +215,19 @@ struct LlamaContextHandle: @unchecked Sendable {
                     }
 
                     // --- 4. Set up sampler chain ---
+                    //
+                    // Order matters. llama.cpp pipes logits through samplers in
+                    // chain order, so the canonical small-model recipe is:
+                    //   penalties → top-k → top-p → min-p → temperature → dist
+                    //
+                    // The penalty + min-p step is what fixes most of the
+                    // "garbage characters / Czech word salad / endless
+                    // repetition" complaints on 2–4B GGUFs. min-p discards the
+                    // long tail of low-probability tokens *before* temperature
+                    // softens the distribution, so a hot temperature can no
+                    // longer reach into pure noise. The repeat penalty stops
+                    // the model from looping on a single phrase, which is the
+                    // single most common failure mode of small instruct models.
                     guard let sampler = llama_sampler_chain_init(llama_sampler_chain_default_params()) else {
                         cacheBox?.finalPromptTokens = promptTokens
                         continuation.finish(throwing: RuntimeError.underlying("Failed to init sampler chain"))
@@ -216,14 +235,41 @@ struct LlamaContextHandle: @unchecked Sendable {
                     }
                     defer { llama_sampler_free(sampler) }
 
-                    llama_sampler_chain_add(sampler, llama_sampler_init_temp(temperature))
+                    // Repetition / frequency / presence penalties.
+                    // `repeatPenaltyLastN <= 0` or `repeatPenalty == 1.0` makes
+                    // it a no-op so we don't pay the cost when the user explicitly
+                    // disables it (memoryExtraction mode does this for JSON output).
+                    if repeatPenaltyLastN > 0 && repeatPenalty != 1.0 {
+                        llama_sampler_chain_add(sampler, llama_sampler_init_penalties(
+                            repeatPenaltyLastN,
+                            repeatPenalty,
+                            frequencyPenalty,
+                            presencePenalty
+                        ))
+                    }
+                    if topK > 0 {
+                        llama_sampler_chain_add(sampler, llama_sampler_init_top_k(topK))
+                    }
                     llama_sampler_chain_add(sampler, llama_sampler_init_top_p(topP, 1))
+                    if minP > 0 {
+                        llama_sampler_chain_add(sampler, llama_sampler_init_min_p(minP, 1))
+                    }
+                    llama_sampler_chain_add(sampler, llama_sampler_init_temp(temperature))
                     llama_sampler_chain_add(sampler, llama_sampler_init_dist(UInt32.random(in: 0...UInt32.max)))
 
                     // --- 5. Generation loop ---
                     var stopBuffer = ""
                     let maxStopLen = stopSequences.map(\.count).max() ?? 0
                     let eosToken = llama_vocab_eos(llama_model_get_vocab(model))
+
+                    // Holds bytes from a token whose UTF-8 sequence was cut
+                    // mid-codepoint (very common for non-ASCII scripts —
+                    // Czech diacritics, emoji, CJK). Without this buffer the
+                    // streaming path would call `String(decoding:as: UTF8.self)`
+                    // on a half-character and substitute U+FFFD, producing
+                    // the "garbage characters" the user complained about.
+                    // Drained whenever the buffer becomes a valid UTF-8 prefix.
+                    var pendingBytes: [UInt8] = []
 
                     for _ in 0..<maxTokens {
                         if Task.isCancelled {
@@ -237,6 +283,14 @@ struct LlamaContextHandle: @unchecked Sendable {
                         let newToken = llama_sampler_sample(sampler, ctx, -1)
 
                         if newToken == eosToken {
+                            // Flush any leftover bytes from an incomplete UTF-8
+                            // sequence. If they're still invalid by EOS the
+                            // sanitizer will strip the substituted U+FFFD at
+                            // render time — losing nothing the user cares about.
+                            if !pendingBytes.isEmpty {
+                                stopBuffer += String(decoding: pendingBytes, as: UTF8.self)
+                                pendingBytes = []
+                            }
                             if !stopBuffer.isEmpty { continuation.yield(stopBuffer) }
                             cacheBox?.finalPromptTokens = promptTokens
                             continuation.finish()
@@ -263,8 +317,20 @@ struct LlamaContextHandle: @unchecked Sendable {
 
                         guard pieceLen > 0 else { continue }
 
-                        let pieceBytes = pieceBuffer.prefix(Int(pieceLen)).map { UInt8(bitPattern: $0) }
-                        let piece = String(decoding: pieceBytes, as: UTF8.self)
+                        // Append the new bytes to whatever was left over from a
+                        // previous token that ended mid-codepoint, then peel off
+                        // the longest valid UTF-8 prefix. The remainder (an
+                        // incomplete trailing sequence, if any) waits for the
+                        // next token. No bytes are ever discarded, so non-ASCII
+                        // scripts stream losslessly.
+                        let newBytes = pieceBuffer.prefix(Int(pieceLen)).map { UInt8(bitPattern: $0) }
+                        pendingBytes.append(contentsOf: newBytes)
+                        let (piece, leftover) = Self.drainValidUTF8Prefix(from: pendingBytes)
+                        pendingBytes = leftover
+
+                        // Nothing to yield this round (still buffering a partial
+                        // codepoint) — keep decoding the next token.
+                        if piece.isEmpty { continue }
 
                         // Stop sequence detection
                         if !stopSequences.isEmpty {
@@ -306,7 +372,13 @@ struct LlamaContextHandle: @unchecked Sendable {
                         }
                     }
 
-                    // Max tokens reached — flush remaining buffer
+                    // Max tokens reached — flush remaining buffer (and any
+                    // leftover UTF-8 bytes that never completed into a valid
+                    // codepoint).
+                    if !pendingBytes.isEmpty {
+                        stopBuffer += String(decoding: pendingBytes, as: UTF8.self)
+                        pendingBytes = []
+                    }
                     if !stopBuffer.isEmpty { continuation.yield(stopBuffer) }
                     cacheBox?.finalPromptTokens = promptTokens
                     continuation.finish()
@@ -326,5 +398,57 @@ struct LlamaContextHandle: @unchecked Sendable {
     func close() {
         llama_free(contextPtr)
         llama_model_free(modelPtr)
+    }
+
+    // MARK: - UTF-8 streaming helpers
+
+    /// Splits `bytes` into the longest valid-UTF-8 prefix and the remaining
+    /// (incomplete) trailing bytes. Used by the streaming hot-path so a
+    /// codepoint cut between two GGUF tokens isn't substituted with U+FFFD
+    /// before being yielded to the UI.
+    ///
+    /// Algorithm: try cuts from longest to shortest (a UTF-8 codepoint is
+    /// at most 4 bytes, so we only walk back 4 positions). The first cut
+    /// whose prefix validates is the answer. The empty prefix is always
+    /// valid, so the loop is guaranteed to find an answer.
+    static func drainValidUTF8Prefix(from bytes: [UInt8]) -> (decoded: String, leftover: [UInt8]) {
+        guard !bytes.isEmpty else { return ("", []) }
+        let maxLookBack = min(4, bytes.count)
+        for trail in 0...maxLookBack {
+            let cut = bytes.count - trail
+            let prefix = Array(bytes[..<cut])
+            if Self.isValidUTF8(prefix) {
+                let leftover = Array(bytes[cut...])
+                return (String(decoding: prefix, as: UTF8.self), leftover)
+            }
+        }
+        // Theoretically unreachable (empty prefix always validates).
+        return ("", bytes)
+    }
+
+    /// Returns `true` iff `bytes` is a complete, well-formed UTF-8 sequence.
+    /// Hand-rolled to avoid `String(validating:)`, which is only available
+    /// on iOS 18 / macOS 15 — HomeHub targets iOS 17.
+    private static func isValidUTF8(_ bytes: [UInt8]) -> Bool {
+        var i = 0
+        while i < bytes.count {
+            let b = bytes[i]
+            let need: Int
+            if b < 0x80          { need = 0 }
+            else if b < 0xC2     { return false }                // continuation or overlong
+            else if b < 0xE0     { need = 1 }
+            else if b < 0xF0     { need = 2 }
+            else if b < 0xF5     { need = 3 }
+            else                 { return false }
+            guard i + need < bytes.count else { return false }
+            if need > 0 {
+                for j in 1...need {
+                    let c = bytes[i + j]
+                    if c < 0x80 || c > 0xBF { return false }
+                }
+            }
+            i += need + 1
+        }
+        return true
     }
 }

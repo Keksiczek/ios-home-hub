@@ -83,45 +83,36 @@ struct MockWebSearchEngine: WebSearchEngine {
     }
 }
 
-/// Thin adapter around the existing `WebSearchService` (DuckDuckGo Lite
-/// HTML scraper). Lives behind the `WebSearchEngine` protocol so the
-/// rest of the app doesn't have to know which provider is active.
+/// Thin adapter around `WebSearchService`'s structured DuckDuckGo Lite
+/// scraper. Lives behind the `WebSearchEngine` protocol so the rest of
+/// the app doesn't have to know which provider is active.
+///
+/// The engine never throws — `search(query:)` always returns either real
+/// results or `[]`. The agentic loop renders an empty list as
+/// "No results for …" so the LLM can answer "I couldn't find that
+/// online" cleanly instead of getting a wrapped `URLError` it has no
+/// idea what to do with.
 struct DuckDuckGoLiteEngine: WebSearchEngine {
     let displayName = "DuckDuckGo"
 
+    /// Maximum hits returned per query. Five is the sweet spot for
+    /// small models — enough to triangulate on a fact, not so many that
+    /// the snippets blow the context budget.
+    private let resultLimit: Int
+
+    init(resultLimit: Int = 5) {
+        self.resultLimit = resultLimit
+    }
+
     func search(query: String) async -> [SearchResult] {
         do {
-            let summary = try await WebSearchService.search(query: query)
-            // The legacy service returns a pre-formatted string blob.
-            // Parse the bullet lines back into structured results so
-            // the chat UI can render them as chips. If parsing fails,
-            // wrap the whole blob into a single synthetic result so the
-            // LLM still sees the data.
-            let parsed = Self.parse(summary: summary)
-            if parsed.isEmpty {
-                return [SearchResult(title: "DuckDuckGo result", url: "", snippet: summary)]
+            let hits = try await WebSearchService.searchStructured(query: query, limit: resultLimit)
+            return hits.map {
+                SearchResult(title: $0.title, url: $0.url, snippet: $0.snippet)
             }
-            return parsed
         } catch {
             HHLog.tool.error("DuckDuckGo search failed: \(error.localizedDescription, privacy: .public)")
             return []
         }
-    }
-
-    /// Splits the legacy `"- snippet"` lines back into `SearchResult`s.
-    /// The DDG Lite scraper doesn't emit per-hit URLs today, so the URL
-    /// field is left blank. When the scraper is upgraded to capture
-    /// per-result anchors, populate `url` and the chat chips will pick
-    /// it up automatically.
-    private static func parse(summary: String) -> [SearchResult] {
-        summary
-            .split(separator: "\n")
-            .compactMap { line -> SearchResult? in
-                let trimmed = line.trimmingCharacters(in: .whitespaces)
-                guard trimmed.hasPrefix("- ") else { return nil }
-                let snippet = String(trimmed.dropFirst(2))
-                guard !snippet.isEmpty else { return nil }
-                return SearchResult(title: snippet, url: "", snippet: "")
-            }
     }
 }

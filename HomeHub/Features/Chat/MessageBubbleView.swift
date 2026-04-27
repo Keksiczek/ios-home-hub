@@ -60,13 +60,9 @@ struct MessageBubbleView: View {
                 }
 
                 if message.status == .failed {
-                    Label("Failed", systemImage: "exclamationmark.triangle.fill")
-                        .font(HHTheme.caption)
-                        .foregroundStyle(HHTheme.warning)
+                    statusLine(label: "Failed", icon: "exclamationmark.triangle.fill", color: HHTheme.warning)
                 } else if message.status == .cancelled {
-                    Text("Stopped")
-                        .font(HHTheme.caption)
-                        .foregroundStyle(HHTheme.textSecondary)
+                    statusLine(label: "Stopped", icon: "stop.circle.fill", color: HHTheme.textSecondary)
                 }
             }
             .padding(.horizontal, HHTheme.spaceL)
@@ -99,7 +95,7 @@ struct MessageBubbleView: View {
                     Button {
                         onRegenerate()
                     } label: {
-                        Label("Regenerate", systemImage: "arrow.clockwise")
+                        Label(regenerateLabel, systemImage: "arrow.clockwise")
                     }
                 }
 
@@ -114,6 +110,47 @@ struct MessageBubbleView: View {
             }
 
             if message.role == .assistant { Spacer(minLength: 40) }
+        }
+    }
+
+    /// Label used by the context-menu "regenerate" action. We swap the
+    /// wording for failed/cancelled bubbles so the user understands the
+    /// menu item is going to recover from the failure, not just re-roll
+    /// a perfectly good answer.
+    private var regenerateLabel: String {
+        switch message.status {
+        case .failed:    return "Try again"
+        case .cancelled: return "Resume"
+        default:         return "Regenerate"
+        }
+    }
+
+    // MARK: - Status line
+
+    /// Compact "Failed" / "Stopped" label paired with an inline retry
+    /// affordance when the parent view supplied an `onRegenerate` handler.
+    /// The button surfaces the same action as the context-menu entry but
+    /// without the long-press — discoverability matters when the model is
+    /// flaky enough that retry is the difference between a usable test
+    /// session and giving up.
+    @ViewBuilder
+    private func statusLine(label: String, icon: String, color: Color) -> some View {
+        HStack(spacing: HHTheme.spaceS) {
+            Label(label, systemImage: icon)
+                .font(HHTheme.caption)
+                .foregroundStyle(color)
+
+            if let onRegenerate {
+                Button {
+                    onRegenerate()
+                } label: {
+                    Label("Try again", systemImage: "arrow.clockwise")
+                        .font(HHTheme.caption.weight(.semibold))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+                .tint(HHTheme.accent)
+            }
         }
     }
 

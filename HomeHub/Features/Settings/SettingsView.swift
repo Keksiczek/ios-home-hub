@@ -231,6 +231,48 @@ struct SettingsView: View {
                 in: 0.1...1.0, step: 0.05
             )
 
+            HStack {
+                Text("Top-k")
+                Spacer()
+                Text("\(settings.current.topK)")
+                    .foregroundStyle(HHTheme.textSecondary)
+            }
+            Slider(
+                value: Binding(
+                    get: { Double(settings.current.topK) },
+                    set: { newValue in Task { await settings.set(\.topK, to: Int(newValue)) } }
+                ),
+                in: 0...100, step: 5
+            )
+
+            HStack {
+                Text("Min-p")
+                Spacer()
+                Text(String(format: "%.2f", settings.current.minP))
+                    .foregroundStyle(HHTheme.textSecondary)
+            }
+            Slider(
+                value: Binding(
+                    get: { settings.current.minP },
+                    set: { newValue in Task { await settings.set(\.minP, to: newValue) } }
+                ),
+                in: 0.0...0.3, step: 0.01
+            )
+
+            HStack {
+                Text("Repeat penalty")
+                Spacer()
+                Text(String(format: "%.2f", settings.current.repeatPenalty))
+                    .foregroundStyle(HHTheme.textSecondary)
+            }
+            Slider(
+                value: Binding(
+                    get: { settings.current.repeatPenalty },
+                    set: { newValue in Task { await settings.set(\.repeatPenalty, to: newValue) } }
+                ),
+                in: 1.0...1.5, step: 0.05
+            )
+
             // Display preference — kept at the bottom of the section so
             // the generation knobs (stream, tokens, temperature) stay
             // grouped and this reads as a "show this extra info" toggle.
@@ -241,7 +283,7 @@ struct SettingsView: View {
         } header: {
             Text("Generation")
         } footer: {
-            Text("Higher temperature is more creative but less predictable. 0.6–0.8 is a good range for most tasks.")
+            Text("Higher temperature is more creative but less predictable. 0.6–0.8 is a good range for most tasks. Repeat penalty 1.1 and Min-p 0.05 are sensible defaults that keep small models from looping or emitting garbage characters.")
         }
     }
 
