@@ -19,6 +19,10 @@ struct LocalModel: Identifiable, Codable, Equatable, Hashable {
     var installState: ModelInstallState
     var recommendedFor: [DeviceClass]
     var license: String
+    /// The runtime engine required to run this model.
+    var backend: ModelBackend
+    /// The underlying file format (e.g. GGUF for llama.cpp, MLX for Apple MLX).
+    var format: ModelFormat
     /// True for models added via "Add from URL" — persisted in user-models.json,
     /// not part of the curated catalog.
     var isUserAdded: Bool
@@ -28,12 +32,24 @@ struct LocalModel: Identifiable, Codable, Equatable, Hashable {
         return ByteCountFormatter.string(fromByteCount: sizeBytes, countStyle: .file)
     }
 
+    /// Safely extracts the Hugging Face repository ID (e.g. "mlx-community/Llama-3.2-3B-Instruct-4bit")
+    /// from the model's `downloadURL`. Returns nil if the URL is not a standard HF repo format.
+    var repoId: String? {
+        guard format == .mlx, let host = downloadURL.host, host.contains("huggingface.co") else {
+            return nil
+        }
+        let pathComponents = downloadURL.pathComponents.filter { $0 != "/" }
+        guard pathComponents.count >= 2 else { return nil }
+        return "\(pathComponents[0])/\(pathComponents[1])"
+    }
+
     // MARK: - Codable (migration-safe)
 
     private enum CodingKeys: String, CodingKey {
         case id, displayName, family, parameterCount, quantization
         case sizeBytes, contextLength, downloadURL, sha256
         case installState, recommendedFor, license, isUserAdded
+        case backend, format
     }
 
     init(
@@ -49,6 +65,8 @@ struct LocalModel: Identifiable, Codable, Equatable, Hashable {
         installState: ModelInstallState,
         recommendedFor: [DeviceClass],
         license: String,
+        backend: ModelBackend = .llamaCpp,
+        format: ModelFormat = .gguf,
         isUserAdded: Bool = false
     ) {
         self.id = id
@@ -63,6 +81,8 @@ struct LocalModel: Identifiable, Codable, Equatable, Hashable {
         self.installState = installState
         self.recommendedFor = recommendedFor
         self.license = license
+        self.backend = backend
+        self.format = format
         self.isUserAdded = isUserAdded
     }
 
@@ -80,8 +100,22 @@ struct LocalModel: Identifiable, Codable, Equatable, Hashable {
         installState  = try c.decodeIfPresent(ModelInstallState.self, forKey: .installState) ?? .notInstalled
         recommendedFor = try c.decodeIfPresent([DeviceClass].self, forKey: .recommendedFor) ?? [.iPhone, .iPadMSeries]
         license       = try c.decodeIfPresent(String.self, forKey: .license) ?? "Unknown"
+        backend       = try c.decodeIfPresent(ModelBackend.self, forKey: .backend) ?? .llamaCpp
+        format        = try c.decodeIfPresent(ModelFormat.self, forKey: .format) ?? .gguf
         isUserAdded   = try c.decodeIfPresent(Bool.self, forKey: .isUserAdded) ?? false
     }
+}
+
+// MARK: - Metadata Types
+
+enum ModelBackend: String, Codable, Sendable {
+    case llamaCpp = "llama.cpp"
+    case mlx = "mlx"
+}
+
+enum ModelFormat: String, Codable, Sendable {
+    case gguf = "GGUF"
+    case mlx = "MLX"
 }
 
 enum ModelInstallState: Codable, Equatable, Hashable {
@@ -107,4 +141,23 @@ enum ModelInstallState: Codable, Equatable, Hashable {
 enum DeviceClass: String, Codable, Hashable {
     case iPhone
     case iPadMSeries
+}
+
+extension LocalModel {
+    static let mockMLX = LocalModel(
+        id: "mock-mlx-llama",
+        displayName: "Llama 3 (Fake MLX)",
+        family: "Llama",
+        parameterCount: "8B",
+        quantization: "4-bit",
+        sizeBytes: 4_000_000_000,
+        contextLength: 8192,
+        downloadURL: URL(string: "https://huggingface.co/mlx-community/mock-model")!,
+        installState: .notInstalled,
+        recommendedFor: [.iPhone, .iPadMSeries],
+        license: "Llama 3",
+        backend: .mlx,
+        format: .mlx,
+        isUserAdded: false
+    )
 }

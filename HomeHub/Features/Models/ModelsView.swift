@@ -70,6 +70,8 @@ struct ModelsView: View {
                             ModelRow(
                                 model: model,
                                 downloadPhase: downloads.active[model.id]?.phase,
+                                mlxLoadProgress: runtime.mlxLoadProgress?.modelID == model.id
+                                    ? runtime.mlxLoadProgress : nil,
                                 isLoaded: runtime.activeModel?.id == model.id,
                                 isLoading: runtime.state == .loading(modelID: model.id),
                                 loadFailureReason: loadFailureReason(for: model),
@@ -84,6 +86,7 @@ struct ModelsView: View {
                                     }
                                 },
                                 onUnload: { Task { await runtime.unload() } },
+                                onCancelMLXLoad: { runtime.cancelMLXLoad() },
                                 onDelete: { deleteTarget = model },
                                 onInfo: { infoTarget = model }
                             )
@@ -94,21 +97,38 @@ struct ModelsView: View {
                 }
 
                 // ── AVAILABLE TO DOWNLOAD ───────────────────────────────────
+                // Note for MLX models:
+                // MLX models transition out of this section once `LocalModelService` confirms
+                // their files exist in the `~/.cache/huggingface/hub/` directory.
                 if !availableModels.isEmpty {
                     Section {
                         ForEach(availableModels) { model in
                             ModelRow(
                                 model: model,
                                 downloadPhase: nil,
+                                mlxLoadProgress: runtime.mlxLoadProgress?.modelID == model.id
+                                    ? runtime.mlxLoadProgress : nil,
                                 isLoaded: false,
-                                isLoading: false,
-                                loadFailureReason: nil,
+                                isLoading: runtime.state == .loading(modelID: model.id),
+                                loadFailureReason: loadFailureReason(for: model),
                                 hasResumeData: downloads.hasResumeData(for: model.id),
                                 showIPadOnlyWarning: catalog.isIPadOnly(model) && isRunningOnPhone,
                                 onDownload: { downloadTarget = model },
                                 onCancelDownload: { downloads.cancel(model.id) },
-                                onLoad: { },
-                                onUnload: { },
+                                onLoad: {
+                                    if model.format == .mlx {
+                                        Task {
+                                            await runtime.load(model)
+                                            await settings.set(\.selectedModelID, to: model.id)
+                                        }
+                                    }
+                                },
+                                onUnload: {
+                                    if model.format == .mlx {
+                                        Task { await runtime.unload() }
+                                    }
+                                },
+                                onCancelMLXLoad: { runtime.cancelMLXLoad() },
                                 onDelete: { },
                                 onInfo: { infoTarget = model }
                             )
@@ -233,6 +253,8 @@ struct ModelsView: View {
 private struct ModelRow: View {
     let model: LocalModel
     let downloadPhase: ModelDownloadService.DownloadPhase?
+    /// Non-nil when this row's MLX model is actively downloading or initializing.
+    var mlxLoadProgress: MLXLoadProgress? = nil
     let isLoaded: Bool
     let isLoading: Bool
     /// Non-nil when the most recent `runtime.load(_:)` attempt targeted this
@@ -245,6 +267,7 @@ private struct ModelRow: View {
     let onCancelDownload: () -> Void
     let onLoad: () -> Void
     let onUnload: () -> Void
+    var onCancelMLXLoad: () -> Void = {}
     let onDelete: () -> Void
     let onInfo: () -> Void
 
@@ -316,13 +339,33 @@ private struct ModelRow: View {
     private var stateControls: some View {
         switch model.installState {
         case .notInstalled:
-            HStack(spacing: HHTheme.spaceS) {
-                Button(hasResumeData ? "Resume" : "Download", action: onDownload)
-                    .buttonStyle(HHSecondaryButtonStyle())
-                if hasResumeData {
-                    Label("Paused", systemImage: "pause.circle.fill")
+            VStack(alignment: .leading, spacing: 6) {
+                if model.format == .mlx, let progress = mlxLoadProgress {
+                    // MLX is actively loading — show honest two-phase progress
+                    mlxProgressView(progress: progress)
+                } else if model.format == .mlx {
+                    // MLX idle — show the first-load disclaimer + Load button
+                    HStack(spacing: HHTheme.spaceS) {
+                        Button(isLoaded ? "Unload" : "Load (Downloads ~2 GB)") {
+                            isLoaded ? onUnload() : onLoad()
+                        }
+                        .buttonStyle(HHSecondaryButtonStyle())
+                        .accessibilityIdentifier(isLoaded ? "mlx_unload_button" : "mlx_load_button")
+                    }
+                    Text("First load downloads weights directly from Hugging Face and may take several minutes.")
                         .font(HHTheme.caption)
-                        .foregroundStyle(HHTheme.warning)
+                        .foregroundStyle(HHTheme.textSecondary)
+                } else {
+                    // GGUF — unchanged
+                    HStack(spacing: HHTheme.spaceS) {
+                        Button(hasResumeData ? "Resume" : "Download", action: onDownload)
+                            .buttonStyle(HHSecondaryButtonStyle())
+                        if hasResumeData {
+                            Label("Paused", systemImage: "pause.circle.fill")
+                                .font(HHTheme.caption)
+                                .foregroundStyle(HHTheme.warning)
+                        }
+                    }
                 }
             }
 
@@ -340,22 +383,35 @@ private struct ModelRow: View {
 
         case .installed:
             VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: HHTheme.spaceS) {
-                    Button(isLoaded ? "Unload" : (loadFailureReason != nil ? "Retry" : "Load")) {
-                        isLoaded ? onUnload() : onLoad()
+                if model.format == .mlx, let progress = mlxLoadProgress {
+                    // Already-cached MLX model is loading (warm cache path)
+                    mlxProgressView(progress: progress)
+                } else {
+                    HStack(spacing: HHTheme.spaceS) {
+                        Button(isLoaded ? "Unload" : (loadFailureReason != nil ? "Retry" : "Load")) {
+                            isLoaded ? onUnload() : onLoad()
+                        }
+                        .buttonStyle(HHSecondaryButtonStyle())
+                        .accessibilityIdentifier(isLoaded ? "mlx_unload_button" : (loadFailureReason != nil ? "mlx_retry_button" : "mlx_load_button"))
+                        if isLoading {
+                            ProgressView().controlSize(.small)
+                        }
+                        Spacer()
+                        installedMetadata
+                        if model.format != .mlx {
+                            Button(role: .destructive, action: onDelete) {
+                                Image(systemName: "trash")
+                                    .foregroundStyle(HHTheme.danger)
+                                    .imageScale(.medium)
+                            }
+                            .buttonStyle(.plain)
+                        }
                     }
-                    .buttonStyle(HHSecondaryButtonStyle())
-                    if isLoading {
-                        ProgressView().controlSize(.small)
-                    }
-                    Spacer()
-                    installedMetadata
-                    Button(role: .destructive, action: onDelete) {
-                        Image(systemName: "trash")
-                            .foregroundStyle(HHTheme.danger)
-                            .imageScale(.medium)
-                    }
-                    .buttonStyle(.plain)
+                }
+                if model.format == .mlx {
+                    Text("Managed by MLX cache. Cannot be uninstalled from the app yet.")
+                        .font(HHTheme.caption)
+                        .foregroundStyle(HHTheme.textSecondary)
                 }
                 if let reason = loadFailureReason {
                     Label(reason, systemImage: "exclamationmark.triangle.fill")
@@ -366,20 +422,30 @@ private struct ModelRow: View {
             }
 
         case .loaded:
-            HStack(spacing: HHTheme.spaceS) {
-                Button("Unload", action: onUnload)
-                    .buttonStyle(HHSecondaryButtonStyle())
-                Label("Active", systemImage: "bolt.fill")
-                    .font(HHTheme.caption)
-                    .foregroundStyle(HHTheme.success)
-                Spacer()
-                installedMetadata
-                Button(role: .destructive, action: onDelete) {
-                    Image(systemName: "trash")
-                        .foregroundStyle(HHTheme.danger)
-                        .imageScale(.medium)
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: HHTheme.spaceS) {
+                    Button("Unload", action: onUnload)
+                        .buttonStyle(HHSecondaryButtonStyle())
+                        .accessibilityIdentifier("mlx_unload_button")
+                    Label("Active", systemImage: "bolt.fill")
+                        .font(HHTheme.caption)
+                        .foregroundStyle(HHTheme.success)
+                    Spacer()
+                    installedMetadata
+                    if model.format != .mlx {
+                        Button(role: .destructive, action: onDelete) {
+                            Image(systemName: "trash")
+                                .foregroundStyle(HHTheme.danger)
+                                .imageScale(.medium)
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
-                .buttonStyle(.plain)
+                if model.format == .mlx {
+                    Text("Managed by MLX cache. Cannot be uninstalled from the app yet.")
+                        .font(HHTheme.caption)
+                        .foregroundStyle(HHTheme.textSecondary)
+                }
             }
 
         case .failed(let reason):
@@ -397,6 +463,39 @@ private struct ModelRow: View {
                     }
                     .buttonStyle(.plain)
                 }
+            }
+        }
+    }
+
+    /// Two-phase MLX progress view.
+    ///
+    /// - `.downloading`: Real fraction from Hub downloader → determinate ProgressView.
+    /// - `.preparing`: Indeterminate spinner + label. No fake percentage shown.
+    @ViewBuilder
+    private func mlxProgressView(progress: MLXLoadProgress) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            switch progress.phase {
+            case .downloading(let fraction):
+                ProgressView(value: fraction).tint(HHTheme.accent)
+                    .accessibilityIdentifier("mlx_progress_bar")
+                HStack {
+                    Text("Downloading model… \(Int(fraction * 100))%")
+                        .font(HHTheme.caption)
+                        .foregroundStyle(HHTheme.textSecondary)
+                        .accessibilityIdentifier("mlx_progress_label")
+                    Spacer()
+                    Button("Cancel") { onCancelMLXLoad() }
+                        .font(HHTheme.subheadline)
+                        .tint(HHTheme.danger)
+                        .accessibilityIdentifier("mlx_cancel_button")
+                }
+            case .preparing:
+                ProgressView().controlSize(.small)
+                    .accessibilityIdentifier("mlx_preparing_indicator")
+                Text("Preparing model…")
+                    .font(HHTheme.caption)
+                    .foregroundStyle(HHTheme.textSecondary)
+                    .accessibilityIdentifier("mlx_preparing_label")
             }
         }
     }

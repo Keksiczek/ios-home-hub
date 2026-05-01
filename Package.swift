@@ -23,18 +23,29 @@ import PackageDescription
 
 let package = Package(
     name: "HomeHub",
-    platforms: [.iOS(.v17), .macOS(.v13)],
+    platforms: [.iOS(.v17), .macOS(.v14)],
     products: [
         .library(name: "HomeHub", targets: ["HomeHub"])
     ],
     dependencies: [
-        .package(url: "https://github.com/argmaxinc/WhisperKit", exact: "0.9.3")
+        .package(url: "https://github.com/argmaxinc/WhisperKit", exact: "0.9.3"),
+        .package(url: "https://github.com/ml-explore/mlx-swift", from: "0.10.0"),
+        .package(url: "https://github.com/ml-explore/mlx-swift-lm", branch: "main"),
+        // Explicitly declaring swift-transformers (was transitive via WhisperKit).
+        // Required for Phase 4A: Hub.HubApi (real download progress) + Tokenizers.AutoTokenizer
+        // (tokenizer loading from local cache directory) used in HubIntegration.swift.
+        .package(url: "https://github.com/huggingface/swift-transformers", branch: "main")
     ],
     targets: [
         .target(
             name: "HomeHub",
             dependencies: [
-                .product(name: "WhisperKit", package: "WhisperKit")
+                .product(name: "WhisperKit", package: "WhisperKit"),
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "MLXNN", package: "mlx-swift"),
+                .product(name: "MLXLLM", package: "mlx-swift-lm"),
+                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
+                .product(name: "Transformers", package: "swift-transformers")
             ],
             path: "HomeHub",
             exclude: [

@@ -373,7 +373,27 @@ final class AppContainer: ObservableObject {
     static let shared = AppContainer.live()
 
     static func live() -> AppContainer {
-        let runtime: any LocalLLMRuntime = LlamaCppRuntime()
+        let llama = LlamaCppRuntime()
+        
+        let mlx: MLXRuntime
+        if ProcessInfo.processInfo.arguments.contains("--use-fake-mlx-loader") {
+            let fake = FakeMLXLoader()
+            if let behavior = ProcessInfo.processInfo.environment["MLX_LOAD_BEHAVIOR"] {
+                switch behavior {
+                case "failure":
+                    fake.behavior = .failure("Simulated loading failure")
+                case "slow":
+                    fake.behavior = .slowProgress(steps: 10, delay: 0.1)
+                default:
+                    fake.behavior = .success
+                }
+            }
+            mlx = MLXRuntime(loader: fake)
+        } else {
+            mlx = MLXRuntime()
+        }
+        
+        let runtime: any LocalLLMRuntime = RoutingRuntime(llamaCpp: llama, mlx: mlx)
 
         let store: any Store
         #if HOMEHUB_SWIFTDATA

@@ -15,8 +15,13 @@ final class RuntimeManager: ObservableObject {
 
     @Published private(set) var state: State = .idle
     @Published private(set) var activeModel: LocalModel?
+    /// Non-nil while an MLX model is downloading or initializing.
+    /// Set to `nil` immediately when loading completes, fails, or is cancelled.
+    @Published private(set) var mlxLoadProgress: MLXLoadProgress?
 
     let runtime: any LocalLLMRuntime
+    /// Stored reference to the in-flight MLX load task. Allows cancellation via `cancelMLXLoad()`.
+    private var mlxLoadTask: Task<Void, Error>?
 
     /// In-flight load serialisation handle. A second `load(_:)` caller whose
     /// idempotence check doesn't match the in-flight model awaits this task
@@ -77,13 +82,59 @@ final class RuntimeManager: ObservableObject {
 
     private func _performLoad(_ model: LocalModel) async {
         state = .loading(modelID: model.id)
-        do {
-            try await runtime.load(model: model)
-            activeModel = model
-            state = .ready(modelID: model.id)
-        } catch {
-            state = .failed(modelID: model.id, reason: error.localizedDescription)
+        mlxLoadProgress = nil
+
+        if let mlxRuntime = runtime as? MLXRuntime {
+            // MLX path: use loadWithProgress to surface real Hub download progress
+            // and the indeterminate "preparing" phase.
+            //
+            // We store the Task so it can be cancelled via cancelMLXLoad().
+            // Cancellation is cooperative: the Hub downloader checks Swift task cancellation
+            // between file downloads. A partial cache is handled safely by Phase 3 detection.
+            let loadTask = Task<Void, Error> { [weak self] in
+                try await mlxRuntime.loadWithProgress(model: model) { [weak self] phase in
+                    Task { @MainActor [weak self] in
+                        self?.mlxLoadProgress = MLXLoadProgress(modelID: model.id, phase: phase)
+                    }
+                }
+            }
+            mlxLoadTask = loadTask
+
+            do {
+                try await loadTask.value
+                mlxLoadProgress = nil
+                activeModel = model
+                state = .ready(modelID: model.id)
+            } catch is CancellationError {
+                mlxLoadProgress = nil
+                mlxLoadTask = nil
+                state = .idle
+            } catch {
+                mlxLoadProgress = nil
+                mlxLoadTask = nil
+                state = .failed(modelID: model.id, reason: error.localizedDescription)
+            }
+            mlxLoadTask = nil
+        } else {
+            // GGUF / llama.cpp path — unchanged
+            do {
+                try await runtime.load(model: model)
+                activeModel = model
+                state = .ready(modelID: model.id)
+            } catch {
+                state = .failed(modelID: model.id, reason: error.localizedDescription)
+            }
         }
+    }
+
+    /// Cancels an in-flight MLX load (download or initialization).
+    ///
+    /// Cancellation is cooperative — the Hub downloader may finish downloading
+    /// the current file chunk before stopping. Any partial cache is safe: Phase 3
+    /// detection classifies it as `.partial` → `.notInstalled` on next reconcile.
+    func cancelMLXLoad() {
+        mlxLoadTask?.cancel()
+        mlxLoadTask = nil
     }
 
     func unload() async {
@@ -119,7 +170,7 @@ final class RuntimeManager: ObservableObject {
     /// Removes the KV-cache session for `conversationID`.
     /// No-op when the runtime doesn't support session tracking (e.g. mock).
     func invalidateSession(for conversationID: UUID) async {
-        await (runtime as? LlamaCppRuntime)?.invalidateSession(for: conversationID)
+        await runtime.invalidateSession(for: conversationID)
     }
 
     // MARK: - Lifecycle forwarding

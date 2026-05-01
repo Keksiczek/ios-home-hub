@@ -68,6 +68,10 @@ protocol LocalLLMRuntime: AnyObject, Sendable {
     /// Implementations should unload the model if their policy requires it.
     /// Default: no-op (used by `MockLocalRuntime` and test stubs).
     func handleBackground() async
+
+    /// Removes any cached state or session for the given conversation.
+    /// No-op if the runtime doesn't support session persistence.
+    func invalidateSession(for conversationID: UUID) async
 }
 
 // MARK: - Default implementations
@@ -82,6 +86,9 @@ extension LocalLLMRuntime {
 
     /// Default: no-op. Overridden by `LlamaCppRuntime`.
     func handleBackground() async {}
+
+    /// Default: no-op.
+    func invalidateSession(for conversationID: UUID) async {}
 }
 
 // MARK: - Supporting types
@@ -161,17 +168,20 @@ enum RuntimeError: LocalizedError {
     case modelNotInstalled
     case outOfMemory
     case incompatibleModel(String)
+    case initializationFailed(String)
     case cancelled
+    case generationInProgress
     case underlying(String)
 
     var errorDescription: String? {
         switch self {
-        case .noModelLoaded:            return "No model is currently loaded."
-        case .modelNotInstalled:        return "This model isn't installed yet."
-        case .outOfMemory:              return "The device ran out of memory while loading the model."
-        case .incompatibleModel(let m): return "This model isn't compatible with the runtime: \(m)"
-        case .cancelled:                return "Generation was cancelled."
-        case .underlying(let m):        return m
+        case .noModelLoaded:              return "No model is currently loaded."
+        case .modelNotInstalled:          return "This model isn't installed yet."
+        case .outOfMemory:               return "The device ran out of memory while loading the model."
+        case .incompatibleModel(let m):  return "This model isn't compatible with the runtime: \(m)"
+        case .initializationFailed(let m): return "Model initialization failed: \(m)"
+        case .cancelled:                 return "Generation was cancelled."
+        case .underlying(let m):         return m
         }
     }
 }

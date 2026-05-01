@@ -72,18 +72,35 @@ final class ModelCatalogService: ObservableObject {
     /// - File absent or stub/invalid → `.notInstalled`
     /// - In-flight `.downloading` states are left untouched (coordinator owns those).
     func reconcileInstallStates(localModels: LocalModelService) async {
-        let installed = await localModels.installedModelIDs()
+        let installedGGUF = await localModels.installedModelIDs()
+        let mlxStates = await localModels.mlxCacheStates(catalogModels: models)
+        
         for idx in models.indices {
             let model = models[idx]
             // Don't disturb an actively-tracked download.
             if case .downloading = model.installState { continue }
-            let localURL = await localModels.localURL(for: model.id)
-            if installed.contains(model.id) {
-                models[idx].installState = .installed(localURL: localURL)
+            
+            if model.format == .mlx {
+                // Phase 3 Refinement: Tri-state logic mapping
+                // We map .ready to .installed, and safely map .partial or .missing to .notInstalled
+                // because the UI lacks an externally-managed .partial progress state.
+                if let state = mlxStates[model.id], state == .ready {
+                    let localURL = await localModels.resolvedMLXCacheURL(for: model.repoId ?? "")
+                    models[idx].installState = .installed(localURL: localURL)
+                } else {
+                    if model.installState != .notInstalled {
+                        models[idx].installState = .notInstalled
+                    }
+                }
             } else {
-                // File gone or invalid — ensure state is consistent.
-                if model.installState != .notInstalled {
-                    models[idx].installState = .notInstalled
+                if installedGGUF.contains(model.id) {
+                    let localURL = await localModels.localURL(for: model.id)
+                    models[idx].installState = .installed(localURL: localURL)
+                } else {
+                    // File gone or invalid — ensure state is consistent.
+                    if model.installState != .notInstalled {
+                        models[idx].installState = .notInstalled
+                    }
                 }
             }
         }
@@ -284,6 +301,29 @@ enum ModelCatalog {
             installState: .notInstalled,
             recommendedFor: [.iPhone, .iPadMSeries],
             license: "Apache 2.0"
+        ),
+        
+        // MARK: MLX (Phase 3)
+        // 
+        // MLX models are managed by `MLXLMCommon` and downloaded into `~/.cache/huggingface/hub/`.
+        // The catalog now successfully scans this cache via `LocalModelService` and transitions
+        // the state to `.installed(localURL:)` seamlessly.
+        
+        LocalModel(
+            id: "mlx-llama-3.2-3b-it",
+            displayName: "Llama 3.2 3B (MLX)",
+            family: "Llama",
+            parameterCount: "3B",
+            quantization: "4-bit",
+            sizeBytes: 2_100_000_000,
+            contextLength: 8192,
+            downloadURL: URL(string: "https://huggingface.co/mlx-community/Llama-3.2-3B-Instruct-4bit")!,
+            sha256: nil,
+            installState: .notInstalled,
+            recommendedFor: [.iPhone, .iPadMSeries],
+            license: "Llama 3.2 Community License",
+            backend: .mlx,
+            format: .mlx
         ),
     ]
 }

@@ -1,15 +1,28 @@
 import Foundation
+import OSLog
+
+/// Tri-state representation of an externally-managed MLX model cache.
+enum MLXCacheState {
+    /// Directory or essential metadata is missing.
+    case missing
+    /// Metadata exists, but weights are missing or suspiciously small.
+    case partial
+    /// Strong evidence the cache is fully usable.
+    case ready
+}
 
 /// Owns the on-disk model directory. Nobody else touches model
 /// files directly — everyone asks this actor for paths and sizes.
 actor LocalModelService {
     private let fileManager = FileManager.default
     private let modelsDirectory: URL
+    private let baseDocumentsDirectory: URL
+    private let log = Logger(subsystem: "com.keksiczek.HomeHub", category: "LocalModelService")
 
-    init() {
-        // Non-failable iOS 16+ accessor. Replaces a `try!` that would
-        // crash the app on launch in the rare case the throwing variant
-        // failed (e.g. under misconfigured sandboxing during review).
+    init(baseDocumentsDirectory: URL = .documentsDirectory) {
+        self.baseDocumentsDirectory = baseDocumentsDirectory
+        
+        // Non-failable iOS 16+ accessor.
         let support = URL.applicationSupportDirectory
         self.modelsDirectory = support.appendingPathComponent("Models", isDirectory: true)
         try? fileManager.createDirectory(at: modelsDirectory, withIntermediateDirectories: true)
@@ -19,6 +32,81 @@ actor LocalModelService {
         modelsDirectory.appendingPathComponent("\(modelID).gguf")
     }
 
+    // MARK: - MLX Cache Support
+    
+    /// Resolves the default MLXLMCommon / swift-transformers cache directory for a given repo.
+    /// Format: `<baseDocumentsDirectory>/huggingface/models/<repoId>`
+    private func mlxCacheURL(for repoId: String) -> URL {
+        return baseDocumentsDirectory.appendingPathComponent("huggingface/models/\(repoId)")
+    }
+    
+    /// Conservatively evaluates the readiness of an MLX model cache.
+    /// - Returns: `MLXCacheState` (missing, partial, or ready).
+    private func mlxCacheState(for repoId: String) -> MLXCacheState {
+        let cacheDir = mlxCacheURL(for: repoId)
+        
+        // 1. Directory must exist
+        var isDir: ObjCBool = false
+        guard fileManager.fileExists(atPath: cacheDir.path, isDirectory: &isDir), isDir.boolValue else {
+            return .missing
+        }
+        
+        // 2. config.json must exist
+        let configPath = cacheDir.appendingPathComponent("config.json").path
+        guard fileManager.fileExists(atPath: configPath) else {
+            return .missing
+        }
+        
+        // 3. Evaluate weights (.safetensors)
+        guard let contents = try? fileManager.contentsOfDirectory(atPath: cacheDir.path) else {
+            return .missing
+        }
+        
+        let safetensorsFiles = contents.filter { $0.hasSuffix(".safetensors") }
+        if safetensorsFiles.isEmpty {
+            log.debug("MLX Cache [\(repoId)]: Metadata found, but no weights (.safetensors) exist. State: partial")
+            return .partial
+        }
+        
+        // 4. Sanity check: Ensure weights are not trivially small (e.g. < 1MB)
+        // This helps detect interrupted downloads where a file was touched but not filled.
+        var totalWeightsSize: Int64 = 0
+        for file in safetensorsFiles {
+            let path = cacheDir.appendingPathComponent(file).path
+            if let attrs = try? fileManager.attributesOfItem(atPath: path),
+               let size = attrs[.size] as? Int64 {
+                totalWeightsSize += size
+            }
+        }
+        
+        if totalWeightsSize < 1_000_000 {
+            log.debug("MLX Cache [\(repoId)]: Weights are trivially small (\(totalWeightsSize) bytes). State: partial")
+            return .partial
+        }
+        
+        log.info("MLX Cache [\(repoId)]: Strong evidence of usability found. State: ready")
+        return .ready
+    }
+    
+    /// Returns a mapping of Model IDs to their current MLX cache state.
+    func mlxCacheStates(catalogModels: [LocalModel]) -> [String: MLXCacheState] {
+        let mlxModels = catalogModels.filter { $0.format == .mlx }
+        var states = [String: MLXCacheState]()
+        
+        for model in mlxModels {
+            guard let repoId = model.repoId else { continue }
+            states[model.id] = mlxCacheState(for: repoId)
+        }
+        
+        return states
+    }
+    
+    /// Public helper to get the resolved local URL for an installed MLX model
+    func resolvedMLXCacheURL(for repoId: String) -> URL {
+        mlxCacheURL(for: repoId)
+    }
+
+    // MARK: - GGUF Support
     func isInstalled(_ modelID: String) -> Bool {
         fileManager.fileExists(atPath: localURL(for: modelID).path)
     }
