@@ -13,7 +13,7 @@ DEST     = generic/platform=iOS
 
 # ── Primary targets ───────────────────────────────────────────────────────────
 
-.PHONY: setup generate resolve check build clean help
+.PHONY: setup generate resolve validate check build clean help
 
 ## Full first-time or post-merge setup (generate project + fetch packages).
 setup: generate resolve
@@ -47,8 +47,14 @@ test:
 	  -scheme  $(SCHEME) \
 	  -destination 'platform=iOS Simulator,name=iPhone 16'
 
+## Validate project.yml for duplicate keys and broken package references.
+## Run before `make generate` to catch silent YAML override bugs early.
+validate:
+	@python3 scripts/validate-project-spec.py
+
 ## Smoke-check for common portability problems (hardcoded paths, missing files).
-check:
+## Calls validate first — fails fast if the spec is broken.
+check: validate
 	@bash scripts/check-clean-build.sh
 
 ## Remove Xcode derived data for this project.
@@ -68,8 +74,9 @@ help:
 	@echo "  setup          — xcodegen generate + resolve packages (first-time)"
 	@echo "  generate       — regenerate .xcodeproj from project.yml"
 	@echo "  resolve        — fetch / verify SPM packages"
+	@echo "  validate       — check project.yml for duplicate keys / bad refs"
 	@echo "  build          — compile (needs llama.xcframework sibling)"
 	@echo "  test           — run unit tests in simulator"
-	@echo "  check          — smoke-test for portability issues"
+	@echo "  check          — validate + smoke-test for portability issues"
 	@echo "  clean          — clean derived data"
 	@echo "  sync-resolved  — copy root Package.resolved into xcshareddata"
