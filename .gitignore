@@ -17,6 +17,10 @@ xcuserdata/
 *.xcodeproj/xcuserdata/
 *.xcodeproj/project.xcworkspace/xcuserdata/
 
+# Python bytecode cache (from scripts/validate-project-spec.py)
+__pycache__/
+*.pyc
+
 # Swift Package Manager
 .build/
 .swiftpm/
