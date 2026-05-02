@@ -84,47 +84,36 @@ final class RuntimeManager: ObservableObject {
         state = .loading(modelID: model.id)
         mlxLoadProgress = nil
 
-        if let mlxRuntime = runtime as? MLXRuntime {
-            // MLX path: use loadWithProgress to surface real Hub download progress
-            // and the indeterminate "preparing" phase.
-            //
-            // We store the Task so it can be cancelled via cancelMLXLoad().
-            // Cancellation is cooperative: the Hub downloader checks Swift task cancellation
-            // between file downloads. A partial cache is handled safely by Phase 3 detection.
-            let loadTask = Task<Void, Error> { [weak self] in
-                try await mlxRuntime.loadWithProgress(model: model) { [weak self] phase in
-                    Task { @MainActor [weak self] in
-                        self?.mlxLoadProgress = MLXLoadProgress(modelID: model.id, phase: phase)
-                    }
+        // Always use loadWithProgress — backends that don't support phase reporting
+        // (llama.cpp, mock) inherit the default implementation that just calls load()
+        // and never fires the progressHandler, so mlxLoadProgress stays nil for them.
+        // This eliminates the `runtime as? MLXRuntime` cast that broke when the runtime
+        // was wrapped in RoutingRuntime.
+        let loadTask = Task<Void, Error> { [weak self] in
+            guard let self else { return }
+            try await self.runtime.loadWithProgress(model: model) { [weak self] phase in
+                Task { @MainActor [weak self] in
+                    self?.mlxLoadProgress = MLXLoadProgress(modelID: model.id, phase: phase)
                 }
             }
-            mlxLoadTask = loadTask
-
-            do {
-                try await loadTask.value
-                mlxLoadProgress = nil
-                activeModel = model
-                state = .ready(modelID: model.id)
-            } catch is CancellationError {
-                mlxLoadProgress = nil
-                mlxLoadTask = nil
-                state = .idle
-            } catch {
-                mlxLoadProgress = nil
-                mlxLoadTask = nil
-                state = .failed(modelID: model.id, reason: error.localizedDescription)
-            }
-            mlxLoadTask = nil
-        } else {
-            // GGUF / llama.cpp path — unchanged
-            do {
-                try await runtime.load(model: model)
-                activeModel = model
-                state = .ready(modelID: model.id)
-            } catch {
-                state = .failed(modelID: model.id, reason: error.localizedDescription)
-            }
         }
+        mlxLoadTask = loadTask
+
+        do {
+            try await loadTask.value
+            mlxLoadProgress = nil
+            activeModel = model
+            state = .ready(modelID: model.id)
+        } catch is CancellationError {
+            mlxLoadProgress = nil
+            mlxLoadTask = nil
+            state = .idle
+        } catch {
+            mlxLoadProgress = nil
+            mlxLoadTask = nil
+            state = .failed(modelID: model.id, reason: error.localizedDescription)
+        }
+        mlxLoadTask = nil
     }
 
     /// Cancels an in-flight MLX load (download or initialization).

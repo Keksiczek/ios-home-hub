@@ -5,25 +5,38 @@ import MLXLLM
 import MLXLMCommon
 import os
 
-/// Future MLX-backed local runtime for Apple Silicon.
+// Used to track download→prepare phase transition inside a @Sendable closure.
+// Accesses happen sequentially within a single loader.load() call, so the
+// @unchecked Sendable is safe: there is no concurrent access to preparingSent.
+private final class PhaseSignal: @unchecked Sendable {
+    var preparingSent = false
+}
+
+/// MLX-backed local runtime for Apple Silicon.
 ///
+/// State isolation: all mutable fields are protected by `sessionLock` (NSLock).
+/// The class is intentionally NOT an actor to keep the `AsyncThrowingStream`
+/// generation API non-async on the call site. Every mutable field access
+/// that crosses a suspension point acquires the lock for the minimum time needed.
 ///
-/// This implementation relies on `MLXLMCommon` and its native huggingface
-/// caching mechanism. State is isolated to the ModelContainer's actor.
-/// the heavy lifting (model loading, weight conversion, KV-cache)
-/// for Phase 2.
+/// Concurrency invariants:
+/// - `isGenerating` is the single authoritative "busy" flag. It is set to `true`
+///   atomically (under lock) before a generation task starts and reset (under lock)
+///   when the task completes, is cancelled, or the runtime is unloaded.
+/// - `activeTask` is a cancellation handle only; never used for the busy check.
+/// - `container` and `activeSession` are both guarded by `sessionLock`.
 final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
     let identifier = "mlx"
-    
+
     private let log = Logger(subsystem: "HomeHub", category: "MLXRuntime")
     let telemetry = RuntimeTelemetry()
-    
+
     private var _loadedModel: LocalModel?
     var loadedModel: LocalModel? {
         get { _loadedModel }
         set { _loadedModel = newValue }
     }
-    
+
     #if DEBUG
     var internalActiveSessionConversationID: UUID? {
         sessionLock.lock()
@@ -31,12 +44,14 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
         return activeSession?.conversationID
     }
     #endif
-    
+
     private var container: any MLXModelContainer?
     private var activeTask: Task<Void, Never>?
     private var activeGenerationID: UUID?
+    /// Single authoritative "busy" flag. Protected by sessionLock.
+    private var isGenerating: Bool = false
     private let sessionLock = NSLock()
-    
+
     private struct ActiveSession: @unchecked Sendable {
         let conversationID: UUID
         let systemPrompt: String
@@ -44,68 +59,73 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
         let session: ChatSession
     }
     private var activeSession: ActiveSession?
-    
+
     private let loader: any MLXLoader
 
     init(loader: any MLXLoader = DefaultMLXLoader()) {
         self.loader = loader
     }
-    
+
     // MARK: - LocalLLMRuntime
-    
-    /// Protocol-required load (no progress). Delegates to `loadWithProgress` with a no-op handler.
+
+    /// Protocol-required load (no progress). Delegates to `loadWithProgress`.
     func load(model: LocalModel) async throws {
         try await loadWithProgress(model: model, progressHandler: nil)
     }
-    
-    /// Extended load that accepts an optional progress callback.
+
+    /// Extended load with phase-reporting callback.
     ///
     /// Two-phase load:
-    /// 1. **Download** (cold cache): Fetches weights from Hugging Face Hub via `HubApiDownloader`.
-    ///    Reports real `Foundation.Progress` fractions to `progressHandler(.downloading(fraction:))`.
-    /// 2. **Prepare** (warm cache or after download): Loads weights into memory and compiles the
-    ///    Metal compute pipeline. This phase is indeterminate — `progressHandler(.preparing)` is
-    ///    fired once and no fraction is reported.
+    /// 1. **Download** (cold cache): Fetches weights from Hugging Face Hub.
+    ///    Reports real `Foundation.Progress` fractions as `.downloading(fraction:)`.
+    ///    When the download fraction reaches 1.0, emits `.preparing` to signal
+    ///    the start of Metal pipeline compilation (~10–60 s on iPhone).
+    /// 2. **Prepare** (warm cache or after download): Loads weights into memory
+    ///    and compiles Metal. For warm-cache loads where no download callbacks
+    ///    fire, `.preparing` is emitted immediately so the UI has honest state.
     ///
     /// ## Cancellation
-    /// Both phases are Swift `async`, so `Task.cancel()` propagates cooperatively.
-    /// A cancelled download may leave a partial cache; Phase 3's tri-state detection
-    /// classifies it as `.partial` (safe, maps to `.notInstalled`).
+    /// Both phases honour Swift cooperative cancellation via `Task.cancel()`.
     func loadWithProgress(
         model: LocalModel,
         progressHandler: (@Sendable (MLXLoadPhase) -> Void)?
     ) async throws {
         sessionLock.lock()
-        if activeTask != nil {
+        if isGenerating {
             sessionLock.unlock()
             throw RuntimeError.generationInProgress
         }
         sessionLock.unlock()
-        
+
         log.info("MLX: Preparing to load model '\(model.displayName, privacy: .public)'")
-        
+
         guard let repoId = model.repoId else {
             throw RuntimeError.incompatibleModel(
                 "MLX models must be hosted on Hugging Face. Invalid URL: \(model.downloadURL.absoluteString)"
             )
         }
-        
+
         let config = ModelConfiguration(id: repoId)
         let downloader = HubApiDownloader()
         let tokenizerLoader = SwiftTransformersTokenizerLoader()
-        
-        // Track whether the download phase has completed so we can transition to .preparing.
-        var downloadDone = false
-        
+
+        // Emit .preparing when download fraction hits 1.0 (download done,
+        // Metal compilation begins). For warm-cache loads where no progress
+        // callbacks fire, we emit .preparing after loader.load() returns.
+        let phaseSignal = PhaseSignal()
         let progressAdapter: @Sendable (Progress) -> Void = { progress in
-            if progress.fractionCompleted < 1.0 || !downloadDone {
-                progressHandler?(.downloading(fraction: max(0, min(1, progress.fractionCompleted))))
+            let fraction = max(0, min(1, progress.fractionCompleted))
+            if fraction >= 1.0, !phaseSignal.preparingSent {
+                phaseSignal.preparingSent = true
+                progressHandler?(.preparing)
+            } else if fraction < 1.0 {
+                progressHandler?(.downloading(fraction: fraction))
             }
         }
-        
+
         log.debug("MLX: Starting load for '\(repoId, privacy: .public)'")
         let start = Date()
-        
+
         do {
             self.container = try await loader.load(
                 configuration: config,
@@ -113,16 +133,19 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                 tokenizerLoader: tokenizerLoader,
                 progressHandler: progressAdapter
             )
-            
-            // Download is done (or was skipped for warm cache). Signal transition to init phase.
-            downloadDone = true
-            log.debug("MLX: Download/cache complete for '\(repoId, privacy: .public)', now initializing")
-            progressHandler?(.preparing)
-            
-            // NOTE: loadModelContainer returns only after the model is fully initialized.
-            // The .preparing signal was fired above to give the UI an honest state between
-            // download completion and this function returning.
-            
+
+            // Warm cache: no download progress fired → signal prepare phase now.
+            // At this point loader.load() has already returned, so the signal
+            // fires just before RuntimeManager clears mlxLoadProgress.
+            if !phaseSignal.preparingSent {
+                progressHandler?(.preparing)
+            }
+
+            // A new container invalidates any cached session from the previous load.
+            sessionLock.lock()
+            activeSession = nil
+            sessionLock.unlock()
+
             let duration = Int(Date().timeIntervalSince(start) * 1000)
             self.loadedModel = model
             await telemetry.emit(.modelLoaded(handle: ModelHandle(from: model), durationMs: duration))
@@ -135,93 +158,104 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
             throw RuntimeError.initializationFailed("Failed to load MLX model: \(error.localizedDescription)")
         }
     }
-    
+
     func unload() async {
         log.info("MLX: Unloading model (manual or policy-driven)")
         sessionLock.lock()
         activeTask?.cancel()
         activeTask = nil
         activeGenerationID = nil
+        isGenerating = false
         activeSession = nil
         container = nil
         sessionLock.unlock()
         loadedModel = nil
     }
-    
+
     func invalidateSession(for conversationID: UUID) async {
         sessionLock.lock()
         defer { sessionLock.unlock() }
-        
+
         if activeSession?.conversationID == conversationID {
-            log.info("MLX: Invalidating session for conversation \(conversationID, privacy: .public) (manual/reset)")
+            log.info("MLX: Invalidating session for conversation \(conversationID, privacy: .public)")
             activeSession = nil
         }
-        
+
         if activeGenerationID == conversationID {
             log.info("MLX: Cancelling active generation for conversation \(conversationID, privacy: .public) due to invalidation")
             activeTask?.cancel()
             activeTask = nil
             activeGenerationID = nil
+            isGenerating = false
         }
     }
-    
+
     func generate(
         prompt: RuntimePrompt,
         parameters: RuntimeParameters
     ) -> AsyncThrowingStream<RuntimeEvent, Error> {
         AsyncThrowingStream { continuation in
+            // Use a single conversationID throughout this closure and the task body.
             let conversationID = parameters.conversationID ?? UUID()
-            
+
+            // Atomically check and set isGenerating. Both happen under the same
+            // lock acquisition, eliminating the TOCTOU race from split check/set.
             self.sessionLock.lock()
-            if self.activeTask != nil {
+            guard !self.isGenerating else {
                 self.sessionLock.unlock()
                 log.warning("MLX: Generation/load already in progress — blocking concurrent request for \(conversationID, privacy: .public)")
                 continuation.finish(throwing: RuntimeError.generationInProgress)
                 return
             }
+            self.isGenerating = true
             self.activeGenerationID = conversationID
             self.sessionLock.unlock()
-            
+
             let task = Task {
                 do {
                     guard let container = self.container else {
                         continuation.finish(throwing: RuntimeError.noModelLoaded)
+                        self.sessionLock.lock()
+                        self.isGenerating = false
+                        self.activeGenerationID = nil
+                        self.sessionLock.unlock()
                         return
                     }
-                    
+
+                    // NOTE: MLXLMCommon.GenerateParameters (current version) only exposes
+                    // maxTokens, temperature, and topP. The following RuntimeParameters
+                    // fields are accepted by the contract but NOT forwarded to the MLX
+                    // backend: topK, minP, repeatPenalty, repeatPenaltyLastN,
+                    // frequencyPenalty, presencePenalty.
                     let generateParameters = GenerateParameters(
                         maxTokens: parameters.maxTokens,
                         temperature: Float(parameters.temperature),
                         topP: Float(parameters.topP)
                     )
-                    
-                    let conversationID = parameters.conversationID ?? UUID()
-                    
+
                     let start = Date()
                     var tokensGenerated = 0
                     var currentText = ""
-                    
+                    var hitMaxTokens = false
+
                     if let nativeContainer = self.container as? ModelContainer {
                         // --- NATIVE PATH (ChatSession) ---
                         self.sessionLock.lock()
                         let currentActive = self.activeSession
                         let session: ChatSession
-                        
+
                         if let existing = currentActive,
                            existing.conversationID == conversationID,
                            existing.systemPrompt == prompt.systemPrompt,
                            prompt.messages.count >= existing.messages.count,
                            prompt.messages.prefix(existing.messages.count).elementsEqual(existing.messages, by: { $0.content == $1.content && $0.role == $1.role }) {
-                            // Reuse
                             session = existing.session
                             log.debug("MLX: Reusing existing session for \(conversationID, privacy: .public)")
                         } else {
-                            // Reset/Re-hydrate
                             if currentActive != nil {
                                 log.info("MLX: Session mismatch or reset — starting fresh for \(conversationID, privacy: .public)")
                             }
-                            
-                            // Helper to convert RuntimeMessage to Chat.Message
+
                             let toNativeMessage: (RuntimeMessage) -> Chat.Message = { msg in
                                 switch msg.role {
                                 case .system:    return .system(msg.content)
@@ -229,14 +263,14 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                                 case .assistant: return .assistant(msg.content)
                                 }
                             }
-                            
+
                             let history: [Chat.Message] = prompt.messages.dropLast().map(toNativeMessage)
                             session = ChatSession(
                                 nativeContainer,
                                 instructions: prompt.systemPrompt.isEmpty ? nil : prompt.systemPrompt,
                                 history: history
                             )
-                            
+
                             self.activeSession = ActiveSession(
                                 conversationID: conversationID,
                                 systemPrompt: prompt.systemPrompt,
@@ -245,7 +279,7 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                             )
                         }
                         self.sessionLock.unlock()
-                        
+
                         let lastMessage = prompt.messages.last
                         let lastContent = lastMessage?.content ?? ""
                         let lastRole: Chat.Message.Role = switch lastMessage?.role {
@@ -253,23 +287,25 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                         case .user: .user
                         case .assistant, .none: .assistant
                         }
-                        
+
                         let stream = session.streamResponse(
                             to: lastContent,
                             role: lastRole,
                             parameters: generateParameters
                         )
-                        
+
                         for try await piece in stream {
                             if Task.isCancelled { break }
-                            
+
                             tokensGenerated += 1
                             currentText += piece
                             continuation.yield(.token(piece))
-                            
-                            if tokensGenerated >= parameters.maxTokens { break }
-                            
-                            // Check stop sequences
+
+                            if tokensGenerated >= parameters.maxTokens {
+                                hitMaxTokens = true
+                                break
+                            }
+
                             var shouldStop = false
                             for stopSeq in parameters.stopSequences {
                                 if currentText.hasSuffix(stopSeq) {
@@ -279,8 +315,7 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                             }
                             if shouldStop { break }
                         }
-                        
-                        // Update session history on success, or invalidate on cancellation
+
                         self.sessionLock.lock()
                         if !Task.isCancelled {
                             if self.activeSession?.conversationID == conversationID && self.activeSession?.session === session {
@@ -294,9 +329,9 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                             }
                         }
                         self.sessionLock.unlock()
-                        
+
                     } else {
-                        // --- STATELESS FALLBACK (Tests or non-native container) ---
+                        // --- STATELESS FALLBACK (tests / non-native container) ---
                         log.info("MLX: Using stateless fallback generation")
                         var messages: [[String: String]] = []
                         if !prompt.systemPrompt.isEmpty {
@@ -310,7 +345,7 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                             }
                             messages.append(["role": roleString, "content": msg.content])
                         }
-                        
+
                         try await container.perform { context in
                             let userInput = UserInput(messages: messages.map { message in
                                 var dict: [String: Any] = [:]
@@ -318,24 +353,27 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                                 return dict
                             })
                             let input = try await context.processor.prepare(input: userInput)
-                            
+
                             _ = try MLXLMCommon.generate(
                                 input: input,
                                 parameters: generateParameters,
                                 context: context
                             ) { tokens in
                                 if Task.isCancelled { return .stop }
-                                
+
                                 tokensGenerated += 1
                                 let newText = context.tokenizer.decode(tokenIds: tokens)
-                                
+
                                 if newText.count > currentText.count {
                                     let chunk = String(newText.dropFirst(currentText.count))
                                     currentText = newText
                                     continuation.yield(.token(chunk))
                                 }
-                                
-                                if tokensGenerated >= parameters.maxTokens { return .stop }
+
+                                if tokensGenerated >= parameters.maxTokens {
+                                    hitMaxTokens = true
+                                    return .stop
+                                }
                                 for stopSeq in parameters.stopSequences {
                                     if currentText.hasSuffix(stopSeq) { return .stop }
                                 }
@@ -343,48 +381,58 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                             }
                         }
                     }
-                    
-                    // Final cleanup: clear task tracking
+
+                    // Final cleanup: reset busy state.
                     self.sessionLock.lock()
                     if self.activeTask === task {
                         self.activeTask = nil
                         self.activeGenerationID = nil
+                        self.isGenerating = false
                     }
                     self.sessionLock.unlock()
-                    
+
                     let durationMs = Int(Date().timeIntervalSince(start) * 1000)
                     let tps = durationMs > 0 ? (Double(tokensGenerated) / Double(durationMs)) * 1000.0 : 0.0
-                    
+
                     let stats = RuntimeStats(
                         tokensGenerated: tokensGenerated,
                         tokensPerSecond: tps,
                         totalDurationMs: durationMs
                     )
-                    
-                    continuation.yield(.finished(reason: Task.isCancelled ? .cancelled : .stop, stats: stats))
+
+                    let finishReason: RuntimeEvent.FinishReason =
+                        Task.isCancelled ? .cancelled : (hitMaxTokens ? .length : .stop)
+                    continuation.yield(.finished(reason: finishReason, stats: stats))
                     continuation.finish()
-                    
+
                 } catch {
+                    self.sessionLock.lock()
+                    if self.activeTask === task {
+                        self.activeTask = nil
+                        self.activeGenerationID = nil
+                        self.isGenerating = false
+                    }
+                    self.sessionLock.unlock()
                     log.error("MLX: Generation failed: \(error.localizedDescription, privacy: .public)")
                     continuation.finish(throwing: error)
                 }
             }
-            
+
             self.sessionLock.lock()
             self.activeTask = task
             self.sessionLock.unlock()
-            
+
             continuation.onTermination = { @Sendable _ in
                 task.cancel()
             }
         }
     }
-    
+
     func handleMemoryPressure() async {
         log.warning("MLX: Memory pressure received — unloading model")
         await unload()
     }
-    
+
     func handleBackground() async {
         log.info("MLX: App backgrounded")
     }

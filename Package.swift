@@ -19,6 +19,24 @@ import PackageDescription
 // target so the test runner doesn't conflict with it. When you build the
 // real app, use the XcodeGen project.yml or a manual Xcode target that
 // includes HomeHubApp.swift.
+//
+// ---------------------------------------------------------------------
+// Dependency pinning policy
+// ---------------------------------------------------------------------
+//
+// ALL packages are pinned to specific versions (not branch: main) to
+// ensure reproducible CI builds. The only exception is mlx-swift-lm
+// which has not yet adopted a stable release cycle — it is pinned to
+// a known-good revision in Package.resolved.
+//
+// WhisperKit ≥ 0.11.0 is required. Earlier versions import TensorUtils
+// as a standalone module from swift-transformers, which was restructured
+// in swift-transformers 0.1.x. Using 0.9.x with swift-transformers ≥ 0.1.14
+// produces "No such module 'TensorUtils'" at build time.
+//
+// We import Hub and Tokenizers directly (not the full Transformers product)
+// to avoid pulling in the macro build targets and TensorUtils, which are
+// not needed by HubIntegration.swift.
 // ---------------------------------------------------------------------
 
 let package = Package(
@@ -28,24 +46,31 @@ let package = Package(
         .library(name: "HomeHub", targets: ["HomeHub"])
     ],
     dependencies: [
-        .package(url: "https://github.com/argmaxinc/WhisperKit", exact: "0.9.3"),
-        .package(url: "https://github.com/ml-explore/mlx-swift", from: "0.10.0"),
+        // WhisperKit ≥ 0.11.0: first release with restructured swift-transformers
+        // support that no longer requires TensorUtils as a standalone import.
+        .package(url: "https://github.com/argmaxinc/WhisperKit", from: "0.11.0"),
+        .package(url: "https://github.com/ml-explore/mlx-swift", from: "0.21.0"),
+        // mlx-swift-lm has no stable tag series yet; pinned via Package.resolved.
         .package(url: "https://github.com/ml-explore/mlx-swift-lm", branch: "main"),
-        // Explicitly declaring swift-transformers (was transitive via WhisperKit).
-        // Required for Phase 4A: Hub.HubApi (real download progress) + Tokenizers.AutoTokenizer
-        // (tokenizer loading from local cache directory) used in HubIntegration.swift.
-        .package(url: "https://github.com/huggingface/swift-transformers", branch: "main")
+        // Explicit direct dependency so Hub and Tokenizers resolve from a pinned
+        // version rather than whatever mlx-swift-lm pulls transitively.
+        // from: "0.1.14" is the first version after the TensorUtils restructure
+        // that is compatible with WhisperKit 0.11.0 and mlx-swift-lm main.
+        .package(url: "https://github.com/huggingface/swift-transformers", from: "0.1.14"),
     ],
     targets: [
         .target(
             name: "HomeHub",
             dependencies: [
-                .product(name: "WhisperKit", package: "WhisperKit"),
-                .product(name: "MLX", package: "mlx-swift"),
-                .product(name: "MLXNN", package: "mlx-swift"),
-                .product(name: "MLXLLM", package: "mlx-swift-lm"),
-                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
-                .product(name: "Transformers", package: "swift-transformers")
+                .product(name: "WhisperKit",    package: "WhisperKit"),
+                .product(name: "MLX",           package: "mlx-swift"),
+                .product(name: "MLXNN",         package: "mlx-swift"),
+                .product(name: "MLXLLM",        package: "mlx-swift-lm"),
+                .product(name: "MLXLMCommon",   package: "mlx-swift-lm"),
+                // Hub and Tokenizers only — avoids the full Transformers product
+                // which pulls in TensorUtils and macro build targets we don't need.
+                .product(name: "Hub",           package: "swift-transformers"),
+                .product(name: "Tokenizers",    package: "swift-transformers"),
             ],
             path: "HomeHub",
             exclude: [

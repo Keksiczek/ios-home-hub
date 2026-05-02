@@ -44,6 +44,23 @@ protocol LocalLLMRuntime: AnyObject, Sendable {
     /// memory pressure and unload on backgrounding.
     func load(model: LocalModel) async throws
 
+    /// Extended load with optional phase-reporting callback.
+    ///
+    /// Two-phase semantics:
+    /// - `.downloading(fraction:)` — real fractional progress while weights are
+    ///   fetched from Hugging Face Hub. Not emitted for warm-cache loads.
+    /// - `.preparing` — download complete; weights are being mapped into memory
+    ///   and the Metal compute pipeline is being compiled (~10–60 s on iPhone).
+    ///   No fraction is available for this phase.
+    ///
+    /// Default implementation: delegates to `load(model:)` without emitting
+    /// any phase events. Override in backends that support real progress
+    /// (currently `MLXRuntime`).
+    func loadWithProgress(
+        model: LocalModel,
+        progressHandler: (@Sendable (MLXLoadPhase) -> Void)?
+    ) async throws
+
     /// Tears down the loaded model and frees memory. In-flight generations
     /// receive a `.finished(.cancelled)` event before the C++ context is freed.
     func unload() async
@@ -80,6 +97,15 @@ extension LocalLLMRuntime {
     /// Default: no-op telemetry. `MockLocalRuntime` and test stubs inherit
     /// this so they don't need to implement the property.
     var telemetry: RuntimeTelemetry { .noOp }
+
+    /// Default: delegates to `load(model:)` without emitting phase events.
+    /// Overridden by `MLXRuntime` for real Hub download progress.
+    func loadWithProgress(
+        model: LocalModel,
+        progressHandler: (@Sendable (MLXLoadPhase) -> Void)?
+    ) async throws {
+        try await load(model: model)
+    }
 
     /// Default: no-op. Overridden by `LlamaCppRuntime`.
     func handleMemoryPressure() async {}
