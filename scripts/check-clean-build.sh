@@ -87,17 +87,12 @@ else
   FAIL=1
 fi
 
-# ── 5. project.yml has no duplicate top-level keys under HomeHub target ───────
-echo "--- Checking project.yml for duplicate dependency blocks ---"
-# Count occurrences of `    dependencies:` (4-space indent = target level)
-DEP_COUNT=$(grep -c '^    dependencies:' "$REPO_ROOT/project.yml" 2>/dev/null || echo 0)
-# Each target has one dependencies key. We have 3 targets (HomeHub, Tests, Widget).
-# HomeHubWidget and HomeHubTests each have 1. HomeHub has 1.  Total = 3.
-if [ "$DEP_COUNT" -gt 3 ]; then
-  red "project.yml may have duplicate 'dependencies:' keys ($DEP_COUNT found, expected ≤ 3)"
-  FAIL=1
+# ── 5. project.yml structural validation (duplicate keys, broken refs) ────────
+echo "--- Validating project.yml spec ---"
+if python3 "$REPO_ROOT/scripts/validate-project-spec.py" 2>&1; then
+  : # validator prints its own green/red lines
 else
-  green "project.yml dependency keys look clean ($DEP_COUNT blocks)"
+  FAIL=1
 fi
 
 # ── 6. swift-transformers Hub/Tokenizers in project.yml ──────────────────────

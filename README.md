@@ -172,6 +172,52 @@ make sync-resolved   # copies root Package.resolved → xcshareddata/
 
 Then commit both `Package.resolved` and the `xcshareddata/…/Package.resolved`.
 
+#### Updating package versions — SOP
+
+`project.yml` is the single authoritative source for every dependency. Follow
+this sequence to avoid silent version mismatches:
+
+1. **Edit `project.yml`** — change the `from:` / `branch:` / `exactVersion:`
+   under the relevant key in the `packages:` section.
+
+2. **Validate** — run `make validate` before doing anything else.  This catches
+   duplicate YAML keys and broken package references before XcodeGen silently
+   swallows them.
+
+3. **Regenerate** — run `make generate` to apply the change to `project.pbxproj`.
+
+4. **Resolve** — open `HomeHub.xcodeproj` in Xcode → `File > Packages >
+   Resolve Package Dependencies`.  Xcode writes the actual resolved versions
+   back into the Xcode `Package.resolved`.
+
+5. **Sync** — run `make sync-resolved` to mirror the Xcode-resolved lockfile
+   back to the root `Package.resolved`.
+
+6. **Verify** — run `make check`.  All checks must pass (including SHA-256
+   identity between the two `Package.resolved` files) before committing.
+
+7. **Commit** — stage and commit `project.yml`, `project.pbxproj`, and both
+   `Package.resolved` files together.
+
+> **Critical invariants**
+> - Each package must appear **exactly once** in the `packages:` mapping.
+>   YAML duplicate keys are silently resolved by "last wins" — the wrong
+>   version will be used without any error.
+> - Each target must have **exactly one** `dependencies:` block.  A second
+>   block at the same indentation overwrites the first.
+> - `SwiftTransformers` (the package key in `project.yml`) must be `>= 0.1.14`
+>   and `WhisperKit` must be `>= 0.11.0`.  Earlier combinations produce
+>   `Unable to find module dependency: 'TensorUtils'` at build time.
+
+#### Version constraint rationale
+
+| Package | Constraint | Reason |
+|---------|-----------|--------|
+| `WhisperKit` | `from: 0.11.0` | 0.9.x imports `TensorUtils` as a standalone module that was removed from swift-transformers in 0.1.x |
+| `SwiftTransformers` | `from: 0.1.14` | First release where `Hub` and `Tokenizers` are stable products; `TensorUtils` is not a standalone import |
+| `MLX` | `from: 0.21.0` | Minimum version tested with the MLXRuntime implementation |
+| `MLXLM` | `branch: main` | No stable tag series yet; pinned via `Package.resolved` revision |
+
 ### Option B: Open Package.swift
 
 Double-click `Package.swift` to open in Xcode. This builds the library
