@@ -103,47 +103,101 @@ HomeHubTests/         # 8 test files, 50+ test cases
 
 ## Getting started
 
-### Option A: XcodeGen (recommended)
+### Prerequisites
+
+| Tool | Version | Install |
+|------|---------|---------|
+| Xcode | 15.4+ | App Store |
+| xcodegen | any | `brew install xcodegen` |
+| llama.xcframework | built from llama.cpp | see below |
+
+`llama.xcframework` must be placed as a **sibling of the repo root**:
+
+```
+~/Developer/          (or wherever you keep repos)
+  llama.xcframework/  ← binary framework here
+  ios-home-hub/       ← this repo
+```
+
+Build it once (see [Integrating the real llama.cpp runtime](#integrating-the-real-llamacpp-runtime))
+and it stays in place across branches and clones.
+
+### Option A: XcodeGen (recommended — fully reproducible)
 
 ```bash
-# Install XcodeGen if needed
+# 1. Install xcodegen if needed
 brew install xcodegen
 
-# Generate the Xcode project
+# 2. Clone the repo
+git clone https://github.com/Keksiczek/ios-home-hub
 cd ios-home-hub
+
+# 3. Regenerate the Xcode project from project.yml (source of truth)
 xcodegen generate
 
-# Open in Xcode
+# 4. Resolve Swift packages (uses committed Package.resolved — no network surprises)
+xcodebuild -resolvePackageDependencies -project HomeHub.xcodeproj -scheme HomeHub
+
+# 5. Open in Xcode
 open HomeHub.xcodeproj
 ```
 
+Or use the Makefile shortcut: `make setup && open HomeHub.xcodeproj`
+
 Select an iOS 17+ simulator or device, then **Cmd+R** to build and run.
+
+**Code signing:** `project.yml` does not set a development team. Xcode will
+prompt you to select your own team on first build — change it in
+*Signing & Capabilities* or set `DEVELOPMENT_TEAM` in a local `.xcconfig`.
+
+#### Re-running xcodegen
+
+Run `xcodegen generate` (or `make generate`) again whenever:
+- `project.yml` changes (new targets, packages, build settings)
+- you pull a commit that modifies `project.yml`
+
+The committed `project.pbxproj` is kept in sync for developers who open the
+project without running xcodegen first, but `project.yml` is the authoritative
+source — never edit the `.pbxproj` directly.
+
+#### Keeping Package.resolved up to date
+
+The file `HomeHub.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved`
+is committed and tracks the exact SPM versions used in CI.  If you update a
+package (e.g. bump `mlx-swift-lm` revision), run:
+
+```bash
+make sync-resolved   # copies root Package.resolved → xcshareddata/
+```
+
+Then commit both `Package.resolved` and the `xcshareddata/…/Package.resolved`.
 
 ### Option B: Open Package.swift
 
 Double-click `Package.swift` to open in Xcode. This builds the library
 target (everything except `HomeHubApp.swift`) and lets you run tests.
-To run the app itself, use Option A or C.
+To run the app itself, use Option A.
 
-### Option C: Manual Xcode project
-
-1. Open Xcode → File → New → Project → iOS App (SwiftUI, Swift).
-2. Set deployment target to iOS 17.0.
-3. Delete the auto-generated `ContentView.swift` and app entry file.
-4. Drag the `HomeHub/` folder into the project navigator (Create groups,
-   Add to target: HomeHub).
-5. Drag the `HomeHubTests/` folder and add to the test target.
-6. Build (**Cmd+B**) — it should compile with zero errors.
-7. Run (**Cmd+R**) on an iOS 17 simulator.
+`Package.swift` does **not** include `llama.xcframework`; it is for tests
+and CI only. Swift packages cannot embed pre-built xcframeworks.
 
 ### Running tests
 
-In Xcode: **Cmd+U** or Product → Test. All 8 test files should pass.
+```bash
+make test
+# or in Xcode: Cmd+U
+```
+
+### Smoke-checking portability
+
+```bash
+make check   # greps for hardcoded paths, verifies key files exist
+```
 
 ## Integrating the real llama.cpp runtime
 
 The app is designed so the real C++ inference engine can be plugged in
-with minimal changes:
+with minimal changes.
 
 ### 1. Build the xcframework
 
@@ -165,18 +219,17 @@ cmake --build build-ios --config Release
 # (see llama.cpp docs for exact steps)
 ```
 
-### 2. Add to the Xcode project
+### 2. Place the xcframework
 
-- Drag `llama.xcframework` into the project under
-  *Frameworks, Libraries, and Embedded Content*.
-- Create a bridging header or a separate SPM target that imports `llama.h`.
+Put the built `llama.xcframework` **one directory above the repo root**
+(sibling layout described in the prerequisites above).  `project.yml`
+references it as `../llama.xcframework` relative to the project file —
+this is already wired; no drag-and-drop needed.
 
 ### 3. Enable the real runtime
 
-Add `HOMEHUB_REAL_RUNTIME` to **Swift Active Compilation Conditions** in
-your Xcode build settings (or uncomment the line in `project.yml`).
-This switches `AppContainer.live()` from `MockLocalRuntime` to
-`LlamaCppRuntime`.
+`HOMEHUB_REAL_RUNTIME` is set by default in `project.yml`
+(`SWIFT_ACTIVE_COMPILATION_CONDITIONS`).  No manual toggle needed.
 
 ### 4. Verify download URLs
 
