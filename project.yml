@@ -32,15 +32,25 @@ packages:
   # exact revision so builds are fully reproducible.
   MLX:
     url: https://github.com/ml-explore/mlx-swift
-    from: 0.10.0
-
-  # mlx-swift-lm has no stable version tags — only a `main` branch.
-  # Risk: if upstream breaks a public API on main, the build may fail.
-  # Mitigation: Package.resolved (committed) pins the exact revision used in CI.
-  # To update: edit Package.resolved revision + test, then commit both files.
+    from: 0.21.0
   MLXLM:
     url: https://github.com/ml-explore/mlx-swift-lm
     branch: main
+  # Explicit direct dependency on swift-transformers.
+  # HubIntegration.swift imports Hub and Tokenizers unconditionally.
+  # Listing the package here (rather than relying on mlx-swift-lm's
+  # transitive pull) locks the version and avoids TensorUtils conflicts.
+  # from: 0.1.14 is the minimum version that works with WhisperKit 0.11.0.
+  SwiftTransformers:
+    url: https://github.com/huggingface/swift-transformers
+    from: 0.1.14
+  # WhisperKit ≥ 0.11.0: first release that resolves TensorUtils conflicts
+  # with swift-transformers 0.1.x. VoiceService.swift gates all WhisperKit
+  # usage behind #if canImport(WhisperKit) so the app still compiles if
+  # this package is removed; keeping it here enables the on-device STT path.
+  WhisperKit:
+    url: https://github.com/argmaxinc/WhisperKit
+    from: 0.11.0
 
   # swift-transformers: the `Hub` and `Tokenizers` library products used by
   # HubIntegration.swift were introduced after the last semver tag (0.1.8) and
@@ -144,6 +154,23 @@ targets:
         # SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) HOMEHUB_SWIFTDATA"
         #
         # ─────────────────────────────────────────────────────────────────────────
+    dependencies:
+      - package: MLX
+        product: MLX
+      - package: MLX
+        product: MLXNN
+      - package: MLXLM
+        product: MLXLLM
+      - package: MLXLM
+        product: MLXLMCommon
+      # Hub + Tokenizers for HubIntegration.swift (direct imports, not via Transformers).
+      - package: SwiftTransformers
+        product: Hub
+      - package: SwiftTransformers
+        product: Tokenizers
+      # WhisperKit for VoiceService.swift on-device STT.
+      - package: WhisperKit
+        product: WhisperKit
     preCompileScripts: []
     postCompileScripts: []
 
