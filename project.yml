@@ -27,17 +27,31 @@ options:
   generateEmptyDirectories: false
 
 packages:
+  # mlx-swift uses semver; `from: 0.10.0` pins to the latest 0.x compatible
+  # release and is safe to use as-is. The committed Package.resolved locks the
+  # exact revision so builds are fully reproducible.
   MLX:
     url: https://github.com/ml-explore/mlx-swift
     from: 0.10.0
+
+  # mlx-swift-lm has no stable version tags — only a `main` branch.
+  # Risk: if upstream breaks a public API on main, the build may fail.
+  # Mitigation: Package.resolved (committed) pins the exact revision used in CI.
+  # To update: edit Package.resolved revision + test, then commit both files.
   MLXLM:
     url: https://github.com/ml-explore/mlx-swift-lm
     branch: main
-  # swift-transformers provides Hub (HubApi downloader) and Tokenizers
-  # (AutoTokenizer bridge) used in HubIntegration.swift.
+
+  # swift-transformers: the `Hub` and `Tokenizers` library products used by
+  # HubIntegration.swift were introduced after the last semver tag (0.1.8) and
+  # are only available on the main branch. Once HuggingFace cuts a release that
+  # includes them, switch to `from: <version>`.
+  # Risk: same as MLXLM above. Mitigation: Package.resolved pins the revision.
   swiftTransformers:
     url: https://github.com/huggingface/swift-transformers
     branch: main
+
+  # WhisperKit is pinned to an exact version — fully stable.
   WhisperKit:
     url: https://github.com/argmaxinc/WhisperKit
     exactVersion: 0.9.3
