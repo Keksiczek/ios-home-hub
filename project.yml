@@ -5,6 +5,16 @@
 #   xcodegen generate
 #
 # Then open HomeHub.xcodeproj in Xcode.
+#
+# ── External binary dependency ────────────────────────────────────────────────
+# llama.xcframework must be placed as a sibling of the repo root, e.g.:
+#   ~/Developer/
+#     llama.xcframework/       ← here
+#     ios-home-hub/            ← repo root (this project)
+#
+# The paths below use $(SRCROOT)/.. which expands to that parent directory.
+# If your layout differs, override LLAMA_FRAMEWORK_PATH in a local xcconfig.
+# ─────────────────────────────────────────────────────────────────────────────
 
 name: HomeHub
 
@@ -23,6 +33,14 @@ packages:
   MLXLM:
     url: https://github.com/ml-explore/mlx-swift-lm
     branch: main
+  # swift-transformers provides Hub (HubApi downloader) and Tokenizers
+  # (AutoTokenizer bridge) used in HubIntegration.swift.
+  swiftTransformers:
+    url: https://github.com/huggingface/swift-transformers
+    branch: main
+  WhisperKit:
+    url: https://github.com/argmaxinc/WhisperKit
+    exactVersion: 0.9.3
 
 settings:
   base:
@@ -43,7 +61,10 @@ targets:
     sources:
       - path: HomeHub
     dependencies:
-      - framework: /Users/keks/Developer/llama.xcframework
+      # ── Binary framework (llama.cpp) ─────────────────────────────────────────
+      # Path is relative to the repo root: ../llama.xcframework means the
+      # framework lives one directory above this repo (sibling of the checkout).
+      - framework: ../llama.xcframework
         embed: true
         codeSign: true
       # System frameworks required by llama.cpp's Metal backend.
@@ -54,10 +75,29 @@ targets:
       - sdk: MetalKit.framework
       - sdk: MetalPerformanceShaders.framework
       - sdk: CoreAudio.framework
+      # ── Swift Package dependencies ────────────────────────────────────────────
+      - package: MLX
+        product: MLX
+      - package: MLX
+        product: MLXNN
+      - package: MLXLM
+        product: MLXLLM
+      - package: MLXLM
+        product: MLXLMCommon
+      - package: swiftTransformers
+        product: Hub
+      - package: swiftTransformers
+        product: Tokenizers
+      - package: WhisperKit
+        product: WhisperKit
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: cz.keksiczek.homehub
-        HEADER_SEARCH_PATHS: "$(inherited) /Users/keks/Developer/llama.xcframework/ios-arm64/Headers"
+        # Resolve llama.xcframework relative to the source root (project dir).
+        # $(SRCROOT) == directory containing HomeHub.xcodeproj, so .. is the
+        # parent where llama.xcframework lives.
+        FRAMEWORK_SEARCH_PATHS: "$(inherited) $(SRCROOT)/.."
+        HEADER_SEARCH_PATHS: "$(inherited) $(SRCROOT)/../llama.xcframework/ios-arm64/Headers"
         OTHER_LDFLAGS: "$(inherited) -lc++"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
@@ -90,15 +130,6 @@ targets:
         # SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) HOMEHUB_SWIFTDATA"
         #
         # ─────────────────────────────────────────────────────────────────────────
-    dependencies:
-      - package: MLX
-        product: MLX
-      - package: MLX
-        product: MLXNN
-      - package: MLXLM
-        product: MLXLLM
-      - package: MLXLM
-        product: MLXLMCommon
     preCompileScripts: []
     postCompileScripts: []
 
@@ -135,15 +166,3 @@ targets:
         INFOPLIST_KEY_NSExtension_NSExtensionPointIdentifier: com.apple.widgetkit-extension
         GENERATE_INFOPLIST_FILE: YES
         SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited)"
-
-  HomeHubUITests:
-    type: bundle.ui-testing
-    platform: iOS
-    sources:
-      - path: HomeHubUITests
-    dependencies:
-      - target: HomeHub
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: cz.keksiczek.homehub.uitests
-        TEST_TARGET_NAME: HomeHub

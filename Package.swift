@@ -45,7 +45,11 @@ let package = Package(
                 .product(name: "MLXNN", package: "mlx-swift"),
                 .product(name: "MLXLLM", package: "mlx-swift-lm"),
                 .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
-                .product(name: "Transformers", package: "swift-transformers")
+                // Hub (HubApi downloader) + Tokenizers (AutoTokenizer bridge)
+                // are the two products actually used by HubIntegration.swift.
+                // The umbrella `Transformers` product is not needed here.
+                .product(name: "Hub", package: "swift-transformers"),
+                .product(name: "Tokenizers", package: "swift-transformers")
             ],
             path: "HomeHub",
             exclude: [

@@ -131,6 +131,13 @@
 		F765D14126ACB6D9AF8BFCB7 /* PromptModeAssemblyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44C6CD92457FB6C42115B299 /* PromptModeAssemblyTests.swift */; };
 		F998F1F00D3CBD088EB71FCA /* WidgetBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCD904E7B7ABBA4F56D2CCD2 /* WidgetBridge.swift */; };
 		FC359A6E300FD361BE3BB54F /* ImageVisionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52883734A26E98454CA86B73 /* ImageVisionService.swift */; };
+		HH00000000000000000000021 /* MLX in Frameworks */ = {isa = PBXBuildFile; productRef = HH00000000000000000000011 /* MLX */; };
+		HH00000000000000000000022 /* MLXNN in Frameworks */ = {isa = PBXBuildFile; productRef = HH00000000000000000000012 /* MLXNN */; };
+		HH00000000000000000000023 /* MLXLLM in Frameworks */ = {isa = PBXBuildFile; productRef = HH00000000000000000000013 /* MLXLLM */; };
+		HH00000000000000000000024 /* MLXLMCommon in Frameworks */ = {isa = PBXBuildFile; productRef = HH00000000000000000000014 /* MLXLMCommon */; };
+		HH00000000000000000000025 /* Hub in Frameworks */ = {isa = PBXBuildFile; productRef = HH00000000000000000000015 /* Hub */; };
+		HH00000000000000000000026 /* Tokenizers in Frameworks */ = {isa = PBXBuildFile; productRef = HH00000000000000000000016 /* Tokenizers */; };
+		HH00000000000000000000027 /* WhisperKit in Frameworks */ = {isa = PBXBuildFile; productRef = HH00000000000000000000017 /* WhisperKit */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -294,6 +301,13 @@
 				42F0C1BDC0EB2CDC75B343EE /* MetalKit.framework in Frameworks */,
 				22DAF8610C6F3AC607C57227 /* MetalPerformanceShaders.framework in Frameworks */,
 				BE72A86D68F201CBD3C849E4 /* CoreAudio.framework in Frameworks */,
+				HH00000000000000000000021 /* MLX in Frameworks */,
+				HH00000000000000000000022 /* MLXNN in Frameworks */,
+				HH00000000000000000000023 /* MLXLLM in Frameworks */,
+				HH00000000000000000000024 /* MLXLMCommon in Frameworks */,
+				HH00000000000000000000025 /* Hub in Frameworks */,
+				HH00000000000000000000026 /* Tokenizers in Frameworks */,
+				HH00000000000000000000027 /* WhisperKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -631,6 +645,13 @@
 			);
 			name = HomeHub;
 			packageProductDependencies = (
+				HH00000000000000000000011 /* MLX */,
+				HH00000000000000000000012 /* MLXNN */,
+				HH00000000000000000000013 /* MLXLLM */,
+				HH00000000000000000000014 /* MLXLMCommon */,
+				HH00000000000000000000015 /* Hub */,
+				HH00000000000000000000016 /* Tokenizers */,
+				HH00000000000000000000017 /* WhisperKit */,
 			);
 			productName = HomeHub;
 			productReference = C03835B534283FF3F282ECFA /* HomeHub.app */;
@@ -672,6 +693,12 @@
 			);
 			mainGroup = 2417BE87C9FDB8C1EFD8A9A3;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				HH00000000000000000000001 /* XCRemoteSwiftPackageReference "mlx-swift" */,
+				HH00000000000000000000002 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */,
+				HH00000000000000000000003 /* XCRemoteSwiftPackageReference "swift-transformers" */,
+				HH00000000000000000000004 /* XCRemoteSwiftPackageReference "whisperkit" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 21CD3F8F31C1E02BEA793749 /* Products */;
 			projectDirPath = "";
@@ -918,7 +945,7 @@
 				DEVELOPMENT_TEAM = 8Y755TXDN8;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
-					"\"/Users/keks/Developer\"",
+					"$(SRCROOT)/..",
 				);
 				GCC_PREPROCESSOR_DEFINITIONS = (
 					"$(inherited)",
@@ -926,7 +953,7 @@
 				);
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
-					"/Users/keks/Developer/llama.xcframework/ios-arm64/Headers",
+					"$(SRCROOT)/../llama.xcframework/ios-arm64/Headers",
 				);
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -1019,7 +1046,7 @@
 				DEVELOPMENT_TEAM = 8Y755TXDN8;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
-					"\"/Users/keks/Developer\"",
+					"$(SRCROOT)/..",
 				);
 				GCC_PREPROCESSOR_DEFINITIONS = (
 					"$(inherited)",
@@ -1027,7 +1054,7 @@
 				);
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
-					"/Users/keks/Developer/llama.xcframework/ios-arm64/Headers",
+					"$(SRCROOT)/../llama.xcframework/ios-arm64/Headers",
 				);
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -1175,6 +1202,79 @@
 			defaultConfigurationName = Debug;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		HH00000000000000000000001 /* XCRemoteSwiftPackageReference "mlx-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/ml-explore/mlx-swift";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.10.0;
+			};
+		};
+		HH00000000000000000000002 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/ml-explore/mlx-swift-lm";
+			requirement = {
+				branch = main;
+				kind = branch;
+			};
+		};
+		HH00000000000000000000003 /* XCRemoteSwiftPackageReference "swift-transformers" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/huggingface/swift-transformers";
+			requirement = {
+				branch = main;
+				kind = branch;
+			};
+		};
+		HH00000000000000000000004 /* XCRemoteSwiftPackageReference "whisperkit" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/argmaxinc/WhisperKit";
+			requirement = {
+				kind = exactVersion;
+				version = 0.9.3;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		HH00000000000000000000011 /* MLX */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = HH00000000000000000000001 /* XCRemoteSwiftPackageReference "mlx-swift" */;
+			productName = MLX;
+		};
+		HH00000000000000000000012 /* MLXNN */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = HH00000000000000000000001 /* XCRemoteSwiftPackageReference "mlx-swift" */;
+			productName = MLXNN;
+		};
+		HH00000000000000000000013 /* MLXLLM */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = HH00000000000000000000002 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */;
+			productName = MLXLLM;
+		};
+		HH00000000000000000000014 /* MLXLMCommon */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = HH00000000000000000000002 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */;
+			productName = MLXLMCommon;
+		};
+		HH00000000000000000000015 /* Hub */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = HH00000000000000000000003 /* XCRemoteSwiftPackageReference "swift-transformers" */;
+			productName = Hub;
+		};
+		HH00000000000000000000016 /* Tokenizers */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = HH00000000000000000000003 /* XCRemoteSwiftPackageReference "swift-transformers" */;
+			productName = Tokenizers;
+		};
+		HH00000000000000000000017 /* WhisperKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = HH00000000000000000000004 /* XCRemoteSwiftPackageReference "whisperkit" */;
+			productName = WhisperKit;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 1ED10FE9B68048132E52F6B4 /* Project object */;
 }
