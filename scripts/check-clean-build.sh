@@ -155,6 +155,53 @@ else
   green "No HomeHubUITests target (expected — source dir absent)"
 fi
 
+# ── 10. No hardcoded DEVELOPMENT_TEAM in pbxproj ─────────────────────────────
+echo "--- Checking for hardcoded DEVELOPMENT_TEAM in pbxproj ---"
+PBXPROJ="$REPO_ROOT/HomeHub.xcodeproj/project.pbxproj"
+DT_LINES=$(grep -n "DEVELOPMENT_TEAM" "$PBXPROJ" 2>/dev/null | grep -v '= "";' | grep -v '= ""' || true)
+if [ -n "$DT_LINES" ]; then
+  red "pbxproj has hardcoded DEVELOPMENT_TEAM (breaks other developers' signing):"
+  echo "$DT_LINES"
+  FAIL=1
+else
+  green "No hardcoded DEVELOPMENT_TEAM in pbxproj"
+fi
+
+# ── 11. Package.resolved hash consistency ────────────────────────────────────
+echo "--- Checking Package.resolved byte-for-byte identity ---"
+ROOT_HASH=$(sha256sum "$REPO_ROOT/Package.resolved" 2>/dev/null | awk '{print $1}')
+XCODE_HASH=$(sha256sum "$XCODE_PINS" 2>/dev/null | awk '{print $1}')
+if [ "$ROOT_HASH" = "$XCODE_HASH" ] && [ -n "$ROOT_HASH" ]; then
+  green "Package.resolved SHA-256 match ($ROOT_HASH)"
+else
+  red "Package.resolved files differ by hash (run 'make sync-resolved' and commit both)"
+  FAIL=1
+fi
+
+# ── 12. import ↔ project.yml product consistency ─────────────────────────────
+echo "--- Checking import/product consistency ---"
+# HubIntegration.swift imports Hub and Tokenizers — both must be in project.yml
+HUB_IMPORT=$(grep -l "^import Hub" "$REPO_ROOT/HomeHub/Runtime/"*.swift 2>/dev/null | head -1 || true)
+if [ -n "$HUB_IMPORT" ]; then
+  if grep -q "product: Hub" "$REPO_ROOT/project.yml" && \
+     grep -q "product: Tokenizers" "$REPO_ROOT/project.yml"; then
+    green "HubIntegration.swift: Hub + Tokenizers imports match project.yml declarations"
+  else
+    red "HubIntegration.swift imports Hub/Tokenizers but project.yml is missing those products"
+    FAIL=1
+  fi
+fi
+# WhisperKit import check
+WK_IMPORT=$(grep -rl "^import WhisperKit" "$REPO_ROOT/HomeHub/" 2>/dev/null | head -1 || true)
+if [ -n "$WK_IMPORT" ]; then
+  if grep -q "product: WhisperKit" "$REPO_ROOT/project.yml"; then
+    green "WhisperKit import matches project.yml declaration"
+  else
+    red "File imports WhisperKit but product: WhisperKit missing from project.yml"
+    FAIL=1
+  fi
+fi
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo ""
 if [ "$FAIL" -eq 0 ]; then
