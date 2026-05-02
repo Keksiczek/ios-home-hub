@@ -9,8 +9,13 @@ xcuserdata/
 *.xcworkspace/xcuserdata/
 *.xcodeproj/project.xcworkspace/xcuserdata/
 
-# XcodeGen-generated project (regenerated from project.yml)
-*.xcodeproj
+# XcodeGen workflow: project.pbxproj IS committed (regenerated from project.yml
+# via `xcodegen generate`; the committed copy lets Xcode open without running
+# xcodegen first). User-specific xcodeproj data is still ignored below.
+# xcshareddata/swiftpm/Package.resolved IS committed for reproducible package
+# resolution across clones.
+*.xcodeproj/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
 
 # Swift Package Manager
 .build/
@@ -26,11 +31,16 @@ Carthage/Build/
 
 # Editor / IDE backups and temp files
 *.bak
-*.bak2
+*.bak[0-9]
+*.bak[0-9][0-9]
 *.orig
 *.swp
 *.swo
 *~
+# Swift file variants left by dev tooling or manual editing
+*.swift.disabled
+*.swift.bak
+*.swift.bak[0-9]
 
 # Logs and profile data
 *.log
