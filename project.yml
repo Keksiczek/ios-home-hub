@@ -27,9 +27,9 @@ options:
   generateEmptyDirectories: false
 
 packages:
-  # mlx-swift uses semver; `from: 0.10.0` pins to the latest 0.x compatible
-  # release and is safe to use as-is. The committed Package.resolved locks the
-  # exact revision so builds are fully reproducible.
+  # mlx-swift uses semver; `from: 0.21.0` pins to the latest 0.x compatible
+  # release. The committed Package.resolved locks the exact revision so builds
+  # are fully reproducible.
   MLX:
     url: https://github.com/ml-explore/mlx-swift
     from: 0.21.0
@@ -44,27 +44,17 @@ packages:
   SwiftTransformers:
     url: https://github.com/huggingface/swift-transformers
     from: 0.1.14
-  # WhisperKit ≥ 0.11.0: first release that resolves TensorUtils conflicts
-  # with swift-transformers 0.1.x. VoiceService.swift gates all WhisperKit
-  # usage behind #if canImport(WhisperKit) so the app still compiles if
-  # this package is removed; keeping it here enables the on-device STT path.
+  # WhisperKit >= 0.11.0 is required. 0.9.x and earlier import TensorUtils
+  # as a standalone module from swift-transformers; that module was removed
+  # when swift-transformers was restructured into Hub/Tokenizers products.
+  # Using 0.9.x with swift-transformers >= 0.1.14 therefore produces
+  # "Unable to find module dependency: 'TensorUtils'" at build time.
+  # VoiceService.swift gates all WhisperKit usage behind
+  # #if canImport(WhisperKit) so the app still compiles if this package is
+  # removed; keeping it here enables the on-device STT path.
   WhisperKit:
     url: https://github.com/argmaxinc/WhisperKit
     from: 0.11.0
-
-  # swift-transformers: the `Hub` and `Tokenizers` library products used by
-  # HubIntegration.swift were introduced after the last semver tag (0.1.8) and
-  # are only available on the main branch. Once HuggingFace cuts a release that
-  # includes them, switch to `from: <version>`.
-  # Risk: same as MLXLM above. Mitigation: Package.resolved pins the revision.
-  swiftTransformers:
-    url: https://github.com/huggingface/swift-transformers
-    branch: main
-
-  # WhisperKit is pinned to an exact version — fully stable.
-  WhisperKit:
-    url: https://github.com/argmaxinc/WhisperKit
-    exactVersion: 0.9.3
 
 settings:
   base:
@@ -108,10 +98,12 @@ targets:
         product: MLXLLM
       - package: MLXLM
         product: MLXLMCommon
-      - package: swiftTransformers
+      # Hub + Tokenizers for HubIntegration.swift (direct imports, not via Transformers).
+      - package: SwiftTransformers
         product: Hub
-      - package: swiftTransformers
+      - package: SwiftTransformers
         product: Tokenizers
+      # WhisperKit for VoiceService.swift on-device STT.
       - package: WhisperKit
         product: WhisperKit
     settings:
@@ -154,25 +146,6 @@ targets:
         # SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) HOMEHUB_SWIFTDATA"
         #
         # ─────────────────────────────────────────────────────────────────────────
-    dependencies:
-      - package: MLX
-        product: MLX
-      - package: MLX
-        product: MLXNN
-      - package: MLXLM
-        product: MLXLLM
-      - package: MLXLM
-        product: MLXLMCommon
-      # Hub + Tokenizers for HubIntegration.swift (direct imports, not via Transformers).
-      - package: SwiftTransformers
-        product: Hub
-      - package: SwiftTransformers
-        product: Tokenizers
-      # WhisperKit for VoiceService.swift on-device STT.
-      - package: WhisperKit
-        product: WhisperKit
-    preCompileScripts: []
-    postCompileScripts: []
 
   HomeHubTests:
     type: bundle.unit-test

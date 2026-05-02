@@ -132,8 +132,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/huggingface/swift-transformers",
       "state" : {
-        "branch" : "main",
-        "revision" : "15bcc471a2de73ce3c17c08781f34a1f9bebaf70"
+        "revision" : "d42fdae473c49ea216671da8caae58e102d28709",
+        "version" : "0.1.14"
       }
     },
     {
@@ -141,8 +141,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/argmaxinc/WhisperKit",
       "state" : {
-        "revision" : "80070fb7ecbefbcc88e423fb130eea597faf6b9e",
-        "version" : "0.9.3"
+        "revision" : "e753c568a6e180b3c78a718797e6066884137490",
+        "version" : "0.11.0"
       }
     },
     {
