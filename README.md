@@ -29,14 +29,15 @@ across restarts.
 
 ### What's mock / limited
 
-- **LlamaContextHandle** — the C++ bridge (`load`, `stream`, `close`) is fully
-  implemented behind `#if HOMEHUB_REAL_RUNTIME`. When the flag is not set the
-  app uses `MockLocalRuntime` which streams canned responses without touching
-  any model file. Set `HOMEHUB_REAL_RUNTIME` and link the xcframework to use
-  real inference.
-- **Model downloads** — real `URLSession` implementation behind
-  `HOMEHUB_REAL_RUNTIME`: Wi-Fi-only, resume data on interruption, SHA-256
-  verification. Development builds use a simulated progress loop.
+- **MLX runtime** — the primary path; always linked and used by default.
+  `MLXRuntime` loads model containers via `MLXLMCommon.loadModelContainer`,
+  with `swift-transformers` providing the tokenizer bridge.
+- **LlamaCppRuntime** — secondary; only compiled when the build opts in
+  via `HOMEHUB_LLAMA_RUNTIME` AND ships with `llama.xcframework`. Without
+  the flag, the C++ bridge files compile to empty translation units and
+  the runtime is not constructed.
+- **MockLocalRuntime** — used by SwiftUI previews and unit tests. Streams
+  canned responses without touching any model file.
 - **Memory extraction** — structured extraction via the local model falls back
   to heuristic keyword triggers when using `MockLocalRuntime` (the mock
   doesn't produce valid JSON for extraction prompts).
@@ -64,9 +65,10 @@ Services (orchestration, side-effects)
 └──────────────┴─────────────┴─────────────┘
 ```
 
-- **Runtime abstraction**: `LocalLLMRuntime` protocol → `LlamaCppRuntime`
-  (production) or `MockLocalRuntime` (development). Selected at compile time
-  via the `HOMEHUB_REAL_RUNTIME` flag.
+- **Runtime abstraction**: `LocalLLMRuntime` protocol → `MLXRuntime`
+  (primary, always linked) or `LlamaCppRuntime` (opt-in via
+  `HOMEHUB_LLAMA_RUNTIME`). `RoutingRuntime` dispatches by
+  `LocalModel.backend`. `MockLocalRuntime` is used by previews and tests.
 - **Prompt assembly**: `PromptAssemblyService` builds layered system prompts:
   L0 (persona + user profile) → L1 (durable facts) → L2 (episodic context)
   → privacy guardrails.
@@ -321,29 +323,77 @@ either (a) `llama.xcframework` is not placed as a sibling of the repo, or
 | `Model 'X' is a GGUF / llama.cpp model, but this build ships with the MLX-only runtime` | You picked a GGUF catalog entry without opting in to llama.cpp. | Either pick an MLX entry (`backend: .mlx`) or follow the [llama.cpp opt-in](#optional-llamacpp-opt-in) procedure. |
 | `Undefined symbol: _llama_*` at link time | Swift sources call `llama_*` but the framework wasn't linked. | Same as above — the flag must be set on both sides. The bridging header AND the framework dep + search paths must be uncommented in `project.yml`. |
 
+### Diagnosing why a model didn't load (in-app)
+
+Open `Settings → Developer Diagnostics`. The **Build Configuration** section
+shows:
+- **Primary runtime** — always "MLX".
+- **Available backends** — the comma-separated list of linked backends
+  (e.g. `MLX-only (llama.cpp opt-in disabled)` or
+  `MLX (default) + llama.cpp opt-in`).
+- **Active runtime** — the identifier of whatever the app is currently
+  routing through (`router`, `mlx`, `llama.cpp`, or `mock`).
+
+If a load failed, the failure reason is shown directly under the runtime
+state with the same actionable copy as the error toast. For GGUF entries
+on an MLX-only build, this is always: *"…je GGUF / llama.cpp model. Tento
+build podporuje pouze MLX. Pro načtení zapni `HOMEHUB_LLAMA_RUNTIME` a
+přidej `llama.xcframework`. Viz README → Optional: llama.cpp opt-in."*
+
 ## Runtime backends — MLX is primary, llama.cpp is opt-in
 
-The on-device LLM runtime is **MLX** by default
-(`mlx-swift` + `mlx-swift-lm` resolved through SPM, no native binary
-dependency). Builds are reproducible from a fresh clone with no
-`llama.xcframework` on disk.
+**MLX is the primary on-device runtime.** It uses Apple's MLX framework
+(`mlx-swift` + `mlx-swift-lm`, resolved through SPM) and Metal compute
+shaders directly, with no native binary dependency. The default build runs
+out-of-the-box on a fresh clone — no `llama.xcframework` on disk, no
+opt-in flag, no manual steps. Onboarding selects an MLX model by default,
+the catalog ships MLX entries marked usable on iPhone, and runtime errors
+point users back to MLX paths first.
 
-`LlamaCppRuntime` is gated behind the `HOMEHUB_LLAMA_RUNTIME` compile flag
-and is OFF by default. The bridging header skips `<llama.h>`, the
-`LlamaContextHandle` / `LlamaCppRuntime` / `LlamaRuntimeActor` Swift sources
-are no-op'd via `#if HOMEHUB_LLAMA_RUNTIME`, and `RoutingRuntime` returns a
-clear `RuntimeError.incompatibleModel` if a `.llamaCpp` model is selected
-while llama is gated out.
+`LlamaCppRuntime` is the **secondary, opt-in path** behind the
+`HOMEHUB_LLAMA_RUNTIME` compile flag. With the flag off (the default):
+- The bridging header skips `<llama.h>`.
+- `LlamaContextHandle` / `LlamaCppRuntime` / `LlamaRuntimeActor` Swift
+  sources compile to empty TUs via `#if HOMEHUB_LLAMA_RUNTIME`.
+- `RoutingRuntime` rejects `.llamaCpp` models with
+  `RuntimeError.backendUnavailable(...)` carrying actionable copy
+  ("requires HOMEHUB_LLAMA_RUNTIME and llama.xcframework").
+- The catalog still lists GGUF entries (so users see what the opt-in
+  unlocks), but every UI surface that could let them pick one — the
+  onboarding picker, the Models tab Load button, the Add-from-URL sheet —
+  shows a "needs opt-in" hint and gates the action.
 
-### Catalog ↔ runtime matrix
+### Format / backend / build-support matrix
 
-| Model entry | `backend` | Default build (MLX-only) | `HOMEHUB_LLAMA_RUNTIME` build |
-|-------------|-----------|--------------------------|-------------------------------|
-| MLX (`mlx-community/...`) | `.mlx` | ✅ runs via `MLXRuntime` | ✅ runs via `MLXRuntime` |
-| GGUF (`bartowski/...`) | `.llamaCpp` | ⛔ surfaces a clear error in the load flow | ✅ runs via `LlamaCppRuntime` |
+| Model format | Runtime backend | Default build | `HOMEHUB_LLAMA_RUNTIME` build | Where it comes from |
+|--------------|-----------------|---------------|--------------------------------|---------------------|
+| **MLX** | `MLXRuntime` | ✅ Loads + runs | ✅ Loads + runs | `mlx-community/*` repos on Hugging Face |
+| **GGUF** | `LlamaCppRuntime` | ⛔ Visible in catalog with "Requires opt-in" hint; load is gated | ✅ Loads + runs (needs `llama.xcframework`) | `bartowski/*` and similar GGUF repos |
+| **User-added (Add from URL)** | Always `LlamaCppRuntime` (`.gguf` only) | ⛔ Sheet shows a notice that imports won't load | ✅ Imported and loadable | Direct `.gguf` URL pasted by the user |
 
-User-added models (the "Add from URL" flow) only accept `.gguf` URLs and are
-explicitly tagged `backend: .llamaCpp` — they require the opt-in flag.
+**Single source of truth.** UI gating queries
+`RuntimeBackendAvailability.isAvailable(_:)` (in `LocalModel.swift`) via
+the convenience accessor `LocalModel.isUsableInThisBuild`. Runtime gating
+goes through `RoutingRuntime`. Both produce identical wording so the
+diagnostics screen, error toasts, and onboarding hints stay in lockstep.
+
+### What works out of the box
+
+On a clean MLX-default checkout you can:
+
+- ✅ Open the app and run onboarding without touching any flags.
+- ✅ Pick the recommended starter (an MLX model marked iPhone-safe).
+- ✅ Download / load / chat / unload, with progress reported from the Hub
+  downloader and Metal compile phases.
+- ✅ See in `Settings → Developer Diagnostics` exactly which backends are
+  linked into the build and what the active runtime is.
+
+What you can't do without opting in to llama.cpp:
+
+- ❌ Load curated GGUF entries (visible but gated with a clear hint).
+- ❌ Import GGUF files via "Add from URL" (sheet shows a notice; the
+  download still works for completeness, but loading throws
+  `RuntimeError.backendUnavailable`).
 
 ### Optional: llama.cpp opt-in
 
@@ -385,20 +435,23 @@ cmake --build build-ios --config Release
 ### 2. Place the xcframework
 
 Put the built `llama.xcframework` **one directory above the repo root**
-(sibling layout described in the prerequisites above).  `project.yml`
-references it as `../llama.xcframework` relative to the project file —
-this is already wired; no drag-and-drop needed.
+(sibling layout described in the prerequisites above). `project.yml`
+references it as `../llama.xcframework` relative to the project file
+once you uncomment the `[llama.cpp opt-in]` blocks.
 
-### 3. Enable the real runtime
+### 3. Enable the runtime
 
-`HOMEHUB_REAL_RUNTIME` is set by default in `project.yml`
-(`SWIFT_ACTIVE_COMPILATION_CONDITIONS`).  No manual toggle needed.
+Uncomment every block tagged `[llama.cpp opt-in]` in `project.yml`:
+the framework dependency, the framework / header search paths, and the
+compile flag pair (`SWIFT_ACTIVE_COMPILATION_CONDITIONS` AND
+`GCC_PREPROCESSOR_DEFINITIONS`). Run `make generate` to regenerate the
+pbxproj, then `make ci` — the validator confirms the bridging header,
+Swift sources and project.yml all agree on the flag.
 
 ### 4. Verify download URLs
 
-The download URLs in `ModelCatalogService.swift` already point to real
-Hugging Face GGUF endpoints. The real `URLSession` implementation (behind
-`HOMEHUB_REAL_RUNTIME`) handles:
+The download URLs in `ModelCatalogService.swift` point to real Hugging
+Face GGUF endpoints. The `URLSession` implementation handles:
 - **Wi-Fi-only** via `allowsCellularAccess = false`
 - **Resume on interruption** — resume data stored in UserDefaults, picked up
   automatically when the user retries a failed download

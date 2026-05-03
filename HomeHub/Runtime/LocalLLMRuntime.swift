@@ -2,18 +2,19 @@ import Foundation
 
 /// Abstraction over a local on-device LLM backend.
 ///
-/// The whole rest of the app talks to this protocol via
-/// `RuntimeManager`. The protocol is intentionally minimal: load,
-/// unload, stream tokens, and observe telemetry. Anything richer
-/// (chat templates, tool calls, KV cache reuse, structured output)
-/// belongs in concrete implementations or higher-level services so we
-/// keep the runtime surface tiny and swappable.
+/// The rest of the app talks to this protocol via `RuntimeManager`. The
+/// surface is intentionally minimal: load, unload, stream tokens, observe
+/// telemetry. Anything richer (chat templates, tool calls, KV-cache reuse,
+/// structured output) belongs in concrete implementations or higher-level
+/// services so the runtime surface stays small and swappable.
 ///
-/// V1 ships with `LlamaCppRuntime`. `MockLocalRuntime` is used by
-/// previews and tests. A future `MLXRuntime` can be added without
-/// touching anything above this layer.
+/// **Concrete runtimes:**
+/// - `MLXRuntime` — primary backend; always available.
+/// - `LlamaCppRuntime` — secondary, opt-in via `HOMEHUB_LLAMA_RUNTIME`.
+/// - `RoutingRuntime` — dispatches by `LocalModel.backend`.
+/// - `MockLocalRuntime` — previews and tests.
 protocol LocalLLMRuntime: AnyObject, Sendable {
-    /// Stable identifier for diagnostics ("llama.cpp", "mlx", "mock").
+    /// Stable identifier for diagnostics ("mlx", "llama.cpp", "router", "mock").
     var identifier: String { get }
 
     /// Last-known loaded model.
@@ -77,7 +78,7 @@ protocol LocalLLMRuntime: AnyObject, Sendable {
     ///
     /// Implementations should respect their own unload policy and unload
     /// the model if appropriate. Default: no-op (used by `MockLocalRuntime`
-    /// and test stubs; the real implementation is in `LlamaCppRuntime`).
+    /// and test stubs; `MLXRuntime` and `LlamaCppRuntime` override).
     func handleMemoryPressure() async
 
     /// Called when the app scene moves to the background.
@@ -107,10 +108,10 @@ extension LocalLLMRuntime {
         try await load(model: model)
     }
 
-    /// Default: no-op. Overridden by `LlamaCppRuntime`.
+    /// Default: no-op. Overridden by runtimes that auto-unload on pressure.
     func handleMemoryPressure() async {}
 
-    /// Default: no-op. Overridden by `LlamaCppRuntime`.
+    /// Default: no-op. Overridden by runtimes that unload on background.
     func handleBackground() async {}
 
     /// Default: no-op.
@@ -197,17 +198,39 @@ enum RuntimeError: LocalizedError {
     case initializationFailed(String)
     case cancelled
     case generationInProgress
+    /// The model targets a backend that isn't linked into this build.
+    /// Carries the model's display name so the UI can be specific.
+    case backendUnavailable(modelName: String, backend: ModelBackend)
     case underlying(String)
 
     var errorDescription: String? {
         switch self {
-        case .noModelLoaded:              return "No model is currently loaded."
-        case .modelNotInstalled:          return "This model isn't installed yet."
-        case .outOfMemory:               return "The device ran out of memory while loading the model."
-        case .incompatibleModel(let m):  return "This model isn't compatible with the runtime: \(m)"
-        case .initializationFailed(let m): return "Model initialization failed: \(m)"
-        case .cancelled:                 return "Generation was cancelled."
-        case .underlying(let m):         return m
+        case .noModelLoaded:
+            return "No model is currently loaded."
+        case .modelNotInstalled:
+            return "This model isn't installed yet."
+        case .outOfMemory:
+            return "The device ran out of memory while loading the model."
+        case .incompatibleModel(let m):
+            return "This model isn't compatible with the runtime: \(m)"
+        case .initializationFailed(let m):
+            return "Model initialization failed: \(m)"
+        case .cancelled:
+            return "Generation was cancelled."
+        case .generationInProgress:
+            return "Another generation is already in progress. Cancel it before starting a new one."
+        case .backendUnavailable(let name, let backend):
+            switch backend {
+            case .llamaCpp:
+                return "\"\(name)\" je GGUF / llama.cpp model. Tento build podporuje pouze MLX. " +
+                       "Pro načtení GGUF modelu zapni HOMEHUB_LLAMA_RUNTIME a přidej llama.xcframework. " +
+                       "Viz README → \"Optional: llama.cpp opt-in\"."
+            case .mlx:
+                return "\"\(name)\" vyžaduje MLX runtime, který není v tomto buildu k dispozici. " +
+                       "(Pravděpodobně chyba v build configu — MLX má být vždy přítomný.)"
+            }
+        case .underlying(let m):
+            return m
         }
     }
 }

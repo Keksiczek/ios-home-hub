@@ -36,9 +36,17 @@ struct DiagnosticReport: Codable, Equatable {
     }
 
     struct Build: Codable, Equatable {
+        /// Stays in the report for backward-compat with bug reports filed
+        /// before MLX became the primary backend. Contains the same string
+        /// the diagnostics screen shows next to "Available backends".
         let cppBridge: String
         let downloadMode: String
+        /// True when this build was compiled with `HOMEHUB_LLAMA_RUNTIME=1`.
+        /// Field name kept for compat with the diagnostic-export schema.
         let realRuntimeFlag: Bool
+        /// Always "mlx" — the primary backend. Captured explicitly so report
+        /// readers don't have to infer it from the cppBridge label.
+        let primaryBackend: String
     }
 
     struct Runtime: Codable, Equatable {

@@ -1,21 +1,19 @@
 import Foundation
 import os
 
-/// Dispatches calls to the appropriate backend based on model metadata.
+/// Dispatches calls to the appropriate backend based on `LocalModel.backend`.
 ///
-/// `RoutingRuntime` allows the app to support multiple inference engines
-/// (MLX is the primary backend; llama.cpp is OPTIONAL and gated behind
-/// the `HOMEHUB_LLAMA_RUNTIME` compile flag) without leaking backend-specific
-/// logic into the `RuntimeManager` or higher-level services.
+/// **Backend availability** is read from `RuntimeBackendAvailability` (the
+/// single source of truth) — UI-side gating goes through
+/// `LocalModel.isUsableInThisBuild`, runtime-side gating goes through this
+/// router. Loading a model whose backend isn't linked into the build throws
+/// `RuntimeError.backendUnavailable(...)` with a precise actionable message
+/// (built once in `RuntimeError`'s `errorDescription` so wording stays in
+/// one place).
 ///
-/// When the flag is OFF (the default), `llamaCpp` is `nil` and any attempt to
-/// load a `.llamaCpp` model returns `RuntimeError.incompatibleModel` with a
-/// clear message, instead of producing a hard build error.
-///
-/// Thread-safety note: `activeBackend` is mutated only through `load()` and
+/// Thread-safety: `activeBackend` is mutated only through `load()` and
 /// `unload()`. In practice all callers go through `RuntimeManager` which is
-/// `@MainActor`, serialising access. A future migration to `actor` would make
-/// this invariant explicit.
+/// `@MainActor`, serialising access.
 final class RoutingRuntime: LocalLLMRuntime, @unchecked Sendable {
     let identifier = "router"
 
@@ -62,23 +60,37 @@ final class RoutingRuntime: LocalLLMRuntime, @unchecked Sendable {
         model: LocalModel,
         progressHandler: (@Sendable (MLXLoadPhase) -> Void)?
     ) async throws {
+        // Reject backends that aren't linked BEFORE doing any work. The
+        // wording is owned by `RuntimeError.backendUnavailable` so UI and
+        // CLI surfaces stay in sync.
+        guard RuntimeBackendAvailability.isAvailable(model.backend) else {
+            log.warning("RoutingRuntime: \(model.backend.rawValue) backend not linked into this build for '\(model.id, privacy: .public)'")
+            throw RuntimeError.backendUnavailable(
+                modelName: model.displayName,
+                backend: model.backend
+            )
+        }
+
         let targetBackend: any LocalLLMRuntime
         switch model.backend {
         case .llamaCpp:
             #if HOMEHUB_LLAMA_RUNTIME
+            // `RuntimeBackendAvailability.isAvailable` already returned true, but
+            // the property may legitimately be nil if the runtime was injected
+            // as such (e.g. a future flag that compiles llama in but skips
+            // wiring it). Treat that as backend unavailable too.
             guard let llamaCpp else {
-                throw RuntimeError.incompatibleModel(
-                    "Model '\(model.displayName)' requires the llama.cpp backend, " +
-                    "but it is not currently linked. Rebuild with HOMEHUB_LLAMA_RUNTIME=1 " +
-                    "and llama.xcframework on the framework search path, or pick an MLX model."
+                throw RuntimeError.backendUnavailable(
+                    modelName: model.displayName,
+                    backend: .llamaCpp
                 )
             }
             targetBackend = llamaCpp
             #else
-            throw RuntimeError.incompatibleModel(
-                "Model '\(model.displayName)' is a GGUF / llama.cpp model, but this build " +
-                "ships with the MLX-only runtime. Rebuild with HOMEHUB_LLAMA_RUNTIME=1, " +
-                "or choose an MLX model from the catalog."
+            // Unreachable: `isAvailable(.llamaCpp)` is false in this branch.
+            throw RuntimeError.backendUnavailable(
+                modelName: model.displayName,
+                backend: .llamaCpp
             )
             #endif
         case .mlx:

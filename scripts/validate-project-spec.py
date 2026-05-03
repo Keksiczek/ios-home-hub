@@ -530,6 +530,69 @@ def check_pbxproj_no_llama(repo_root: Path) -> list[str]:
     return errors
 
 
+def check_catalog_mlx_first(repo_root: Path) -> list[str]:
+    """
+    Static guardrails for the catalog: it must ship at least one MLX entry
+    and the `recommendedStarter` accessor must prefer an MLX entry. The
+    runtime test (`ModelCatalogMLXFirstTests`) is the strict version of this;
+    the source-level grep is the cheap one that runs on every PR (no Xcode
+    needed).
+    """
+    catalog_path = repo_root / "HomeHub" / "Services" / "ModelCatalogService.swift"
+    if not catalog_path.exists():
+        return []
+    text = catalog_path.read_text()
+    errors: list[str] = []
+
+    if "backend: .mlx" not in text:
+        errors.append(
+            "  ModelCatalogService.swift contains no `backend: .mlx` entry. "
+            "MLX is the primary runtime — the curated catalog must ship at "
+            "least one MLX model so onboarding has a working default."
+        )
+
+    # `recommendedStarter` must look up an MLX entry before falling back —
+    # we accept either an explicit `mlx-*` ID lookup or a `format == .mlx` /
+    # `backend == .mlx` filter as the primary candidate.
+    starter_block = re.search(
+        r'var\s+recommendedStarter:\s*LocalModel\s*\{([^}]*)\}',
+        text, re.DOTALL,
+    )
+    if starter_block:
+        body = starter_block.group(1)
+        if not re.search(r'(mlx-|\.mlx)', body):
+            errors.append(
+                "  recommendedStarter does not look up an MLX entry first. "
+                "The first candidate must be MLX so the default build's "
+                "onboarding doesn't hand the user a llama.cpp model."
+            )
+    return errors
+
+
+def check_no_legacy_real_runtime_flag(repo_root: Path) -> list[str]:
+    """
+    `HOMEHUB_REAL_RUNTIME` is the pre-MLX flag. Any remaining usage in
+    Swift / Obj-C / project.yml is dead code or stale gating that will
+    behave unexpectedly after the MLX-default rework.
+    """
+    errors: list[str] = []
+    for path in list((repo_root / "HomeHub").rglob("*.swift")) + \
+                list((repo_root / "HomeHub").rglob("*.h")) + \
+                list((repo_root / "HomeHub").rglob("*.m")):
+        try:
+            text = path.read_text()
+        except (UnicodeDecodeError, FileNotFoundError):
+            continue
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            if "HOMEHUB_REAL_RUNTIME" in line:
+                errors.append(
+                    f"  {path.relative_to(repo_root)}:{lineno} still references "
+                    f"HOMEHUB_REAL_RUNTIME. Replace with HOMEHUB_LLAMA_RUNTIME "
+                    f"(opt-in) or remove the gate."
+                )
+    return errors
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -651,6 +714,22 @@ def main() -> int:
         fail = True
     else:
         green("pbxproj has no stale llama.xcframework / HOMEHUB_REAL_RUNTIME references")
+
+    print("--- Curated catalog ships MLX-first ---")
+    errs = check_catalog_mlx_first(repo_root)
+    if errs:
+        for e in errs: red(e)
+        fail = True
+    else:
+        green("Catalog contains MLX entries and recommendedStarter prefers MLX")
+
+    print("--- No leftover HOMEHUB_REAL_RUNTIME usage in Swift sources ---")
+    errs = check_no_legacy_real_runtime_flag(repo_root)
+    if errs:
+        for e in errs: red(e)
+        fail = True
+    else:
+        green("No legacy HOMEHUB_REAL_RUNTIME references in Swift / C sources")
 
     print()
     if fail:

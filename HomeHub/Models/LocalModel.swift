@@ -111,11 +111,68 @@ struct LocalModel: Identifiable, Codable, Equatable, Hashable {
 enum ModelBackend: String, Codable, Sendable {
     case llamaCpp = "llama.cpp"
     case mlx = "mlx"
+
+    /// Short capitalised label for UI badges and diagnostics (e.g. "MLX" / "GGUF").
+    var displayName: String {
+        switch self {
+        case .mlx:      return "MLX"
+        case .llamaCpp: return "GGUF"
+        }
+    }
+
+    /// One-sentence rationale shown next to the badge / in the info sheet.
+    /// Keeps the answer to "what is this and why does it matter?" close to the
+    /// surface so users don't have to leave the screen for a docs page.
+    var taglineCZ: String {
+        switch self {
+        case .mlx:      return "Apple MLX runtime — výchozí v této buildu."
+        case .llamaCpp: return "llama.cpp runtime — vyžaduje opt-in build s llama.xcframework."
+        }
+    }
 }
 
 enum ModelFormat: String, Codable, Sendable {
     case gguf = "GGUF"
     case mlx = "MLX"
+}
+
+/// Compile-time map of which runtime backends are linked into this build.
+///
+/// `MLX` is always linked (it has no native binary dep beyond SPM). `llama.cpp`
+/// only links when the project is built with `HOMEHUB_LLAMA_RUNTIME` AND with
+/// `llama.xcframework` available; otherwise the runtime sources compile to no-ops
+/// and `RoutingRuntime` rejects `.llamaCpp` models with an actionable error.
+///
+/// **Single source of truth.** Every UI surface that decides "can I let the user
+/// pick this?" goes through `LocalModel.isUsableInThisBuild` (see below) which
+/// reads from this enum. Avoid sprinkling `#if HOMEHUB_LLAMA_RUNTIME` outside
+/// runtime wiring — UI gating is a runtime / data question, not a compile one.
+enum RuntimeBackendAvailability {
+    static var mlxAvailable: Bool { true }
+
+    static var llamaCppAvailable: Bool {
+        #if HOMEHUB_LLAMA_RUNTIME
+        return true
+        #else
+        return false
+        #endif
+    }
+
+    static func isAvailable(_ backend: ModelBackend) -> Bool {
+        switch backend {
+        case .mlx:      return mlxAvailable
+        case .llamaCpp: return llamaCppAvailable
+        }
+    }
+
+    /// User-facing one-liner describing the set of runtimes this build supports.
+    /// Surfaced in the developer diagnostics screen.
+    static var summary: String {
+        if llamaCppAvailable {
+            return "MLX (default) + llama.cpp opt-in"
+        }
+        return "MLX-only (llama.cpp opt-in disabled)"
+    }
 }
 
 enum ModelInstallState: Codable, Equatable, Hashable {
@@ -141,6 +198,35 @@ enum ModelInstallState: Codable, Equatable, Hashable {
 enum DeviceClass: String, Codable, Hashable {
     case iPhone
     case iPadMSeries
+}
+
+// MARK: - Build-time runtime availability
+
+extension LocalModel {
+    /// True if the current build can actually load and run this model.
+    ///
+    /// MLX models are always usable. GGUF / llama.cpp models require the
+    /// optional `HOMEHUB_LLAMA_RUNTIME` build flag — without it the routing
+    /// layer would throw `.backendUnavailable(...)` on load. Use this to gate
+    /// UI affordances (selection, "Load" button, default picks) so the user
+    /// never gets pushed into a path the build can't satisfy.
+    var isUsableInThisBuild: Bool {
+        RuntimeBackendAvailability.isAvailable(backend)
+    }
+
+    /// Short actionable hint shown next to a disabled affordance explaining
+    /// why this model can't be loaded in the current build.
+    /// Returns `nil` when the model IS usable (no message needed).
+    var unavailableReason: String? {
+        guard !isUsableInThisBuild else { return nil }
+        switch backend {
+        case .llamaCpp:
+            return "GGUF / llama.cpp model — vyžaduje opt-in build s llama.xcframework. Viz README."
+        case .mlx:
+            // Should never happen — MLX is always available in this build.
+            return "MLX runtime is unexpectedly unavailable in this build."
+        }
+    }
 }
 
 extension LocalModel {

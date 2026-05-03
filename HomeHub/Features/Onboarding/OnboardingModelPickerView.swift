@@ -6,6 +6,15 @@ struct OnboardingModelPickerView: View {
     @EnvironmentObject private var downloads: ModelDownloadService
     @ObservedObject var drafts: OnboardingDrafts
 
+    /// Sort order: usable-in-this-build first (MLX-default builds get MLX up
+    /// top), then disabled-with-reason at the bottom. Stable: keeps catalog
+    /// declaration order within each group.
+    private var orderedModels: [LocalModel] {
+        let usable = catalog.models.filter { $0.isUsableInThisBuild }
+        let disabled = catalog.models.filter { !$0.isUsableInThisBuild }
+        return usable + disabled
+    }
+
     var body: some View {
         HHScreen(
             eyebrow: "Step 1",
@@ -13,7 +22,7 @@ struct OnboardingModelPickerView: View {
             subtitle: "Download a model to get started. The app runs entirely on-device — no model, no chat. You can add more or import custom models later from Settings → Models."
         ) {
             VStack(spacing: HHTheme.spaceM) {
-                ForEach(catalog.models) { model in
+                ForEach(orderedModels) { model in
                     ModelPickerRow(
                         model: model,
                         isSelected: drafts.selectedModelID == model.id,
@@ -22,7 +31,14 @@ struct OnboardingModelPickerView: View {
                         // funnel through `downloads.start(_:)` which
                         // looks up the resume blob internally.
                         hasResumeData: downloads.hasResumeData(for: model.id),
-                        onSelect: { drafts.selectedModelID = model.id },
+                        onSelect: {
+                            // Refuse to select a model the build can't load.
+                            // The row already shows a disabled affordance and
+                            // the unavailable reason; this stops the user from
+                            // sailing through onboarding into a hard error.
+                            guard model.isUsableInThisBuild else { return }
+                            drafts.selectedModelID = model.id
+                        },
                         onDownload: { downloads.start(model) }
                     )
                 }
@@ -53,6 +69,8 @@ struct OnboardingModelPickerView: View {
             }
         }
         .onAppear {
+            // recommendedStarter is guaranteed-usable (it filters by backend
+            // availability in the catalog service) — safe to set blindly.
             if drafts.selectedModelID == nil {
                 drafts.selectedModelID = catalog.recommendedStarter.id
             }
@@ -76,8 +94,11 @@ private struct ModelPickerRow: View {
             VStack(alignment: .leading, spacing: HHTheme.spaceM) {
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(model.displayName)
-                            .font(HHTheme.headline)
+                        HStack(spacing: HHTheme.spaceS) {
+                            Text(model.displayName)
+                                .font(HHTheme.headline)
+                            backendBadge
+                        }
                         Text("\(model.parameterCount) · \(model.quantization) · \(model.sizeFormatted)")
                             .font(HHTheme.footnote)
                             .foregroundStyle(HHTheme.textSecondary)
@@ -86,11 +107,46 @@ private struct ModelPickerRow: View {
                     selectionIndicator
                 }
 
-                stateRow
+                if let reason = model.unavailableReason {
+                    Label(reason, systemImage: "exclamationmark.triangle.fill")
+                        .font(HHTheme.caption)
+                        .foregroundStyle(HHTheme.warning)
+                        .lineLimit(3)
+                } else {
+                    stateRow
+                }
             }
         }
         .contentShape(Rectangle())
+        .opacity(model.isUsableInThisBuild ? 1.0 : 0.55)
         .onTapGesture(perform: onSelect)
+    }
+
+    /// Compact "MLX" / "GGUF" pill so users see at a glance which runtime a
+    /// row is targeting before they pick it. The catalog ships both formats
+    /// even on MLX-only builds so users understand what the opt-in flag would
+    /// unlock.
+    private var backendBadge: some View {
+        Text(model.backend.displayName)
+            .font(HHTheme.caption.bold())
+            .foregroundStyle(badgeForeground)
+            .padding(.horizontal, HHTheme.spaceS)
+            .padding(.vertical, 2)
+            .background(badgeBackground, in: Capsule())
+    }
+
+    private var badgeForeground: Color {
+        switch model.backend {
+        case .mlx:      return HHTheme.accent
+        case .llamaCpp: return HHTheme.textSecondary
+        }
+    }
+
+    private var badgeBackground: Color {
+        switch model.backend {
+        case .mlx:      return HHTheme.accent.opacity(0.15)
+        case .llamaCpp: return HHTheme.textSecondary.opacity(0.12)
+        }
     }
 
     private var selectionIndicator: some View {

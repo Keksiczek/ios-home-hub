@@ -75,11 +75,19 @@ struct DeveloperDiagnosticsView: View {
     // MARK: - Build
 
     private var buildSection: some View {
-        Section("Build Configuration") {
-            LabeledContent("C++ Bridge", value: cppBridgeLabel)
+        Section {
+            LabeledContent("Primary runtime", value: "MLX")
+            LabeledContent("Available backends", value: RuntimeBackendAvailability.summary)
+            LabeledContent("Active runtime", value: runtime.runtime.identifier)
             LabeledContent("Download Mode", value: downloadModeLabel)
             LabeledContent("Device", value: deviceLabel)
-
+            if !RuntimeBackendAvailability.llamaCppAvailable {
+                Text("Pro načtení GGUF / llama.cpp modelu zapni HOMEHUB_LLAMA_RUNTIME a přidej llama.xcframework. Viz README → \"Optional: llama.cpp opt-in\".")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        } header: {
+            Text("Build Configuration")
         }
     }
 
@@ -210,7 +218,7 @@ struct DeveloperDiagnosticsView: View {
                     Text("Scanning model files…").foregroundStyle(.secondary)
                 }
             } else if stubModelIDs.isEmpty {
-                Label("All installed files pass GGUF validation", systemImage: "checkmark.circle.fill")
+                Label("All installed GGUF files pass validation", systemImage: "checkmark.circle.fill")
                     .foregroundStyle(.green)
             } else {
                 ForEach(stubModelIDs, id: \.self) { id in
@@ -225,12 +233,14 @@ struct DeveloperDiagnosticsView: View {
                 }
             }
         } header: {
-            Text("File Integrity")
+            Text("GGUF File Integrity")
         } footer: {
             Text(
+                "Only GGUF / llama.cpp models are checked here — MLX models live in " +
+                "the Hugging Face cache and are validated by the MLX loader at load time. " +
                 "Valid GGUF files start with magic 0x47475546 and are ≥ 1 MB. " +
-                "Dev-mode stubs (\"STUB_MODEL\", 10 bytes) are flagged here and will " +
-                "be rejected by the runtime before they reach the C++ bridge."
+                "Dev-mode stubs (\"STUB_MODEL\", 10 bytes) are flagged here and will be " +
+                "rejected by the runtime before they reach the C++ bridge."
             )
         }
     }
@@ -375,12 +385,10 @@ struct DeveloperDiagnosticsView: View {
         }
     }
 
+    /// Single source: `RuntimeBackendAvailability.summary` so the
+    /// diagnostics report and the diagnostics screen agree.
     private var cppBridgeLabel: String {
-        #if HOMEHUB_LLAMA_RUNTIME
-        return "llama.cpp + MLX"
-        #else
-        return "MLX-only (llama.cpp opt-in disabled)"
-        #endif
+        RuntimeBackendAvailability.summary
     }
 
     private var downloadModeLabel: String { "URLSession background (real)" }
@@ -523,7 +531,8 @@ struct DeveloperDiagnosticsView: View {
             build: .init(
                 cppBridge: cppBridgeLabel,
                 downloadMode: downloadModeLabel,
-                realRuntimeFlag: realRuntimeFlag
+                realRuntimeFlag: realRuntimeFlag,
+                primaryBackend: ModelBackend.mlx.rawValue
             ),
             runtime: .init(
                 identifier: runtime.runtime.identifier,

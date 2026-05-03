@@ -9,6 +9,20 @@ struct ModelInfoSheet: View {
     var body: some View {
         NavigationStack {
             List {
+                Section("Runtime") {
+                    row("Backend", model.backend.displayName)
+                    row("Format",  model.format.rawValue)
+                    if !model.isUsableInThisBuild, let reason = model.unavailableReason {
+                        Label(reason, systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    } else {
+                        Text(model.backend.taglineCZ)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
                 Section("Identity") {
                     row("Family",        model.family)
                     row("Parameters",    model.parameterCount)

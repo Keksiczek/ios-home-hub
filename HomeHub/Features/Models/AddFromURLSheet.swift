@@ -41,6 +41,7 @@ struct AddFromURLSheet: View {
     var body: some View {
         NavigationStack {
             Form {
+                buildBackendNotice
                 requiredSection
                 probeStatusSection
                 optionalSection
@@ -75,6 +76,32 @@ struct AddFromURLSheet: View {
     }
 
     // MARK: - Sections
+
+    /// Top-of-sheet notice that explains the runtime constraint for the
+    /// import-by-URL flow. The flow only accepts direct `.gguf` links, which
+    /// always target the llama.cpp backend — that backend isn't linked in
+    /// the default MLX-only build, so we tell the user up front rather than
+    /// letting them paste a URL, download 4 GB, and discover the constraint
+    /// at load time.
+    @ViewBuilder
+    private var buildBackendNotice: some View {
+        if !RuntimeBackendAvailability.llamaCppAvailable {
+            Section {
+                Label {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("This build runs MLX models only.")
+                            .font(HHTheme.subheadline.weight(.semibold))
+                        Text("The Add-from-URL flow imports GGUF files for the llama.cpp runtime, which requires the optional `HOMEHUB_LLAMA_RUNTIME` build flag. Imported models will appear in the catalog but won't load until you opt in.")
+                            .font(HHTheme.caption)
+                            .foregroundStyle(HHTheme.textSecondary)
+                    }
+                } icon: {
+                    Image(systemName: "info.circle.fill")
+                        .foregroundStyle(HHTheme.accent)
+                }
+            }
+        }
+    }
 
     private var requiredSection: some View {
         Section {

@@ -357,7 +357,7 @@ struct SettingsView: View {
         } header: {
             Text("Developer")
         } footer: {
-            Text("Live runtime state, GGUF file integrity, telemetry log, and model reset — visible on device without Xcode.")
+            Text("Live runtime state, build / backend info, model file integrity, telemetry log, and model reset — visible on device without Xcode.")
         }
     }
 }

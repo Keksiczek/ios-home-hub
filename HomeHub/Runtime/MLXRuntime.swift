@@ -12,18 +12,43 @@ private final class PhaseSignal: @unchecked Sendable {
     var preparingSent = false
 }
 
-/// MLX-backed local runtime for Apple Silicon.
+/// MLX-backed local runtime for Apple Silicon — the primary backend.
 ///
-/// State isolation: all mutable fields are protected by `sessionLock` (NSLock).
-/// The class is intentionally NOT an actor to keep the `AsyncThrowingStream`
-/// generation API non-async on the call site. Every mutable field access
-/// that crosses a suspension point acquires the lock for the minimum time needed.
+/// **Why this is the default:** MLX has no native binary dependency beyond
+/// what SPM resolves (`mlx-swift`, `mlx-swift-lm`, `swift-transformers`,
+/// `Hub`, `Tokenizers`). It runs out-of-the-box on a fresh checkout, no
+/// xcframework drop required, and uses Apple's Metal compute graph
+/// directly. The optional `LlamaCppRuntime` is the secondary path; see
+/// `RoutingRuntime`.
 ///
-/// Concurrency invariants:
-/// - `isGenerating` is the single authoritative "busy" flag. It is set to `true`
-///   atomically (under lock) before a generation task starts and reset (under lock)
-///   when the task completes, is cancelled, or the runtime is unloaded.
-/// - `activeTask` is a cancellation handle only; never used for the busy check.
+/// **Loading lifecycle** (see `loadWithProgress`):
+/// 1. `.downloading(fraction:)` — Hub downloader fetches weights, real
+///    `Foundation.Progress` is forwarded to the UI.
+/// 2. `.preparing` — download done; weights map into memory and Metal
+///    pipeline compiles. No fraction available; the UI shows an
+///    indeterminate spinner.
+/// 3. Container is cached on the runtime and reused for subsequent
+///    `generate()` calls until `unload()` or memory pressure clears it.
+///
+/// **Generation** uses the canonical `MLXLLM.ChatSession` path when the
+/// container is the native `ModelContainer` type, reusing the session for
+/// matching conversation prefixes (KV-cache reuse). A stateless
+/// `MLXLMCommon.generate(...)` fallback exists for tests / non-native
+/// containers.
+///
+/// **State isolation:** all mutable fields are protected by `sessionLock`
+/// (`NSLock`). The class is intentionally NOT an actor — keeping
+/// `generate()` non-async on the call site makes the `AsyncThrowingStream`
+/// API ergonomic for callers. Each lock acquisition holds for the
+/// minimum time needed.
+///
+/// **Concurrency invariants:**
+/// - `isGenerating` is the single authoritative "busy" flag. Set to `true`
+///   atomically (under lock) before a generation task starts and reset
+///   (under lock) when the task completes, is cancelled, or the runtime
+///   is unloaded.
+/// - `activeTask` is a cancellation handle only; never used for the busy
+///   check.
 /// - `container` and `activeSession` are both guarded by `sessionLock`.
 final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
     let identifier = "mlx"
