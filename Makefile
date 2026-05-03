@@ -13,7 +13,7 @@ DEST     = generic/platform=iOS
 
 # ── Primary targets ───────────────────────────────────────────────────────────
 
-.PHONY: setup generate resolve validate check build clean help
+.PHONY: setup generate resolve validate check ci build test clean sync-resolved help
 
 ## Full first-time or post-merge setup (generate project + fetch packages).
 setup: generate resolve
@@ -57,6 +57,10 @@ validate:
 check: validate
 	@bash scripts/check-clean-build.sh
 
+## Same set of guardrails CI runs. Useful before pushing.
+## Doesn't need Xcode — runs on any machine with Python 3 + bash.
+ci: check
+
 ## Remove Xcode derived data for this project.
 clean:
 	xcodebuild clean -project $(PROJECT) -scheme $(SCHEME) 2>/dev/null || true
@@ -78,5 +82,6 @@ help:
 	@echo "  build          — compile (needs llama.xcframework sibling)"
 	@echo "  test           — run unit tests in simulator"
 	@echo "  check          — validate + smoke-test for portability issues"
+	@echo "  ci             — run the same guardrails CI runs (no Xcode needed)"
 	@echo "  clean          — clean derived data"
 	@echo "  sync-resolved  — copy root Package.resolved into xcshareddata"

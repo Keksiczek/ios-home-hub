@@ -26,6 +26,41 @@ options:
   createIntermediateGroups: true
   generateEmptyDirectories: false
 
+# Explicit shared schemes (committed under
+# HomeHub.xcodeproj/xcshareddata/xcschemes/). Without these, a fresh clone has
+# no scheme — `xcodebuild -scheme HomeHub` fails until someone opens the
+# project in Xcode and lets it autocreate one, which then ends up in
+# xcuserdata (per-developer, not committed).
+schemes:
+  HomeHub:
+    build:
+      targets:
+        HomeHub: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - HomeHubTests
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release
+  HomeHubWidget:
+    build:
+      targets:
+        HomeHubWidget: all
+    run:
+      config: Debug
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release
+
 packages:
   # mlx-swift uses semver; `from: 0.21.0` pins to the latest 0.x compatible
   # release. The committed Package.resolved locks the exact revision so builds

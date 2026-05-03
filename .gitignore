@@ -9,11 +9,13 @@ xcuserdata/
 *.xcworkspace/xcuserdata/
 *.xcodeproj/project.xcworkspace/xcuserdata/
 
-# XcodeGen workflow: project.pbxproj IS committed (regenerated from project.yml
-# via `xcodegen generate`; the committed copy lets Xcode open without running
-# xcodegen first). User-specific xcodeproj data is still ignored below.
-# xcshareddata/swiftpm/Package.resolved IS committed for reproducible package
-# resolution across clones.
+# XcodeGen workflow:
+#   - project.pbxproj IS committed (regenerated from project.yml via
+#     `xcodegen generate`; the committed copy lets Xcode open without running
+#     xcodegen first).
+#   - xcshareddata/ IS committed (Package.resolved + .xcscheme files give
+#     reproducible package pinning and a default scheme on fresh clones).
+#   - xcuserdata/ is ALWAYS ignored (per-developer state).
 *.xcodeproj/xcuserdata/
 *.xcodeproj/project.xcworkspace/xcuserdata/
 

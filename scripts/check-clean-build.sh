@@ -174,8 +174,9 @@ else
 fi
 
 # ── 12. import ↔ project.yml product consistency ─────────────────────────────
+# (Also covered by validate-project-spec.py, kept here as a second line of
+#  defence with cheap greps.)
 echo "--- Checking import/product consistency ---"
-# HubIntegration.swift imports Hub and Tokenizers — both must be in project.yml
 HUB_IMPORT=$(grep -l "^import Hub" "$REPO_ROOT/HomeHub/Runtime/"*.swift 2>/dev/null | head -1 || true)
 if [ -n "$HUB_IMPORT" ]; then
   if grep -q "product: Hub" "$REPO_ROOT/project.yml" && \
@@ -186,7 +187,6 @@ if [ -n "$HUB_IMPORT" ]; then
     FAIL=1
   fi
 fi
-# WhisperKit import check
 WK_IMPORT=$(grep -rl "^import WhisperKit" "$REPO_ROOT/HomeHub/" 2>/dev/null | head -1 || true)
 if [ -n "$WK_IMPORT" ]; then
   if grep -q "product: WhisperKit" "$REPO_ROOT/project.yml"; then
@@ -194,6 +194,51 @@ if [ -n "$WK_IMPORT" ]; then
   else
     red "File imports WhisperKit but product: WhisperKit missing from project.yml"
     FAIL=1
+  fi
+fi
+
+# ── 13. Shared schemes exist for every target -–-------------–-––-––-––--–-––-
+# Without committed shared schemes a fresh clone can't `xcodebuild -scheme X`
+# until somebody opens the project in Xcode and lets it autogenerate one.
+echo "--- Checking shared schemes are committed ---"
+SCHEMES_DIR="$REPO_ROOT/HomeHub.xcodeproj/xcshareddata/xcschemes"
+for s in HomeHub HomeHubWidget; do
+  if [ -f "$SCHEMES_DIR/$s.xcscheme" ]; then
+    green "Shared scheme present: $s.xcscheme"
+  else
+    red "Missing shared scheme: $SCHEMES_DIR/$s.xcscheme — run 'make generate' or commit it manually."
+    FAIL=1
+  fi
+done
+
+# ── 14. No tracked xcuserdata / .DS_Store -------------------------------------
+echo "--- Checking for tracked per-developer state ---"
+LEAKED=$(git -C "$REPO_ROOT" ls-files | grep -E '(^|/)(\.DS_Store|xcuserdata/)' || true)
+if [ -n "$LEAKED" ]; then
+  red "Per-developer files are tracked (run 'git rm --cached'):"
+  echo "$LEAKED"
+  FAIL=1
+else
+  green "No tracked .DS_Store or xcuserdata files"
+fi
+
+# ── 15. AppIcon image set is sane ---------------------------------------------
+# A reference to AppIcon.png with no actual file produces a build warning on
+# every compile and a missing icon in the app bundle.
+echo "--- Checking AppIcon asset set integrity ---"
+ICON_JSON="$REPO_ROOT/HomeHub/Assets.xcassets/AppIcon.appiconset/Contents.json"
+if [ -f "$ICON_JSON" ]; then
+  ICON_REF=$(grep -oE '"filename"\s*:\s*"[^"]+"' "$ICON_JSON" | head -1 || true)
+  if [ -n "$ICON_REF" ]; then
+    FNAME=$(echo "$ICON_REF" | sed -E 's/.*"filename"\s*:\s*"([^"]+)".*/\1/')
+    if [ -f "$REPO_ROOT/HomeHub/Assets.xcassets/AppIcon.appiconset/$FNAME" ]; then
+      green "AppIcon references $FNAME and the file exists"
+    else
+      red "AppIcon Contents.json references '$FNAME' but the file is missing — every build will warn."
+      FAIL=1
+    fi
+  else
+    green "AppIcon set is intentionally empty (no dangling filename references)"
   fi
 fi
 
