@@ -31,13 +31,23 @@ final class ModelCatalogService: ObservableObject {
     }
 
     var recommendedStarter: LocalModel {
-        // Gemma 3 4B is the recommended default — strong reasoning, fits on iPhone.
-        models.first(where: { $0.id == "gemma-3-4b-it-q4_k_m" }) ?? models[0]
+        // MLX is the default runtime — pick an MLX entry first, fall back to
+        // any installed model, then to whatever the catalog ships first.
+        // The previous default (Gemma 3 4B GGUF) only runs when the optional
+        // HOMEHUB_LLAMA_RUNTIME flag is enabled, which isn't true on a
+        // fresh checkout.
+        models.first(where: { $0.id == "mlx-llama-3.2-3b-it" })
+            ?? models.first(where: { $0.format == .mlx })
+            ?? models[0]
     }
 
     /// Smallest iPhone-safe model for smoke-testing a real-runtime device build.
+    /// Prefers an MLX entry (always loadable on default builds); falls back to
+    /// the smallest GGUF when only llama.cpp models are present.
     var iPhoneSmokeTestModel: LocalModel {
-        models.first(where: { $0.id == "gemma-2-2b-it-q4_k_m" }) ?? models[0]
+        models.first(where: { $0.format == .mlx && $0.recommendedFor.contains(.iPhone) })
+            ?? models.first(where: { $0.id == "gemma-2-2b-it-q4_k_m" })
+            ?? models[0]
     }
 
     /// Returns `true` when `model` is recommended for iPad M-series only
@@ -175,7 +185,9 @@ enum ModelCatalog {
             sha256: nil, // TODO: verify hash
             installState: .notInstalled,
             recommendedFor: [.iPhone, .iPadMSeries],
-            license: "Gemma Terms of Use"
+            license: "Gemma Terms of Use",
+            backend: .llamaCpp,
+            format: .gguf
         ),
 
         LocalModel(
@@ -192,7 +204,9 @@ enum ModelCatalog {
             sha256: nil, // TODO: verify hash
             installState: .notInstalled,
             recommendedFor: [.iPadMSeries],
-            license: "Gemma Terms of Use"
+            license: "Gemma Terms of Use",
+            backend: .llamaCpp,
+            format: .gguf
         ),
 
         // MARK: Gemma 2
@@ -211,7 +225,9 @@ enum ModelCatalog {
             sha256: nil, // TODO: verify hash
             installState: .notInstalled,
             recommendedFor: [.iPhone, .iPadMSeries],
-            license: "Gemma Terms of Use"
+            license: "Gemma Terms of Use",
+            backend: .llamaCpp,
+            format: .gguf
         ),
 
         LocalModel(
@@ -228,7 +244,9 @@ enum ModelCatalog {
             sha256: nil, // TODO: verify hash
             installState: .notInstalled,
             recommendedFor: [.iPadMSeries],
-            license: "Gemma Terms of Use"
+            license: "Gemma Terms of Use",
+            backend: .llamaCpp,
+            format: .gguf
         ),
 
         // MARK: Llama 3.x
@@ -247,7 +265,9 @@ enum ModelCatalog {
             sha256: nil, // TODO: verify hash
             installState: .notInstalled,
             recommendedFor: [.iPhone, .iPadMSeries],
-            license: "Llama 3.2 Community License"
+            license: "Llama 3.2 Community License",
+            backend: .llamaCpp,
+            format: .gguf
         ),
 
         LocalModel(
@@ -264,7 +284,9 @@ enum ModelCatalog {
             sha256: nil, // TODO: verify hash
             installState: .notInstalled,
             recommendedFor: [.iPadMSeries],
-            license: "Llama 3.1 Community License"
+            license: "Llama 3.1 Community License",
+            backend: .llamaCpp,
+            format: .gguf
         ),
 
         // MARK: Phi / Qwen
@@ -283,7 +305,9 @@ enum ModelCatalog {
             sha256: nil, // TODO: verify hash
             installState: .notInstalled,
             recommendedFor: [.iPhone, .iPadMSeries],
-            license: "MIT"
+            license: "MIT",
+            backend: .llamaCpp,
+            format: .gguf
         ),
 
         LocalModel(
@@ -300,7 +324,9 @@ enum ModelCatalog {
             sha256: nil, // TODO: verify hash
             installState: .notInstalled,
             recommendedFor: [.iPhone, .iPadMSeries],
-            license: "Apache 2.0"
+            license: "Apache 2.0",
+            backend: .llamaCpp,
+            format: .gguf
         ),
         
         // MARK: MLX (Phase 3)

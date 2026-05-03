@@ -1,3 +1,4 @@
+#if HOMEHUB_LLAMA_RUNTIME
 import Foundation
 
 // MARK: - GenerationCancellationToken
@@ -235,3 +236,5 @@ actor LlamaRuntimeActor {
         }
     }
 }
+
+#endif // HOMEHUB_LLAMA_RUNTIME

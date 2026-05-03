@@ -6,14 +6,20 @@
 #
 # Then open HomeHub.xcodeproj in Xcode.
 #
-# ── External binary dependency ────────────────────────────────────────────────
-# llama.xcframework must be placed as a sibling of the repo root, e.g.:
-#   ~/Developer/
-#     llama.xcframework/       ← here
-#     ios-home-hub/            ← repo root (this project)
+# ── Runtime backends ──────────────────────────────────────────────────────────
+# The primary on-device LLM backend is MLX (mlx-swift / mlx-swift-lm). It has
+# no native dependency outside of Swift packages, so default builds compile
+# cleanly on a fresh checkout.
 #
-# The paths below use $(SRCROOT)/.. which expands to that parent directory.
-# If your layout differs, override LLAMA_FRAMEWORK_PATH in a local xcconfig.
+# llama.cpp is OPTIONAL and OFF by default. To re-enable it:
+#   1. Place llama.xcframework as a sibling of the repo root, e.g.:
+#        ~/Developer/
+#          llama.xcframework/   ← here
+#          ios-home-hub/        ← repo root
+#   2. Uncomment the lines tagged "[llama.cpp opt-in]" below (the
+#      framework dep, framework/header search paths, and the compile flag in
+#      both SWIFT_ACTIVE_COMPILATION_CONDITIONS and GCC_PREPROCESSOR_DEFINITIONS).
+#   3. Re-run `xcodegen generate`.
 # ─────────────────────────────────────────────────────────────────────────────
 
 name: HomeHub
@@ -110,20 +116,20 @@ targets:
     sources:
       - path: HomeHub
     dependencies:
-      # ── Binary framework (llama.cpp) ─────────────────────────────────────────
-      # Path is relative to the repo root: ../llama.xcframework means the
-      # framework lives one directory above this repo (sibling of the checkout).
-      - framework: ../llama.xcframework
-        embed: true
-        codeSign: true
-      # System frameworks required by llama.cpp's Metal backend.
-      # Without explicit linking, the linker emits auto-link-failure warnings
-      # for Accelerate (BLAS/vDSP), Metal compute, and CoreAudio.
-      - sdk: Accelerate.framework
-      - sdk: Metal.framework
-      - sdk: MetalKit.framework
-      - sdk: MetalPerformanceShaders.framework
-      - sdk: CoreAudio.framework
+      # ── [llama.cpp opt-in] Binary framework + system frameworks ──────────────
+      # Uncomment the next eight lines to re-enable llama.cpp. The framework is
+      # not committed; place it as a sibling of the repo root before building.
+      # See the file header for the full opt-in checklist.
+      #
+      # - framework: ../llama.xcframework
+      #   embed: true
+      #   codeSign: true
+      # - sdk: Accelerate.framework
+      # - sdk: Metal.framework
+      # - sdk: MetalKit.framework
+      # - sdk: MetalPerformanceShaders.framework
+      # - sdk: CoreAudio.framework
+      #
       # ── Swift Package dependencies ────────────────────────────────────────────
       - package: MLX
         product: MLX
@@ -144,12 +150,14 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: cz.keksiczek.homehub
-        # Resolve llama.xcframework relative to the source root (project dir).
-        # $(SRCROOT) == directory containing HomeHub.xcodeproj, so .. is the
-        # parent where llama.xcframework lives.
-        FRAMEWORK_SEARCH_PATHS: "$(inherited) $(SRCROOT)/.."
-        HEADER_SEARCH_PATHS: "$(inherited) $(SRCROOT)/../llama.xcframework/ios-arm64/Headers"
-        OTHER_LDFLAGS: "$(inherited) -lc++"
+        # ── [llama.cpp opt-in] Search paths and link flags ─────────────────────
+        # Uncomment when re-enabling llama.cpp. Without this, the bridging
+        # header skips <llama.h> and the Swift sources skip the llama_* call
+        # sites, so default builds need none of these.
+        #
+        # FRAMEWORK_SEARCH_PATHS: "$(inherited) $(SRCROOT)/.."
+        # HEADER_SEARCH_PATHS: "$(inherited) $(SRCROOT)/../llama.xcframework/ios-arm64/Headers"
+        # OTHER_LDFLAGS: "$(inherited) -lc++"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
@@ -172,9 +180,19 @@ targets:
         # (e.g. adding non-exempt crypto), remove this key and answer the
         # encryption questionnaire in App Store Connect instead.
         INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
-        SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) HOMEHUB_REAL_RUNTIME"
+        # The bridging header is intentionally kept even when llama.cpp is OFF:
+        # it sits behind `#ifdef HOMEHUB_LLAMA_RUNTIME` so the C preprocessor
+        # produces an empty translation unit by default. Removing the path
+        # entirely would require a project regen on every flag flip.
         SWIFT_OBJC_BRIDGING_HEADER: "HomeHub/Runtime/Bridge/HomeHub-Bridging-Header.h"
-        GCC_PREPROCESSOR_DEFINITIONS: "$(inherited) HOMEHUB_REAL_RUNTIME=1"
+        # ── [llama.cpp opt-in] Compile flag ────────────────────────────────────
+        # Uncomment BOTH lines to enable llama.cpp. The flag must be visible to
+        # the Swift sources (SWIFT_ACTIVE_COMPILATION_CONDITIONS) AND to the
+        # bridging header / C++ side (GCC_PREPROCESSOR_DEFINITIONS) — otherwise
+        # one side calls llama_* symbols the other side hasn't included.
+        #
+        # SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) HOMEHUB_LLAMA_RUNTIME"
+        # GCC_PREPROCESSOR_DEFINITIONS: "$(inherited) HOMEHUB_LLAMA_RUNTIME=1"
         #
         # ─── SwiftData persistence (optional) ────────────────────────────────────
         # Uncomment to replace the JSON FileStore with SwiftData:

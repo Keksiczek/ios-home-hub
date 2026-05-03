@@ -4,8 +4,13 @@ import os
 /// Dispatches calls to the appropriate backend based on model metadata.
 ///
 /// `RoutingRuntime` allows the app to support multiple inference engines
-/// (llama.cpp and MLX) without leaking backend-specific logic into
-/// the `RuntimeManager` or higher-level services.
+/// (MLX is the primary backend; llama.cpp is OPTIONAL and gated behind
+/// the `HOMEHUB_LLAMA_RUNTIME` compile flag) without leaking backend-specific
+/// logic into the `RuntimeManager` or higher-level services.
+///
+/// When the flag is OFF (the default), `llamaCpp` is `nil` and any attempt to
+/// load a `.llamaCpp` model returns `RuntimeError.incompatibleModel` with a
+/// clear message, instead of producing a hard build error.
 ///
 /// Thread-safety note: `activeBackend` is mutated only through `load()` and
 /// `unload()`. In practice all callers go through `RuntimeManager` which is
@@ -14,7 +19,9 @@ import os
 final class RoutingRuntime: LocalLLMRuntime, @unchecked Sendable {
     let identifier = "router"
 
-    private let llamaCpp: LlamaCppRuntime
+    #if HOMEHUB_LLAMA_RUNTIME
+    private let llamaCpp: LlamaCppRuntime?
+    #endif
     private let mlx: MLXRuntime
 
     private let log = Logger(subsystem: "HomeHub", category: "RoutingRuntime")
@@ -27,10 +34,16 @@ final class RoutingRuntime: LocalLLMRuntime, @unchecked Sendable {
     /// Telemetry is aggregated from the currently active backend.
     var telemetry: RuntimeTelemetry { activeBackend?.telemetry ?? .noOp }
 
-    init(llamaCpp: LlamaCppRuntime, mlx: MLXRuntime) {
+    #if HOMEHUB_LLAMA_RUNTIME
+    init(llamaCpp: LlamaCppRuntime?, mlx: MLXRuntime) {
         self.llamaCpp = llamaCpp
         self.mlx = mlx
     }
+    #else
+    init(mlx: MLXRuntime) {
+        self.mlx = mlx
+    }
+    #endif
 
     // MARK: - Load
 
@@ -49,9 +62,27 @@ final class RoutingRuntime: LocalLLMRuntime, @unchecked Sendable {
         model: LocalModel,
         progressHandler: (@Sendable (MLXLoadPhase) -> Void)?
     ) async throws {
-        let targetBackend: any LocalLLMRuntime = switch model.backend {
-        case .llamaCpp: llamaCpp
-        case .mlx:      mlx
+        let targetBackend: any LocalLLMRuntime
+        switch model.backend {
+        case .llamaCpp:
+            #if HOMEHUB_LLAMA_RUNTIME
+            guard let llamaCpp else {
+                throw RuntimeError.incompatibleModel(
+                    "Model '\(model.displayName)' requires the llama.cpp backend, " +
+                    "but it is not currently linked. Rebuild with HOMEHUB_LLAMA_RUNTIME=1 " +
+                    "and llama.xcframework on the framework search path, or pick an MLX model."
+                )
+            }
+            targetBackend = llamaCpp
+            #else
+            throw RuntimeError.incompatibleModel(
+                "Model '\(model.displayName)' is a GGUF / llama.cpp model, but this build " +
+                "ships with the MLX-only runtime. Rebuild with HOMEHUB_LLAMA_RUNTIME=1, " +
+                "or choose an MLX model from the catalog."
+            )
+            #endif
+        case .mlx:
+            targetBackend = mlx
         }
 
         log.info("RoutingRuntime: Routing '\(model.id, privacy: .public)' to '\(targetBackend.identifier, privacy: .public)'")

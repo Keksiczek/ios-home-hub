@@ -49,6 +49,8 @@ REQUIRED_FILES=(
   "HomeHub/Runtime/Bridge/HomeHub-Bridging-Header.h"
   "HomeHub/HomeHub.entitlements"
   "HomeHubWidget/HomeHubWidget.entitlements"
+  "HomeHub.xcodeproj/xcshareddata/xcschemes/HomeHub.xcscheme"
+  "HomeHub.xcodeproj/xcshareddata/xcschemes/HomeHubWidget.xcscheme"
 )
 for f in "${REQUIRED_FILES[@]}"; do
   if [ -f "$REPO_ROOT/$f" ]; then

@@ -1,3 +1,4 @@
+#if HOMEHUB_LLAMA_RUNTIME
 import XCTest
 @testable import HomeHub
 
@@ -315,6 +316,10 @@ private extension LocalModel {
         sha256: nil,
         installState: .installed(localURL: URL(fileURLWithPath: "/tmp/test.gguf")),
         recommendedFor: [.iPhone],
-        license: "MIT"
+        license: "MIT",
+        backend: .llamaCpp,
+        format: .gguf
     )
 }
+
+#endif // HOMEHUB_LLAMA_RUNTIME

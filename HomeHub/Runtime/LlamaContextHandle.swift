@@ -1,3 +1,4 @@
+#if HOMEHUB_LLAMA_RUNTIME
 import Foundation
 
 /// Swift bridge to the llama.cpp C++ engine.
@@ -452,3 +453,5 @@ struct LlamaContextHandle: @unchecked Sendable {
         return true
     }
 }
+
+#endif // HOMEHUB_LLAMA_RUNTIME

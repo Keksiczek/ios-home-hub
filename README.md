@@ -109,9 +109,13 @@ HomeHubTests/         # 8 test files, 50+ test cases
 |------|---------|---------|
 | Xcode | 15.4+ | App Store |
 | xcodegen | any | `brew install xcodegen` |
-| llama.xcframework | built from llama.cpp | see below |
+| llama.xcframework | _OPTIONAL_ — only needed if you opt in to llama.cpp | see [Optional: llama.cpp opt-in](#optional-llamacpp-opt-in) |
 
-`llama.xcframework` must be placed as a **sibling of the repo root**:
+The default build is MLX-only and has no native binary dependencies — every
+package is resolved through SPM. `llama.xcframework` is OFF by default and
+only required if you flip `HOMEHUB_LLAMA_RUNTIME` on (see below).
+
+If you do opt in, place `llama.xcframework` as a **sibling of the repo root**:
 
 ```
 ~/Developer/          (or wherever you keep repos)
@@ -313,11 +317,50 @@ either (a) `llama.xcframework` is not placed as a sibling of the repo, or
 | `xcodebuild: error: code signing failed: no team selected` | The repo intentionally ships without a `DEVELOPMENT_TEAM`. | Set your team in *Signing & Capabilities* in Xcode, or override `DEVELOPMENT_TEAM` via a local `.xcconfig` not committed to git. |
 | Diff includes `xcuserdata/` or `.DS_Store` | Someone re-added them after the cleanup. | `git rm --cached <path>`. Both are in `.gitignore` — they should never reappear. |
 | Package.resolved pins differ between the two locations | Manual edit / Xcode resolved against a different lockfile. | `make sync-resolved` then commit both. The smoke-test verifies SHA-256 identity. |
+| `'llama.h' file not found` | The bridging header tried to include `<llama.h>` but the framework isn't on the header search path. | Default builds should NOT include `<llama.h>` — the header is wrapped in `#ifdef HOMEHUB_LLAMA_RUNTIME`. If you see this, you set the Swift flag without setting the matching `GCC_PREPROCESSOR_DEFINITIONS` (or vice versa). `make ci` flags this. |
+| `Model 'X' is a GGUF / llama.cpp model, but this build ships with the MLX-only runtime` | You picked a GGUF catalog entry without opting in to llama.cpp. | Either pick an MLX entry (`backend: .mlx`) or follow the [llama.cpp opt-in](#optional-llamacpp-opt-in) procedure. |
+| `Undefined symbol: _llama_*` at link time | Swift sources call `llama_*` but the framework wasn't linked. | Same as above — the flag must be set on both sides. The bridging header AND the framework dep + search paths must be uncommented in `project.yml`. |
 
-## Integrating the real llama.cpp runtime
+## Runtime backends — MLX is primary, llama.cpp is opt-in
 
-The app is designed so the real C++ inference engine can be plugged in
-with minimal changes.
+The on-device LLM runtime is **MLX** by default
+(`mlx-swift` + `mlx-swift-lm` resolved through SPM, no native binary
+dependency). Builds are reproducible from a fresh clone with no
+`llama.xcframework` on disk.
+
+`LlamaCppRuntime` is gated behind the `HOMEHUB_LLAMA_RUNTIME` compile flag
+and is OFF by default. The bridging header skips `<llama.h>`, the
+`LlamaContextHandle` / `LlamaCppRuntime` / `LlamaRuntimeActor` Swift sources
+are no-op'd via `#if HOMEHUB_LLAMA_RUNTIME`, and `RoutingRuntime` returns a
+clear `RuntimeError.incompatibleModel` if a `.llamaCpp` model is selected
+while llama is gated out.
+
+### Catalog ↔ runtime matrix
+
+| Model entry | `backend` | Default build (MLX-only) | `HOMEHUB_LLAMA_RUNTIME` build |
+|-------------|-----------|--------------------------|-------------------------------|
+| MLX (`mlx-community/...`) | `.mlx` | ✅ runs via `MLXRuntime` | ✅ runs via `MLXRuntime` |
+| GGUF (`bartowski/...`) | `.llamaCpp` | ⛔ surfaces a clear error in the load flow | ✅ runs via `LlamaCppRuntime` |
+
+User-added models (the "Add from URL" flow) only accept `.gguf` URLs and are
+explicitly tagged `backend: .llamaCpp` — they require the opt-in flag.
+
+### Optional: llama.cpp opt-in
+
+Re-enabling llama.cpp is a one-time, three-step procedure:
+
+1. **Build `llama.xcframework`** (see [the build script below](#1-build-the-xcframework)) and place it as a sibling of the repo root.
+2. **Edit `project.yml`** — uncomment every block tagged `[llama.cpp opt-in]`:
+   - The `framework: ../llama.xcframework` dependency and its five system frameworks.
+   - `FRAMEWORK_SEARCH_PATHS`, `HEADER_SEARCH_PATHS`, `OTHER_LDFLAGS`.
+   - `SWIFT_ACTIVE_COMPILATION_CONDITIONS` and `GCC_PREPROCESSOR_DEFINITIONS` (both must be set together — the validator fails the build if only one is set).
+3. **Run `make generate`** to regenerate the pbxproj, then `make ci` to verify the bridging header, Swift sources and project.yml all agree.
+
+`make ci` will fail-fast if you set the flag in only one place — it cross-checks `project.yml`, the bridging header, every llama Swift source and the test file.
+
+### Building the xcframework
+
+Only relevant if you opted in above.
 
 ### 1. Build the xcframework
 

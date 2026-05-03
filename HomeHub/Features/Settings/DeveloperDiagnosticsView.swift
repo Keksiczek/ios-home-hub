@@ -375,7 +375,13 @@ struct DeveloperDiagnosticsView: View {
         }
     }
 
-    private var cppBridgeLabel: String { "llama.cpp" }
+    private var cppBridgeLabel: String {
+        #if HOMEHUB_LLAMA_RUNTIME
+        return "llama.cpp + MLX"
+        #else
+        return "MLX-only (llama.cpp opt-in disabled)"
+        #endif
+    }
 
     private var downloadModeLabel: String { "URLSession background (real)" }
 
@@ -577,8 +583,11 @@ struct DeveloperDiagnosticsView: View {
         #endif
     }
 
+    /// Whether the build was compiled with the optional llama.cpp runtime
+    /// linked in. The diagnostic field name stays as `realRuntimeFlag` for
+    /// JSON-export compatibility with older diagnostic dumps.
     private var realRuntimeFlag: Bool {
-        #if HOMEHUB_REAL_RUNTIME
+        #if HOMEHUB_LLAMA_RUNTIME
         return true
         #else
         return false

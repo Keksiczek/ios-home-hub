@@ -65,8 +65,8 @@ struct LocalModel: Identifiable, Codable, Equatable, Hashable {
         installState: ModelInstallState,
         recommendedFor: [DeviceClass],
         license: String,
-        backend: ModelBackend = .llamaCpp,
-        format: ModelFormat = .gguf,
+        backend: ModelBackend = .mlx,
+        format: ModelFormat = .mlx,
         isUserAdded: Bool = false
     ) {
         self.id = id

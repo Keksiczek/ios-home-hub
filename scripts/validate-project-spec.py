@@ -432,6 +432,104 @@ def check_dependencies_block_count(text: str) -> list[str]:
     return []
 
 
+def check_llama_flag_consistency(repo_root: Path) -> list[str]:
+    """
+    The HOMEHUB_LLAMA_RUNTIME flag must be set in lockstep on three sides:
+      1. project.yml — `SWIFT_ACTIVE_COMPILATION_CONDITIONS` AND
+         `GCC_PREPROCESSOR_DEFINITIONS`
+      2. The bridging header — `<llama.h>` only included under
+         `#ifdef HOMEHUB_LLAMA_RUNTIME`
+      3. Each llama Swift source file — wrapped in `#if HOMEHUB_LLAMA_RUNTIME`
+
+    If only some of those agree, the C++ side and the Swift side disagree on
+    whether `llama_*` symbols are available — the build either silently links
+    nothing or fails with linker errors hours into the iteration loop.
+    """
+    errors: list[str] = []
+
+    yml_text = (repo_root / "project.yml").read_text()
+    swift_flag = re.search(
+        r'SWIFT_ACTIVE_COMPILATION_CONDITIONS:\s*"[^"]*HOMEHUB_LLAMA_RUNTIME', yml_text)
+    cpp_flag = re.search(
+        r'GCC_PREPROCESSOR_DEFINITIONS:\s*"[^"]*HOMEHUB_LLAMA_RUNTIME', yml_text)
+    if bool(swift_flag) != bool(cpp_flag):
+        errors.append(
+            "  HOMEHUB_LLAMA_RUNTIME is set on only one of "
+            "SWIFT_ACTIVE_COMPILATION_CONDITIONS / GCC_PREPROCESSOR_DEFINITIONS. "
+            "Both must be set together (or both unset) — otherwise the Swift "
+            "side and the C bridging header disagree on llama_* visibility."
+        )
+
+    bridging = repo_root / "HomeHub" / "Runtime" / "Bridge" / "HomeHub-Bridging-Header.h"
+    if bridging.exists():
+        bh = bridging.read_text()
+        # An unconditional `#include <llama.h>` is the historical bug.
+        unguarded = re.search(r'^\s*#include\s+<llama\.h>', bh, re.MULTILINE)
+        guarded = re.search(
+            r'#ifdef\s+HOMEHUB_LLAMA_RUNTIME[\s\S]+?#include\s+<llama\.h>[\s\S]+?#endif',
+            bh,
+        )
+        if unguarded and not guarded:
+            errors.append(
+                f"  {bridging.relative_to(repo_root)}: <llama.h> is included "
+                f"unconditionally. Wrap it in `#ifdef HOMEHUB_LLAMA_RUNTIME` so "
+                f"default builds compile without llama.xcframework."
+            )
+
+    # Every Swift file that calls llama_* must live inside `#if HOMEHUB_LLAMA_RUNTIME`.
+    for path in (repo_root / "HomeHub" / "Runtime").rglob("*.swift"):
+        try:
+            text = path.read_text()
+        except (UnicodeDecodeError, FileNotFoundError):
+            continue
+        if not re.search(r'\bllama_[a-z_]+\s*\(', text):
+            continue
+        if "#if HOMEHUB_LLAMA_RUNTIME" not in text:
+            errors.append(
+                f"  {path.relative_to(repo_root)} calls llama_* C symbols but "
+                f"is not wrapped in `#if HOMEHUB_LLAMA_RUNTIME`. Default "
+                f"builds will fail to find the symbols."
+            )
+
+    # And the test file equivalent.
+    test_path = repo_root / "HomeHubTests" / "LlamaRuntimeActorTests.swift"
+    if test_path.exists():
+        ttext = test_path.read_text()
+        if "#if HOMEHUB_LLAMA_RUNTIME" not in ttext:
+            errors.append(
+                f"  {test_path.relative_to(repo_root)} references LlamaRuntimeActor "
+                f"but is not gated by `#if HOMEHUB_LLAMA_RUNTIME`."
+            )
+
+    return errors
+
+
+def check_pbxproj_no_llama(repo_root: Path) -> list[str]:
+    """
+    The committed pbxproj must NOT reference llama.xcframework (broken on
+    fresh clones since the framework isn't committed) or HOMEHUB_REAL_RUNTIME
+    (the obsolete pre-MLX flag).
+    """
+    pbx_path = repo_root / "HomeHub.xcodeproj" / "project.pbxproj"
+    if not pbx_path.exists():
+        return []
+    text = pbx_path.read_text()
+    errors: list[str] = []
+    if "llama.xcframework" in text:
+        errors.append(
+            "  pbxproj still references llama.xcframework. Remove the "
+            "PBXBuildFile / PBXFileReference / Frameworks-phase entries — "
+            "fresh clones don't have the framework on disk and the build "
+            "fails before `xcodegen generate` can rebuild the project."
+        )
+    if "HOMEHUB_REAL_RUNTIME" in text:
+        errors.append(
+            "  pbxproj still references the obsolete HOMEHUB_REAL_RUNTIME "
+            "compile flag. The replacement is HOMEHUB_LLAMA_RUNTIME (opt-in)."
+        )
+    return errors
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -537,6 +635,22 @@ def main() -> int:
         fail = True
     else:
         green("Every third-party `import` has a matching `product:` declaration")
+
+    print("--- HOMEHUB_LLAMA_RUNTIME flag is internally consistent ---")
+    errs = check_llama_flag_consistency(repo_root)
+    if errs:
+        for e in errs: red(e)
+        fail = True
+    else:
+        green("Bridging header + Swift sources + project.yml all agree on the llama flag")
+
+    print("--- pbxproj is free of llama.xcframework / HOMEHUB_REAL_RUNTIME ---")
+    errs = check_pbxproj_no_llama(repo_root)
+    if errs:
+        for e in errs: red(e)
+        fail = True
+    else:
+        green("pbxproj has no stale llama.xcframework / HOMEHUB_REAL_RUNTIME references")
 
     print()
     if fail:

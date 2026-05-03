@@ -368,13 +368,12 @@ final class AppContainer: ObservableObject {
 
     // MARK: - Factories
 
-    /// Production wiring. Uses `FileStore` for persistence and `LlamaCppRuntime`
-    /// as the real llama.cpp C++ backend.
+    /// Production wiring. Uses `FileStore` for persistence and `MLXRuntime`
+    /// as the primary backend. `LlamaCppRuntime` is only constructed when the
+    /// build opts in to llama.cpp via `HOMEHUB_LLAMA_RUNTIME` (default: off).
     static let shared = AppContainer.live()
 
     static func live() -> AppContainer {
-        let llama = LlamaCppRuntime()
-        
         let mlx: MLXRuntime
         if ProcessInfo.processInfo.arguments.contains("--use-fake-mlx-loader") {
             let fake = FakeMLXLoader()
@@ -392,8 +391,13 @@ final class AppContainer: ObservableObject {
         } else {
             mlx = MLXRuntime()
         }
-        
+
+        #if HOMEHUB_LLAMA_RUNTIME
+        let llama = LlamaCppRuntime()
         let runtime: any LocalLLMRuntime = RoutingRuntime(llamaCpp: llama, mlx: mlx)
+        #else
+        let runtime: any LocalLLMRuntime = RoutingRuntime(mlx: mlx)
+        #endif
 
         let store: any Store
         #if HOMEHUB_SWIFTDATA
