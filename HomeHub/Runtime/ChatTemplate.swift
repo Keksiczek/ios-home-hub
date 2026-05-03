@@ -10,9 +10,11 @@ import Foundation
 /// | `"Gemma2"` | Gemma 2 `<start_of_turn>`     | Gemma 2 2B / 9B (no sys role) |
 /// | anything else | ChatML `<\|im_start\|>`    | Qwen 2.x, Phi 3.x             |
 ///
-/// `family` comes from `LocalModel.family` and is passed by `LlamaCppRuntime`
-/// at generation time. An empty string falls through to ChatML so the mock
-/// runtime and tests work without changes.
+/// `family` comes from `LocalModel.family`. `LlamaCppRuntime` consumes the
+/// rendered text directly; `MLXRuntime` lets `MLXLLM.ChatSession` apply the
+/// model's stored Jinja chat template instead and only falls back to this
+/// when the template is missing. An empty `family` value falls through to
+/// ChatML so the mock runtime and tests work without changes.
 enum ChatTemplate {
 
     static func render(_ prompt: RuntimePrompt, family: String = "") -> String {

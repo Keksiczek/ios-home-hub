@@ -28,7 +28,8 @@ final class RuntimeManager: ObservableObject {
     /// first, then re-evaluates state before deciding whether to proceed.
     /// Prevents interleaved load() calls from multiple sites (bootstrap,
     /// scene-phase events, widget intents, catalog install callbacks) from
-    /// issuing concurrent `llama_model_load_from_file` requests.
+    /// issuing concurrent loader requests against either backend
+    /// (`MLXLMCommon.loadModelContainer` or `llama_model_load_from_file`).
     private var loadTask: Task<Void, Never>?
 
     /// Structured telemetry channel for the active runtime.

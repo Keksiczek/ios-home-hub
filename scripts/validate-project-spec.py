@@ -544,11 +544,20 @@ def check_catalog_mlx_first(repo_root: Path) -> list[str]:
     text = catalog_path.read_text()
     errors: list[str] = []
 
-    if "backend: .mlx" not in text:
+    mlx_count = len(re.findall(r'backend:\s*\.mlx', text))
+    if mlx_count == 0:
         errors.append(
             "  ModelCatalogService.swift contains no `backend: .mlx` entry. "
             "MLX is the primary runtime — the curated catalog must ship at "
             "least one MLX model so onboarding has a working default."
+        )
+    elif mlx_count < 2:
+        # One entry = no fallback if it goes 404 / changes name / gets gated
+        # by HF. Defending the catalog against single-source-of-truth fragility.
+        errors.append(
+            f"  ModelCatalogService.swift only has {mlx_count} MLX entry. "
+            f"Ship at least 2 so onboarding has a fallback if the primary "
+            f"goes 404 or is renamed upstream."
         )
 
     # `recommendedStarter` must look up an MLX entry before falling back —

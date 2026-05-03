@@ -1,9 +1,12 @@
 import Foundation
 
 /// Stripping of chat-template control tokens that sometimes leak past the
-/// runtime's `llama_token_is_control` filter (for example when a small
-/// model emits the token's *text form* — `<start_of_turn>` — rather than
-/// the actual control-token ID).
+/// runtime's tokenizer-level control filter (for example when a small model
+/// emits the token's *text form* — `<start_of_turn>` — rather than the
+/// actual control-token ID). Affects both backends: MLX (via the
+/// `swift-transformers` tokenizer bridge) and llama.cpp (via
+/// `llama_token_is_control`) leak the same surface forms when the model
+/// is undertrained on the chat template.
 ///
 /// Scope is deliberately narrow:
 ///   * It only removes well-known envelope markers from Gemma / Llama /
@@ -70,9 +73,10 @@ enum ChatTextSanitizer {
         // Drop the U+FFFD replacement character. It only ever appears when
         // the tokenizer emitted a multi-byte UTF-8 sequence split across two
         // pieces, and showing a black-diamond `?` to the user is worse than
-        // dropping it. The streaming path in LlamaContextHandle now buffers
-        // partial bytes (FIX in this branch), but historical messages and
-        // any future regression in that buffer surface here as a safety net.
+        // dropping it. Both runtimes (MLX via the swift-transformers
+        // tokenizer bridge, llama.cpp via the LlamaContextHandle byte
+        // buffer) try to recover, but historical messages and any future
+        // regression in either buffer surface here as a safety net.
         cleaned = cleaned.replacingOccurrences(of: "\u{FFFD}", with: "")
 
         // Drop NULs and other C0 control characters except tab/newline.

@@ -565,7 +565,10 @@ struct DeveloperDiagnosticsView: View {
                 installed: installCounts.installed,
                 downloading: installCounts.downloading,
                 failed: installCounts.failed,
-                userAdded: catalog.models.filter(\.isUserAdded).count
+                userAdded: catalog.models.filter(\.isUserAdded).count,
+                mlxModels: catalog.models.filter { $0.backend == .mlx }.count,
+                ggufModels: catalog.models.filter { $0.backend == .llamaCpp }.count,
+                usableInThisBuild: catalog.usableModels.count
             ),
             lastBudget: budget,
             recentTelemetry: telemetryLog

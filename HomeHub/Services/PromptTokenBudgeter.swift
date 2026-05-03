@@ -22,9 +22,11 @@ protocol TokenEstimating: Sendable {
 /// Replaces the old `chars * 0.35` heuristic (which under-counted code,
 /// JSON, and non-Latin text by 2–3x) with a Unicode-scalar bucket model.
 /// Each scalar contributes a tokens-per-character weight based on the
-/// script and character class it belongs to. The weights are calibrated
-/// against empirical counts from the llama.cpp BPE tokenizer family for
-/// typical conversational English, code, JSON, CJK, and emoji inputs.
+/// script and character class it belongs to. Weights are calibrated
+/// against empirical counts from the BPE tokenizer family shared by Llama
+/// 3 / Phi / Qwen / Gemma — the same vocabulary both MLX and llama.cpp
+/// load — for typical conversational English, code, JSON, CJK, and emoji
+/// inputs.
 ///
 /// ## Accuracy
 /// On internal fixtures the heuristic is within ±15% of the true token
@@ -33,7 +35,8 @@ protocol TokenEstimating: Sendable {
 /// guard — we'd rather trim slightly too much than overflow the context).
 ///
 /// ## Why not call the real tokenizer?
-/// `llama_tokenize` is fast but requires an actively-loaded context.
+/// Both backend tokenizers (MLX's `Tokenizers.encode`, llama.cpp's
+/// `llama_tokenize`) are fast but require an actively-loaded context.
 /// Prompt assembly needs to estimate tokens before the context is built,
 /// runs on the main actor during UI updates, and must return synchronously
 /// for every assembled prompt — calling into C++ synchronously from the

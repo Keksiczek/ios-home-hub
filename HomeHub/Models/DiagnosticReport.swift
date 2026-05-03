@@ -97,6 +97,15 @@ struct DiagnosticReport: Codable, Equatable {
         let downloading: Int
         let failed: Int
         let userAdded: Int
+        /// Total catalog entries with `backend == .mlx`.
+        let mlxModels: Int
+        /// Total catalog entries with `backend == .llamaCpp`.
+        let ggufModels: Int
+        /// How many entries the current build can actually load. On
+        /// MLX-only builds this equals `mlxModels`; on opt-in builds it's
+        /// `mlxModels + ggufModels`. Lets bug-report readers see at a
+        /// glance whether the user is in a degraded catalog state.
+        let usableInThisBuild: Int
     }
 
     struct Budget: Codable, Equatable {

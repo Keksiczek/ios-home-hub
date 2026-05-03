@@ -3,7 +3,8 @@ import Foundation
 // MARK: - StreamCacheBox
 
 /// Mutable box used to pass the final prompt-token array out of the
-/// detached Task inside `LlamaContextHandle.stream()`.
+/// detached Task inside `LlamaContextHandle.stream()` (llama.cpp path
+/// only — MLX manages its own session state).
 ///
 /// The generation Task writes `finalPromptTokens` on every completion
 /// path (normal finish, EOS, stop-sequence, cancellation, error) just
@@ -23,14 +24,20 @@ final class StreamCacheBox: @unchecked Sendable {
 
 // MARK: - ConversationRuntimeSession
 
-/// Records the token sequence that is currently resident in the KV cache
+/// Records the token sequence currently resident in the llama.cpp KV cache
 /// for a single conversation.
 ///
-/// When the next generation starts for the same conversation, the runtime
-/// computes the longest common prefix between `cachedPromptTokens` and the
-/// new prompt tokens. If the prefix covers more than `minReuseRatio` of the
-/// new prompt, `llama_kv_cache_clear` is skipped and prompt evaluation
-/// begins at `prefixLen` — reusing the already-decoded prefix for free.
+/// **Backend scope**: this type is consumed only by the opt-in
+/// `LlamaCppRuntime` / `LlamaRuntimeActor`. The MLX backend uses
+/// `MLXLLM.ChatSession` for the same job — session reuse there happens at
+/// the `ChatSession` level inside `MLXRuntime` rather than via this struct.
+///
+/// When the next generation starts for the same conversation, the llama
+/// runtime computes the longest common prefix between `cachedPromptTokens`
+/// and the new prompt tokens. If the prefix covers more than
+/// `minReuseRatio` of the new prompt, `llama_kv_cache_clear` is skipped and
+/// prompt evaluation begins at `prefixLen` — reusing the already-decoded
+/// prefix for free.
 ///
 /// ## Lifecycle
 /// - Created / updated in `LlamaCppRuntime.generate()` after each stream.

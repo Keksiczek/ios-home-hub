@@ -135,8 +135,10 @@ final class ConversationService: ObservableObject {
             return
         }
 
-        // Another conversation is streaming — llama.cpp allows only one
-        // concurrent generation.  Show a cross-conversation hint.
+        // Another conversation is streaming — both backends serialise
+        // generation per loaded model (MLX via the runtime's `isGenerating`
+        // flag, llama.cpp via the C++ context's single-context invariant).
+        // Show a cross-conversation hint.
         if !activeStreams.isEmpty {
             showSendFeedback("Model je zaneprázdněn jiným rozhovorem", for: conversationID)
             return
@@ -351,7 +353,7 @@ final class ConversationService: ObservableObject {
 
     /// Returns the appropriate stop sequences for the currently loaded model.
     /// These are checked at the text level in addition to the EOS token check
-    /// inside llama.cpp, providing double-stop protection for models that use
+    /// inside the active runtime, providing double-stop protection for models that use
     /// a turn-ending token distinct from their vocabulary EOS.
     private func stopSequences(for model: LocalModel?) -> [String] {
         switch model?.family.lowercased() {
