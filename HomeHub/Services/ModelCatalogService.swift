@@ -31,23 +31,35 @@ final class ModelCatalogService: ObservableObject {
     }
 
     var recommendedStarter: LocalModel {
-        // MLX is the default runtime — pick an MLX entry first, fall back to
-        // any installed model, then to whatever the catalog ships first.
-        // The previous default (Gemma 3 4B GGUF) only runs when the optional
-        // HOMEHUB_LLAMA_RUNTIME flag is enabled, which isn't true on a
-        // fresh checkout.
-        models.first(where: { $0.id == "mlx-llama-3.2-3b-it" })
-            ?? models.first(where: { $0.format == .mlx })
-            ?? models[0]
+        // Selection priority (each tier matches the previous tier's intent
+        // with a more permissive filter, so an upstream rename / missing ID
+        // can't strand onboarding on a non-MLX entry):
+        //   1. MLX + iPhone-safe + usable in this build
+        //   2. Any MLX + usable
+        //   3. Any usable model
+        //   4. Hard fallback: catalog[0] (only reached if the catalog has
+        //      no usable model at all — guarded against by the ≥ 2 MLX
+        //      entries validator check, which runs on every PR).
+        if let m = models.first(where: {
+            $0.backend == .mlx
+                && $0.recommendedFor.contains(.iPhone)
+                && $0.isUsableInThisBuild
+        }) { return m }
+        if let m = models.first(where: { $0.backend == .mlx && $0.isUsableInThisBuild }) { return m }
+        if let m = models.first(where: \.isUsableInThisBuild) { return m }
+        return models[0]
     }
 
-    /// Smallest iPhone-safe model for smoke-testing a real-runtime device build.
-    /// Prefers an MLX entry (always loadable on default builds); falls back to
-    /// the smallest GGUF when only llama.cpp models are present.
+    /// Smallest iPhone-safe MLX model for smoke-testing the default runtime.
+    /// Falls back through the same priority ladder as `recommendedStarter`.
     var iPhoneSmokeTestModel: LocalModel {
-        models.first(where: { $0.format == .mlx && $0.recommendedFor.contains(.iPhone) })
-            ?? models.first(where: { $0.id == "gemma-2-2b-it-q4_k_m" })
-            ?? models[0]
+        if let m = models.first(where: {
+            $0.backend == .mlx
+                && $0.recommendedFor.contains(.iPhone)
+                && $0.isUsableInThisBuild
+        }) { return m }
+        if let m = models.first(where: { $0.backend == .mlx && $0.isUsableInThisBuild }) { return m }
+        return recommendedStarter
     }
 
     /// Returns `true` when `model` is recommended for iPad M-series only

@@ -35,6 +35,7 @@ struct DeveloperDiagnosticsView: View {
         List {
             runtimeSection
             buildSection
+            catalogSection
             activeModelSection
             deviceEventsSection
             generationPerformanceSection
@@ -88,6 +89,31 @@ struct DeveloperDiagnosticsView: View {
             }
         } header: {
             Text("Build Configuration")
+        }
+    }
+
+    // MARK: - Catalog
+
+    private var catalogSection: some View {
+        let mlx = catalog.models.filter { $0.backend == .mlx }.count
+        let gguf = catalog.models.filter { $0.backend == .llamaCpp }.count
+        let usable = catalog.usableModels.count
+        let userAdded = catalog.models.filter(\.isUserAdded).count
+
+        return Section {
+            LabeledContent("MLX entries", value: "\(mlx)")
+            LabeledContent("GGUF entries", value: "\(gguf)")
+            LabeledContent("Usable in this build", value: "\(usable) / \(catalog.models.count)")
+            if userAdded > 0 {
+                LabeledContent("User-added", value: "\(userAdded)")
+            }
+            if usable < catalog.models.count {
+                Text("\(catalog.models.count - usable) entries gated by missing build flag — see \"Available backends\" above.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        } header: {
+            Text("Catalog")
         }
     }
 

@@ -126,4 +126,56 @@ final class ModelCatalogMLXFirstTests: XCTestCase {
         XCTAssertTrue(description.contains("HOMEHUB_LLAMA_RUNTIME"))
         XCTAssertTrue(description.contains("llama.xcframework"))
     }
+
+    // MARK: - usableModels / unusableModels accessors
+
+    func testUsableModelsContainsEveryMLXEntry() {
+        let mlx = catalog.models.filter { $0.backend == .mlx }
+        for m in mlx {
+            XCTAssertTrue(
+                catalog.usableModels.contains(where: { $0.id == m.id }),
+                "MLX model \(m.id) must appear in usableModels — MLX is always linked."
+            )
+        }
+    }
+
+    func testUsableAndUnusableArePartitioned() {
+        let usable = Set(catalog.usableModels.map(\.id))
+        let unusable = Set(catalog.unusableModels.map(\.id))
+        XCTAssertTrue(usable.isDisjoint(with: unusable),
+                      "A model cannot be both usable and unusable simultaneously")
+        XCTAssertEqual(
+            usable.union(unusable).count,
+            catalog.models.count,
+            "usableModels ∪ unusableModels must cover the entire catalog"
+        )
+    }
+
+    func testUsableModelsIsNeverEmpty() {
+        XCTAssertFalse(
+            catalog.usableModels.isEmpty,
+            "Default build must have at least one usable model — otherwise " +
+            "first-run onboarding lands the user in an empty picker."
+        )
+    }
+
+    // MARK: - recommendedStarter defensive fallback ladder
+
+    func testRecommendedStarterIsAlwaysUsable() {
+        // The fallback ladder must never leak a model the build can't load.
+        XCTAssertTrue(catalog.recommendedStarter.isUsableInThisBuild)
+    }
+
+    func testRecommendedStarterPrefersIPhoneSafeMLX() {
+        // The first tier of the priority ladder must always win when the
+        // catalog has at least one iPhone-safe MLX entry (which the
+        // validator enforces).
+        let starter = catalog.recommendedStarter
+        XCTAssertEqual(starter.backend, .mlx)
+        XCTAssertTrue(
+            starter.recommendedFor.contains(.iPhone),
+            "recommendedStarter should prefer iPhone-safe entries when " +
+            "available — got \(starter.id) which is iPad-only."
+        )
+    }
 }

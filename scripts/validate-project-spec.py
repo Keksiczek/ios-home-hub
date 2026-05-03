@@ -560,6 +560,29 @@ def check_catalog_mlx_first(repo_root: Path) -> list[str]:
             f"goes 404 or is renamed upstream."
         )
 
+    # At least one MLX entry must be tagged iPhone-safe — otherwise
+    # `recommendedStarter` falls through its iPhone-preferred filter on
+    # every iPhone install. Heuristic: scan for `backend: .mlx,...format: .mlx`
+    # blocks and check the preceding 20 lines (where `recommendedFor` lives)
+    # for `.iPhone`.
+    mlx_iphone_safe = 0
+    for match in re.finditer(r'backend:\s*\.mlx,\s*format:\s*\.mlx', text):
+        # Look at the LocalModel block preceding this match. We grab the
+        # nearest `LocalModel(` opener and take the slice between them.
+        lookbehind = text[:match.start()]
+        last_open = lookbehind.rfind("LocalModel(")
+        if last_open == -1:
+            continue
+        block = text[last_open:match.start()]
+        if re.search(r'recommendedFor:\s*\[[^\]]*\.iPhone', block):
+            mlx_iphone_safe += 1
+    if mlx_count > 0 and mlx_iphone_safe == 0:
+        errors.append(
+            "  Curated catalog has MLX entries but none are tagged "
+            "`.iPhone` in `recommendedFor:`. iPhone users will fall through "
+            "the recommendedStarter / iPhoneSmokeTestModel filters."
+        )
+
     # `recommendedStarter` must look up an MLX entry before falling back —
     # we accept either an explicit `mlx-*` ID lookup or a `format == .mlx` /
     # `backend == .mlx` filter as the primary candidate.
