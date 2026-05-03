@@ -1,0 +1,28 @@
+# Lightweight guardrail: runs the project.yml validator on every push/PR.
+#
+# This runs on Linux because none of the cross-source-of-truth checks need
+# Xcode — they parse project.yml, Package.swift, project.pbxproj and
+# Package.resolved as text. The build itself still happens locally on macOS
+# (XcodeGen + Xcode); this job only catches the silent-failure config bugs
+# that historically wasted hours of debugging.
+name: validate-project-spec
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install PyYAML
+        run: pip install pyyaml
+      - name: Validate project.yml + cross-source consistency
+        run: python3 scripts/validate-project-spec.py
+      - name: Smoke-check repository state
+        run: bash scripts/check-clean-build.sh

@@ -35,6 +35,7 @@ struct DeveloperDiagnosticsView: View {
         List {
             runtimeSection
             buildSection
+            catalogSection
             activeModelSection
             deviceEventsSection
             generationPerformanceSection
@@ -75,11 +76,44 @@ struct DeveloperDiagnosticsView: View {
     // MARK: - Build
 
     private var buildSection: some View {
-        Section("Build Configuration") {
-            LabeledContent("C++ Bridge", value: cppBridgeLabel)
+        Section {
+            LabeledContent("Primary runtime", value: "MLX")
+            LabeledContent("Available backends", value: RuntimeBackendAvailability.summary)
+            LabeledContent("Active runtime", value: runtime.runtime.identifier)
             LabeledContent("Download Mode", value: downloadModeLabel)
             LabeledContent("Device", value: deviceLabel)
+            if !RuntimeBackendAvailability.llamaCppAvailable {
+                Text("Pro načtení GGUF / llama.cpp modelu zapni HOMEHUB_LLAMA_RUNTIME a přidej llama.xcframework. Viz README → \"Optional: llama.cpp opt-in\".")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        } header: {
+            Text("Build Configuration")
+        }
+    }
 
+    // MARK: - Catalog
+
+    private var catalogSection: some View {
+        let mlx = catalog.models.filter { $0.backend == .mlx }.count
+        let gguf = catalog.models.filter { $0.backend == .llamaCpp }.count
+        let usable = catalog.usableModels.count
+        let userAdded = catalog.models.filter(\.isUserAdded).count
+
+        return Section {
+            LabeledContent("MLX entries", value: "\(mlx)")
+            LabeledContent("GGUF entries", value: "\(gguf)")
+            LabeledContent("Usable in this build", value: "\(usable) / \(catalog.models.count)")
+            if userAdded > 0 {
+                LabeledContent("User-added", value: "\(userAdded)")
+            }
+            if usable < catalog.models.count {
+                Text("\(catalog.models.count - usable) entries gated by missing build flag — see \"Available backends\" above.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        } header: {
+            Text("Catalog")
         }
     }
 
@@ -210,7 +244,7 @@ struct DeveloperDiagnosticsView: View {
                     Text("Scanning model files…").foregroundStyle(.secondary)
                 }
             } else if stubModelIDs.isEmpty {
-                Label("All installed files pass GGUF validation", systemImage: "checkmark.circle.fill")
+                Label("All installed GGUF files pass validation", systemImage: "checkmark.circle.fill")
                     .foregroundStyle(.green)
             } else {
                 ForEach(stubModelIDs, id: \.self) { id in
@@ -225,12 +259,14 @@ struct DeveloperDiagnosticsView: View {
                 }
             }
         } header: {
-            Text("File Integrity")
+            Text("GGUF File Integrity")
         } footer: {
             Text(
+                "Only GGUF / llama.cpp models are checked here — MLX models live in " +
+                "the Hugging Face cache and are validated by the MLX loader at load time. " +
                 "Valid GGUF files start with magic 0x47475546 and are ≥ 1 MB. " +
-                "Dev-mode stubs (\"STUB_MODEL\", 10 bytes) are flagged here and will " +
-                "be rejected by the runtime before they reach the C++ bridge."
+                "Dev-mode stubs (\"STUB_MODEL\", 10 bytes) are flagged here and will be " +
+                "rejected by the runtime before they reach the C++ bridge."
             )
         }
     }
@@ -375,7 +411,11 @@ struct DeveloperDiagnosticsView: View {
         }
     }
 
-    private var cppBridgeLabel: String { "llama.cpp" }
+    /// Single source: `RuntimeBackendAvailability.summary` so the
+    /// diagnostics report and the diagnostics screen agree.
+    private var cppBridgeLabel: String {
+        RuntimeBackendAvailability.summary
+    }
 
     private var downloadModeLabel: String { "URLSession background (real)" }
 
@@ -517,7 +557,8 @@ struct DeveloperDiagnosticsView: View {
             build: .init(
                 cppBridge: cppBridgeLabel,
                 downloadMode: downloadModeLabel,
-                realRuntimeFlag: realRuntimeFlag
+                realRuntimeFlag: realRuntimeFlag,
+                primaryBackend: ModelBackend.mlx.rawValue
             ),
             runtime: .init(
                 identifier: runtime.runtime.identifier,
@@ -550,7 +591,10 @@ struct DeveloperDiagnosticsView: View {
                 installed: installCounts.installed,
                 downloading: installCounts.downloading,
                 failed: installCounts.failed,
-                userAdded: catalog.models.filter(\.isUserAdded).count
+                userAdded: catalog.models.filter(\.isUserAdded).count,
+                mlxModels: catalog.models.filter { $0.backend == .mlx }.count,
+                ggufModels: catalog.models.filter { $0.backend == .llamaCpp }.count,
+                usableInThisBuild: catalog.usableModels.count
             ),
             lastBudget: budget,
             recentTelemetry: telemetryLog
@@ -577,8 +621,11 @@ struct DeveloperDiagnosticsView: View {
         #endif
     }
 
+    /// Whether the build was compiled with the optional llama.cpp runtime
+    /// linked in. The diagnostic field name stays as `realRuntimeFlag` for
+    /// JSON-export compatibility with older diagnostic dumps.
     private var realRuntimeFlag: Bool {
-        #if HOMEHUB_REAL_RUNTIME
+        #if HOMEHUB_LLAMA_RUNTIME
         return true
         #else
         return false

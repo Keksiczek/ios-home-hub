@@ -36,9 +36,17 @@ struct DiagnosticReport: Codable, Equatable {
     }
 
     struct Build: Codable, Equatable {
+        /// Stays in the report for backward-compat with bug reports filed
+        /// before MLX became the primary backend. Contains the same string
+        /// the diagnostics screen shows next to "Available backends".
         let cppBridge: String
         let downloadMode: String
+        /// True when this build was compiled with `HOMEHUB_LLAMA_RUNTIME=1`.
+        /// Field name kept for compat with the diagnostic-export schema.
         let realRuntimeFlag: Bool
+        /// Always "mlx" — the primary backend. Captured explicitly so report
+        /// readers don't have to infer it from the cppBridge label.
+        let primaryBackend: String
     }
 
     struct Runtime: Codable, Equatable {
@@ -89,6 +97,15 @@ struct DiagnosticReport: Codable, Equatable {
         let downloading: Int
         let failed: Int
         let userAdded: Int
+        /// Total catalog entries with `backend == .mlx`.
+        let mlxModels: Int
+        /// Total catalog entries with `backend == .llamaCpp`.
+        let ggufModels: Int
+        /// How many entries the current build can actually load. On
+        /// MLX-only builds this equals `mlxModels`; on opt-in builds it's
+        /// `mlxModels + ggufModels`. Lets bug-report readers see at a
+        /// glance whether the user is in a degraded catalog state.
+        let usableInThisBuild: Int
     }
 
     struct Budget: Codable, Equatable {

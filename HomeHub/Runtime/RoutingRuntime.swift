@@ -1,20 +1,25 @@
 import Foundation
 import os
 
-/// Dispatches calls to the appropriate backend based on model metadata.
+/// Dispatches calls to the appropriate backend based on `LocalModel.backend`.
 ///
-/// `RoutingRuntime` allows the app to support multiple inference engines
-/// (llama.cpp and MLX) without leaking backend-specific logic into
-/// the `RuntimeManager` or higher-level services.
+/// **Backend availability** is read from `RuntimeBackendAvailability` (the
+/// single source of truth) — UI-side gating goes through
+/// `LocalModel.isUsableInThisBuild`, runtime-side gating goes through this
+/// router. Loading a model whose backend isn't linked into the build throws
+/// `RuntimeError.backendUnavailable(...)` with a precise actionable message
+/// (built once in `RuntimeError`'s `errorDescription` so wording stays in
+/// one place).
 ///
-/// Thread-safety note: `activeBackend` is mutated only through `load()` and
+/// Thread-safety: `activeBackend` is mutated only through `load()` and
 /// `unload()`. In practice all callers go through `RuntimeManager` which is
-/// `@MainActor`, serialising access. A future migration to `actor` would make
-/// this invariant explicit.
+/// `@MainActor`, serialising access.
 final class RoutingRuntime: LocalLLMRuntime, @unchecked Sendable {
     let identifier = "router"
 
-    private let llamaCpp: LlamaCppRuntime
+    #if HOMEHUB_LLAMA_RUNTIME
+    private let llamaCpp: LlamaCppRuntime?
+    #endif
     private let mlx: MLXRuntime
 
     private let log = Logger(subsystem: "HomeHub", category: "RoutingRuntime")
@@ -27,10 +32,16 @@ final class RoutingRuntime: LocalLLMRuntime, @unchecked Sendable {
     /// Telemetry is aggregated from the currently active backend.
     var telemetry: RuntimeTelemetry { activeBackend?.telemetry ?? .noOp }
 
-    init(llamaCpp: LlamaCppRuntime, mlx: MLXRuntime) {
+    #if HOMEHUB_LLAMA_RUNTIME
+    init(llamaCpp: LlamaCppRuntime?, mlx: MLXRuntime) {
         self.llamaCpp = llamaCpp
         self.mlx = mlx
     }
+    #else
+    init(mlx: MLXRuntime) {
+        self.mlx = mlx
+    }
+    #endif
 
     // MARK: - Load
 
@@ -49,9 +60,41 @@ final class RoutingRuntime: LocalLLMRuntime, @unchecked Sendable {
         model: LocalModel,
         progressHandler: (@Sendable (MLXLoadPhase) -> Void)?
     ) async throws {
-        let targetBackend: any LocalLLMRuntime = switch model.backend {
-        case .llamaCpp: llamaCpp
-        case .mlx:      mlx
+        // Reject backends that aren't linked BEFORE doing any work. The
+        // wording is owned by `RuntimeError.backendUnavailable` so UI and
+        // CLI surfaces stay in sync.
+        guard RuntimeBackendAvailability.isAvailable(model.backend) else {
+            log.warning("RoutingRuntime: \(model.backend.rawValue) backend not linked into this build for '\(model.id, privacy: .public)'")
+            throw RuntimeError.backendUnavailable(
+                modelName: model.displayName,
+                backend: model.backend
+            )
+        }
+
+        let targetBackend: any LocalLLMRuntime
+        switch model.backend {
+        case .llamaCpp:
+            #if HOMEHUB_LLAMA_RUNTIME
+            // `RuntimeBackendAvailability.isAvailable` already returned true, but
+            // the property may legitimately be nil if the runtime was injected
+            // as such (e.g. a future flag that compiles llama in but skips
+            // wiring it). Treat that as backend unavailable too.
+            guard let llamaCpp else {
+                throw RuntimeError.backendUnavailable(
+                    modelName: model.displayName,
+                    backend: .llamaCpp
+                )
+            }
+            targetBackend = llamaCpp
+            #else
+            // Unreachable: `isAvailable(.llamaCpp)` is false in this branch.
+            throw RuntimeError.backendUnavailable(
+                modelName: model.displayName,
+                backend: .llamaCpp
+            )
+            #endif
+        case .mlx:
+            targetBackend = mlx
         }
 
         log.info("RoutingRuntime: Routing '\(model.id, privacy: .public)' to '\(targetBackend.identifier, privacy: .public)'")

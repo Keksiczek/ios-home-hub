@@ -278,6 +278,7 @@ private struct ModelRow: View {
                     HStack(spacing: 6) {
                         Text(model.displayName)
                             .font(HHTheme.headline)
+                        backendBadge
                         if showIPadOnlyWarning {
                             Image(systemName: "exclamationmark.triangle.fill")
                                 .foregroundStyle(HHTheme.warning)
@@ -317,6 +318,35 @@ private struct ModelRow: View {
         .padding(.vertical, 6)
     }
 
+    /// Compact "MLX" / "GGUF" pill so users see at a glance which runtime
+    /// each catalog row targets. The badge dims when the build can't load
+    /// the model (e.g. GGUF on the default MLX-only build) so the user can
+    /// scan the list and know which entries they can actually use.
+    private var backendBadge: some View {
+        Text(model.backend.displayName)
+            .font(.system(size: 10, weight: .semibold))
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(badgeBackground, in: Capsule())
+            .foregroundStyle(badgeForeground)
+    }
+
+    private var badgeForeground: Color {
+        guard model.isUsableInThisBuild else { return HHTheme.textSecondary }
+        switch model.backend {
+        case .mlx:      return HHTheme.accent
+        case .llamaCpp: return HHTheme.textSecondary
+        }
+    }
+
+    private var badgeBackground: Color {
+        guard model.isUsableInThisBuild else { return HHTheme.textSecondary.opacity(0.10) }
+        switch model.backend {
+        case .mlx:      return HHTheme.accent.opacity(0.15)
+        case .llamaCpp: return HHTheme.textSecondary.opacity(0.12)
+        }
+    }
+
     @ViewBuilder
     private var modelSubtitle: some View {
         if model.isUserAdded {
@@ -337,6 +367,22 @@ private struct ModelRow: View {
 
     @ViewBuilder
     private var stateControls: some View {
+        // Models targeting a backend not linked into this build can't be
+        // loaded — replace the action affordance with a single explanation
+        // row pointing at the opt-in flag. Avoids dead buttons that only
+        // throw at runtime.
+        if !model.isUsableInThisBuild, let reason = model.unavailableReason {
+            Label(reason, systemImage: "exclamationmark.triangle.fill")
+                .font(HHTheme.caption)
+                .foregroundStyle(HHTheme.warning)
+                .lineLimit(3)
+        } else {
+            stateControlsUsable
+        }
+    }
+
+    @ViewBuilder
+    private var stateControlsUsable: some View {
         switch model.installState {
         case .notInstalled:
             VStack(alignment: .leading, spacing: 6) {

@@ -1,3 +1,4 @@
+#if HOMEHUB_LLAMA_RUNTIME
 import Foundation
 import os
 
@@ -412,3 +413,5 @@ final class LlamaCppRuntime: LocalLLMRuntime, @unchecked Sendable {
         }
     }
 }
+
+#endif // HOMEHUB_LLAMA_RUNTIME

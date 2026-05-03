@@ -10,11 +10,18 @@ protocol MLXModelContainer: Sendable {
 
 extension ModelContainer: MLXModelContainer {}
 
-/// Narrow protocol for loading an MLX model container.
+/// Test seam for the MLX model loader.
 ///
-/// This exists as a test seam to allow deterministic mocking of the
-/// download/init flow in unit and UI tests without requiring real
-/// multi-GB Hub downloads.
+/// In production this delegates to `MLXLMCommon.loadModelContainer(...)` —
+/// the canonical mlx-swift-lm entry point. The shape of this protocol
+/// mirrors that function so swapping it for `LLMModelFactory.shared.loadContainer`
+/// in the future stays a one-line change without touching `MLXRuntime`.
+///
+/// The `Downloader` and `TokenizerLoader` parameters are deliberately
+/// surfaced rather than hidden inside the loader so production wiring
+/// (`HubApiDownloader` + `SwiftTransformersTokenizerLoader` from
+/// `HubIntegration.swift`) and test wiring (in-memory stubs) share the
+/// same call shape.
 protocol MLXLoader: Sendable {
     func load(
         configuration: ModelConfiguration,
@@ -24,7 +31,14 @@ protocol MLXLoader: Sendable {
     ) async throws -> any MLXModelContainer
 }
 
-/// Production implementation that delegates to the real `MLXLMCommon.loadModelContainer`.
+/// Production implementation. Forwards directly to
+/// `MLXLMCommon.loadModelContainer(from:using:configuration:progressHandler:)`,
+/// the canonical mlx-swift-lm loading entry point.
+///
+/// `LLMModelFactory.shared.loadContainer(...)` (newer high-level wrapper)
+/// is API-compatible if we ever want to skip the explicit `Downloader` /
+/// `TokenizerLoader` wiring; the protocol shape above keeps that swap
+/// localised to this file.
 struct DefaultMLXLoader: MLXLoader {
     func load(
         configuration: ModelConfiguration,

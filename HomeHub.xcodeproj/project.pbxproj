@@ -108,7 +108,6 @@
 		C3255CC2686294D3AC8EB739 /* NLExtractionPass.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DA90D3CD0DAC38466D0F263 /* NLExtractionPass.swift */; };
 		C43FB02E414CBE68FE08A857 /* ConversationRuntimeSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51C028E2DB46A4B748E32CD6 /* ConversationRuntimeSession.swift */; };
 		C6633DADFC6BA94699933F04 /* SettingsServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9A2FB892ABAEA13CD0192E5 /* SettingsServiceTests.swift */; };
-		C864CDAA02838A9A980BCFE1 /* llama.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 821D042E5A9F18FA92D70D78 /* llama.xcframework */; };
 		C8B8530776E744DF08F1F3F7 /* AssistantProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = 779985FABD01F582CB76B2E2 /* AssistantProfile.swift */; };
 		C9CD09F3CED06D9917FF448D /* Message.swift in Sources */ = {isa = PBXBuildFile; fileRef = 937BAB13A2AC3514A2853BB9 /* Message.swift */; };
 		CE53BB67DEEBB559A32D0B18 /* ModelInfoSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 57A5CB25A449448E1344C41E /* ModelInfoSheet.swift */; };
@@ -221,7 +220,6 @@
 		7CE7ACCAEAA5FA7A738615B8 /* MockLocalRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockLocalRuntime.swift; sourceTree = "<group>"; };
 		7DA90D3CD0DAC38466D0F263 /* NLExtractionPass.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NLExtractionPass.swift; sourceTree = "<group>"; };
 		7E0C0CBC0663CD6F3E7EB586 /* HomeKitSkill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeKitSkill.swift; sourceTree = "<group>"; };
-		821D042E5A9F18FA92D70D78 /* llama.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = llama.xcframework; path = ../llama.xcframework; sourceTree = "<group>"; };
 		82A2E4A3B6B3790456B2C1F0 /* SummarizationServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SummarizationServiceTests.swift; sourceTree = "<group>"; };
 		89062DD40E73F06FE2CA9AFB /* OnboardingAssistantStyleView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingAssistantStyleView.swift; sourceTree = "<group>"; };
 		8936EBEB9DCAC133B99EF26C /* LocalModelService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalModelService.swift; sourceTree = "<group>"; };
@@ -295,7 +293,6 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				C864CDAA02838A9A980BCFE1 /* llama.xcframework in Frameworks */,
 				43691E8F3A0F651687D363E1 /* Accelerate.framework in Frameworks */,
 				E7DFEB2BA217C10A46E3CABC /* Metal.framework in Frameworks */,
 				42F0C1BDC0EB2CDC75B343EE /* MetalKit.framework in Frameworks */,
@@ -461,7 +458,6 @@
 			children = (
 				C8D6D78591598C3E83666FE5 /* Accelerate.framework */,
 				7A2D80A24A64DE3E2D0ED5A6 /* CoreAudio.framework */,
-				821D042E5A9F18FA92D70D78 /* llama.xcframework */,
 				F132541FB9D4AD39CDE4323D /* Metal.framework */,
 				CB9C3117781F885F358A6691 /* MetalKit.framework */,
 				3E8AF33CB16297961CAE57F3 /* MetalPerformanceShaders.framework */,
@@ -942,18 +938,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = HomeHub/HomeHub.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				FRAMEWORK_SEARCH_PATHS = (
-					"$(inherited)",
-					"$(SRCROOT)/..",
-				);
-				GCC_PREPROCESSOR_DEFINITIONS = (
-					"$(inherited)",
-					"HOMEHUB_REAL_RUNTIME=1",
-				);
-				HEADER_SEARCH_PATHS = (
-					"$(inherited)",
-					"$(SRCROOT)/../llama.xcframework/ios-arm64/Headers",
-				);
+				GCC_PREPROCESSOR_DEFINITIONS = "$(inherited)";
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -966,13 +951,10 @@
 				);
 				NSMicrophoneUsageDescription = "Potřebujeme mikrofon pro možnost hlasové konverzace offline.";
 				NSSpeechRecognitionUsageDescription = "Nativní rozpoznávání hovoru pro diktování přes Apple infrastrukturu beze slov mimo zařízení.";
-				OTHER_LDFLAGS = (
-					"$(inherited)",
-					"-lc++",
-				);
+				OTHER_LDFLAGS = "$(inherited)";
 				PRODUCT_BUNDLE_IDENTIFIER = cz.keksiczek.homehub;
 				SDKROOT = iphoneos;
-				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) HOMEHUB_REAL_RUNTIME";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited)";
 				SWIFT_OBJC_BRIDGING_HEADER = "HomeHub/Runtime/Bridge/HomeHub-Bridging-Header.h";
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -1039,18 +1021,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = HomeHub/HomeHub.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				FRAMEWORK_SEARCH_PATHS = (
-					"$(inherited)",
-					"$(SRCROOT)/..",
-				);
-				GCC_PREPROCESSOR_DEFINITIONS = (
-					"$(inherited)",
-					"HOMEHUB_REAL_RUNTIME=1",
-				);
-				HEADER_SEARCH_PATHS = (
-					"$(inherited)",
-					"$(SRCROOT)/../llama.xcframework/ios-arm64/Headers",
-				);
+				GCC_PREPROCESSOR_DEFINITIONS = "$(inherited)";
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -1063,13 +1034,10 @@
 				);
 				NSMicrophoneUsageDescription = "Potřebujeme mikrofon pro možnost hlasové konverzace offline.";
 				NSSpeechRecognitionUsageDescription = "Nativní rozpoznávání hovoru pro diktování přes Apple infrastrukturu beze slov mimo zařízení.";
-				OTHER_LDFLAGS = (
-					"$(inherited)",
-					"-lc++",
-				);
+				OTHER_LDFLAGS = "$(inherited)";
 				PRODUCT_BUNDLE_IDENTIFIER = cz.keksiczek.homehub;
 				SDKROOT = iphoneos;
-				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) HOMEHUB_REAL_RUNTIME";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited)";
 				SWIFT_OBJC_BRIDGING_HEADER = "HomeHub/Runtime/Bridge/HomeHub-Bridging-Header.h";
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};

@@ -358,6 +358,11 @@ final class ModelDownloadService: ObservableObject {
             installState: .notInstalled,
             recommendedFor: [.iPhone, .iPadMSeries],
             license: "Unknown",
+            // The "Add from URL" flow only accepts direct .gguf links —
+            // see `validateModelURL`. Mark explicitly so the new MLX-default
+            // doesn't accidentally route a GGUF URL into the MLX backend.
+            backend: .llamaCpp,
+            format: .gguf,
             isUserAdded: true
         )
 

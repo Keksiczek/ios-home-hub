@@ -29,14 +29,15 @@ across restarts.
 
 ### What's mock / limited
 
-- **LlamaContextHandle** — the C++ bridge (`load`, `stream`, `close`) is fully
-  implemented behind `#if HOMEHUB_REAL_RUNTIME`. When the flag is not set the
-  app uses `MockLocalRuntime` which streams canned responses without touching
-  any model file. Set `HOMEHUB_REAL_RUNTIME` and link the xcframework to use
-  real inference.
-- **Model downloads** — real `URLSession` implementation behind
-  `HOMEHUB_REAL_RUNTIME`: Wi-Fi-only, resume data on interruption, SHA-256
-  verification. Development builds use a simulated progress loop.
+- **MLX runtime** — the primary path; always linked and used by default.
+  `MLXRuntime` loads model containers via `MLXLMCommon.loadModelContainer`,
+  with `swift-transformers` providing the tokenizer bridge.
+- **LlamaCppRuntime** — secondary; only compiled when the build opts in
+  via `HOMEHUB_LLAMA_RUNTIME` AND ships with `llama.xcframework`. Without
+  the flag, the C++ bridge files compile to empty translation units and
+  the runtime is not constructed.
+- **MockLocalRuntime** — used by SwiftUI previews and unit tests. Streams
+  canned responses without touching any model file.
 - **Memory extraction** — structured extraction via the local model falls back
   to heuristic keyword triggers when using `MockLocalRuntime` (the mock
   doesn't produce valid JSON for extraction prompts).
@@ -64,9 +65,10 @@ Services (orchestration, side-effects)
 └──────────────┴─────────────┴─────────────┘
 ```
 
-- **Runtime abstraction**: `LocalLLMRuntime` protocol → `LlamaCppRuntime`
-  (production) or `MockLocalRuntime` (development). Selected at compile time
-  via the `HOMEHUB_REAL_RUNTIME` flag.
+- **Runtime abstraction**: `LocalLLMRuntime` protocol → `MLXRuntime`
+  (primary, always linked) or `LlamaCppRuntime` (opt-in via
+  `HOMEHUB_LLAMA_RUNTIME`). `RoutingRuntime` dispatches by
+  `LocalModel.backend`. `MockLocalRuntime` is used by previews and tests.
 - **Prompt assembly**: `PromptAssemblyService` builds layered system prompts:
   L0 (persona + user profile) → L1 (durable facts) → L2 (episodic context)
   → privacy guardrails.
@@ -109,9 +111,13 @@ HomeHubTests/         # 8 test files, 50+ test cases
 |------|---------|---------|
 | Xcode | 15.4+ | App Store |
 | xcodegen | any | `brew install xcodegen` |
-| llama.xcframework | built from llama.cpp | see below |
+| llama.xcframework | _OPTIONAL_ — only needed if you opt in to llama.cpp | see [Optional: llama.cpp opt-in](#optional-llamacpp-opt-in) |
 
-`llama.xcframework` must be placed as a **sibling of the repo root**:
+The default build is MLX-only and has no native binary dependencies — every
+package is resolved through SPM. `llama.xcframework` is OFF by default and
+only required if you flip `HOMEHUB_LLAMA_RUNTIME` on (see below).
+
+If you do opt in, place `llama.xcframework` as a **sibling of the repo root**:
 
 ```
 ~/Developer/          (or wherever you keep repos)
@@ -180,9 +186,11 @@ this sequence to avoid silent version mismatches:
 1. **Edit `project.yml`** — change the `from:` / `branch:` / `exactVersion:`
    under the relevant key in the `packages:` section.
 
-2. **Validate** — run `make validate` before doing anything else.  This catches
-   duplicate YAML keys and broken package references before XcodeGen silently
-   swallows them.
+2. **Validate** — run `make ci` before doing anything else.  This catches
+   duplicate YAML keys, broken package references, URL collisions, intra-target
+   dep duplicates, and version drift between `project.yml`, `Package.swift`,
+   `project.pbxproj`, and `Package.resolved` before XcodeGen silently swallows
+   them.
 
 3. **Regenerate** — run `make generate` to apply the change to `project.pbxproj`.
 
@@ -237,13 +245,172 @@ make test
 ### Smoke-checking portability
 
 ```bash
-make check   # greps for hardcoded paths, verifies key files exist
+make check   # validates project.yml + greps for hardcoded paths, verifies key files exist
+make ci      # same set of guardrails CI runs (no Xcode required)
 ```
 
-## Integrating the real llama.cpp runtime
+`make check` runs both layers:
 
-The app is designed so the real C++ inference engine can be plugged in
-with minimal changes.
+1. `scripts/validate-project-spec.py` — parses `project.yml`, `Package.swift`,
+   `project.pbxproj`, `Package.resolved` and cross-checks them. Catches:
+   duplicate YAML keys, duplicate package URLs, intra-target duplicate
+   dependencies, version drift between any two sources of truth, missing
+   `import` ↔ `product:` declarations.
+2. `scripts/check-clean-build.sh` — repository hygiene checks: hardcoded
+   `/Users/...` paths, missing required files, tracked `xcuserdata`/`.DS_Store`
+   leakage, missing shared schemes, dangling AppIcon references, hardcoded
+   `DEVELOPMENT_TEAM`.
+
+The same script runs in CI on every push (`.github/workflows/validate-spec.yml`)
+on Ubuntu — no Xcode needed.
+
+## Sources of truth (what is and isn't authoritative)
+
+| Artefact | Source of truth? | Edit by hand? | Regenerated by |
+|----------|-----------------|---------------|----------------|
+| `project.yml` | ✅ yes | ✅ yes | — |
+| `Package.swift` | ✅ yes (CI/`swift build` only) | ✅ yes | — |
+| `HomeHub.xcodeproj/project.pbxproj` | ❌ no | ❌ never | `xcodegen generate` |
+| `HomeHub.xcodeproj/xcshareddata/xcschemes/*.xcscheme` | ❌ no | ❌ never | `xcodegen generate` |
+| `Package.resolved` (root) | ❌ no | ❌ never | `xcodebuild -resolvePackageDependencies` then `make sync-resolved` |
+| `…/xcshareddata/swiftpm/Package.resolved` | ❌ no | ❌ never | Xcode (Package > Resolve Package Dependencies) |
+
+If `project.yml` and `Package.swift` ever disagree, fix `project.yml` first
+and mirror the change to `Package.swift`. The validator will tell you exactly
+which line drifted.
+
+## Clean checkout — sanity ladder
+
+If something goes wrong after a fresh clone or a tricky merge, work through
+these steps in order and stop at the first one that reproduces the issue:
+
+```bash
+git clone https://github.com/Keksiczek/ios-home-hub
+cd ios-home-hub
+
+# 1. Spec is structurally sound (works on Linux too — no Xcode required)
+make ci
+
+# 2. Sources of truth are in sync
+make generate                     # regenerates project.pbxproj from project.yml
+git diff --quiet HomeHub.xcodeproj/project.pbxproj || \
+  echo "pbxproj changed — commit the regeneration"
+
+# 3. Packages resolve against the committed lockfile
+make resolve
+
+# 4. App target compiles (needs llama.xcframework sibling and macOS+Xcode)
+make build
+```
+
+If `make ci` passes but `make build` fails, the root cause is almost always
+either (a) `llama.xcframework` is not placed as a sibling of the repo, or
+(b) Xcode's local SourcePackages cache is stale — see the table below.
+
+## Known failure modes — quick diagnosis
+
+| Symptom | Almost certainly caused by | Fix |
+|---------|---------------------------|-----|
+| `Unable to find module dependency: 'TensorUtils'` | A WhisperKit version older than 0.11.0 was resolved (often via a duplicate YAML key in `project.yml` that silently downgraded the pin). | `make validate` — it flags duplicate keys and version drift. Then re-pin to `from: 0.11.0` and `make sync-resolved`. |
+| `Missing package product 'Hub'` / `'Tokenizers'` | `swift-transformers` is being pulled transitively via mlx-swift-lm but project.yml/Package.swift doesn't declare it as a direct dependency. | Both files now declare it directly — make sure your `project.yml` has the `SwiftTransformers:` package and `product: Hub` / `product: Tokenizers` under the HomeHub target. |
+| `xcodebuild: error: The project ... does not contain a scheme named 'HomeHub'` | The committed shared scheme is missing. | Check `HomeHub.xcodeproj/xcshareddata/xcschemes/HomeHub.xcscheme` exists. If not, `make generate` will recreate it. |
+| `error: 'AppIcon' image asset is missing` warning on every build | `Assets.xcassets/AppIcon.appiconset/Contents.json` references a file that doesn't exist. | The set is intentionally empty in this repo. Drop a real 1024×1024 PNG into the appiconset and add `"filename": "<name>.png"` back to `Contents.json`. |
+| Local diff in `project.pbxproj` you didn't make | Either (a) you opened the project in Xcode without running `xcodegen generate` first, or (b) someone hand-edited it. | Run `make generate` to bring it back to canonical form, then commit. |
+| `xcodebuild: error: code signing failed: no team selected` | The repo intentionally ships without a `DEVELOPMENT_TEAM`. | Set your team in *Signing & Capabilities* in Xcode, or override `DEVELOPMENT_TEAM` via a local `.xcconfig` not committed to git. |
+| Diff includes `xcuserdata/` or `.DS_Store` | Someone re-added them after the cleanup. | `git rm --cached <path>`. Both are in `.gitignore` — they should never reappear. |
+| Package.resolved pins differ between the two locations | Manual edit / Xcode resolved against a different lockfile. | `make sync-resolved` then commit both. The smoke-test verifies SHA-256 identity. |
+| `'llama.h' file not found` | The bridging header tried to include `<llama.h>` but the framework isn't on the header search path. | Default builds should NOT include `<llama.h>` — the header is wrapped in `#ifdef HOMEHUB_LLAMA_RUNTIME`. If you see this, you set the Swift flag without setting the matching `GCC_PREPROCESSOR_DEFINITIONS` (or vice versa). `make ci` flags this. |
+| `Model 'X' is a GGUF / llama.cpp model, but this build ships with the MLX-only runtime` | You picked a GGUF catalog entry without opting in to llama.cpp. | Either pick an MLX entry (`backend: .mlx`) or follow the [llama.cpp opt-in](#optional-llamacpp-opt-in) procedure. |
+| `Undefined symbol: _llama_*` at link time | Swift sources call `llama_*` but the framework wasn't linked. | Same as above — the flag must be set on both sides. The bridging header AND the framework dep + search paths must be uncommented in `project.yml`. |
+
+### Diagnosing why a model didn't load (in-app)
+
+Open `Settings → Developer Diagnostics`. The **Build Configuration** section
+shows:
+- **Primary runtime** — always "MLX".
+- **Available backends** — the comma-separated list of linked backends
+  (e.g. `MLX-only (llama.cpp opt-in disabled)` or
+  `MLX (default) + llama.cpp opt-in`).
+- **Active runtime** — the identifier of whatever the app is currently
+  routing through (`router`, `mlx`, `llama.cpp`, or `mock`).
+
+If a load failed, the failure reason is shown directly under the runtime
+state with the same actionable copy as the error toast. For GGUF entries
+on an MLX-only build, this is always: *"…je GGUF / llama.cpp model. Tento
+build podporuje pouze MLX. Pro načtení zapni `HOMEHUB_LLAMA_RUNTIME` a
+přidej `llama.xcframework`. Viz README → Optional: llama.cpp opt-in."*
+
+## Runtime backends — MLX is primary, llama.cpp is opt-in
+
+**MLX is the primary on-device runtime.** It uses Apple's MLX framework
+(`mlx-swift` + `mlx-swift-lm`, resolved through SPM) and Metal compute
+shaders directly, with no native binary dependency. The default build runs
+out-of-the-box on a fresh clone — no `llama.xcframework` on disk, no
+opt-in flag, no manual steps. Onboarding selects an MLX model by default,
+the catalog ships MLX entries marked usable on iPhone, and runtime errors
+point users back to MLX paths first.
+
+`LlamaCppRuntime` is the **secondary, opt-in path** behind the
+`HOMEHUB_LLAMA_RUNTIME` compile flag. With the flag off (the default):
+- The bridging header skips `<llama.h>`.
+- `LlamaContextHandle` / `LlamaCppRuntime` / `LlamaRuntimeActor` Swift
+  sources compile to empty TUs via `#if HOMEHUB_LLAMA_RUNTIME`.
+- `RoutingRuntime` rejects `.llamaCpp` models with
+  `RuntimeError.backendUnavailable(...)` carrying actionable copy
+  ("requires HOMEHUB_LLAMA_RUNTIME and llama.xcframework").
+- The catalog still lists GGUF entries (so users see what the opt-in
+  unlocks), but every UI surface that could let them pick one — the
+  onboarding picker, the Models tab Load button, the Add-from-URL sheet —
+  shows a "needs opt-in" hint and gates the action.
+
+### Format / backend / build-support matrix
+
+| Model format | Runtime backend | Default build | `HOMEHUB_LLAMA_RUNTIME` build | Where it comes from |
+|--------------|-----------------|---------------|--------------------------------|---------------------|
+| **MLX** | `MLXRuntime` | ✅ Loads + runs | ✅ Loads + runs | `mlx-community/*` repos on Hugging Face |
+| **GGUF** | `LlamaCppRuntime` | ⛔ Visible in catalog with "Requires opt-in" hint; load is gated | ✅ Loads + runs (needs `llama.xcframework`) | `bartowski/*` and similar GGUF repos |
+| **User-added (Add from URL)** | Always `LlamaCppRuntime` (`.gguf` only) | ⛔ Sheet shows a notice that imports won't load | ✅ Imported and loadable | Direct `.gguf` URL pasted by the user |
+
+**Single source of truth.** UI gating queries
+`RuntimeBackendAvailability.isAvailable(_:)` (in `LocalModel.swift`) via
+the convenience accessor `LocalModel.isUsableInThisBuild`. Runtime gating
+goes through `RoutingRuntime`. Both produce identical wording so the
+diagnostics screen, error toasts, and onboarding hints stay in lockstep.
+
+### What works out of the box
+
+On a clean MLX-default checkout you can:
+
+- ✅ Open the app and run onboarding without touching any flags.
+- ✅ Pick the recommended starter (an MLX model marked iPhone-safe).
+- ✅ Download / load / chat / unload, with progress reported from the Hub
+  downloader and Metal compile phases.
+- ✅ See in `Settings → Developer Diagnostics` exactly which backends are
+  linked into the build and what the active runtime is.
+
+What you can't do without opting in to llama.cpp:
+
+- ❌ Load curated GGUF entries (visible but gated with a clear hint).
+- ❌ Import GGUF files via "Add from URL" (sheet shows a notice; the
+  download still works for completeness, but loading throws
+  `RuntimeError.backendUnavailable`).
+
+### Optional: llama.cpp opt-in
+
+Re-enabling llama.cpp is a one-time, three-step procedure:
+
+1. **Build `llama.xcframework`** (see [the build script below](#1-build-the-xcframework)) and place it as a sibling of the repo root.
+2. **Edit `project.yml`** — uncomment every block tagged `[llama.cpp opt-in]`:
+   - The `framework: ../llama.xcframework` dependency and its five system frameworks.
+   - `FRAMEWORK_SEARCH_PATHS`, `HEADER_SEARCH_PATHS`, `OTHER_LDFLAGS`.
+   - `SWIFT_ACTIVE_COMPILATION_CONDITIONS` and `GCC_PREPROCESSOR_DEFINITIONS` (both must be set together — the validator fails the build if only one is set).
+3. **Run `make generate`** to regenerate the pbxproj, then `make ci` to verify the bridging header, Swift sources and project.yml all agree.
+
+`make ci` will fail-fast if you set the flag in only one place — it cross-checks `project.yml`, the bridging header, every llama Swift source and the test file.
+
+### Building the xcframework
+
+Only relevant if you opted in above.
 
 ### 1. Build the xcframework
 
@@ -268,20 +435,23 @@ cmake --build build-ios --config Release
 ### 2. Place the xcframework
 
 Put the built `llama.xcframework` **one directory above the repo root**
-(sibling layout described in the prerequisites above).  `project.yml`
-references it as `../llama.xcframework` relative to the project file —
-this is already wired; no drag-and-drop needed.
+(sibling layout described in the prerequisites above). `project.yml`
+references it as `../llama.xcframework` relative to the project file
+once you uncomment the `[llama.cpp opt-in]` blocks.
 
-### 3. Enable the real runtime
+### 3. Enable the runtime
 
-`HOMEHUB_REAL_RUNTIME` is set by default in `project.yml`
-(`SWIFT_ACTIVE_COMPILATION_CONDITIONS`).  No manual toggle needed.
+Uncomment every block tagged `[llama.cpp opt-in]` in `project.yml`:
+the framework dependency, the framework / header search paths, and the
+compile flag pair (`SWIFT_ACTIVE_COMPILATION_CONDITIONS` AND
+`GCC_PREPROCESSOR_DEFINITIONS`). Run `make generate` to regenerate the
+pbxproj, then `make ci` — the validator confirms the bridging header,
+Swift sources and project.yml all agree on the flag.
 
 ### 4. Verify download URLs
 
-The download URLs in `ModelCatalogService.swift` already point to real
-Hugging Face GGUF endpoints. The real `URLSession` implementation (behind
-`HOMEHUB_REAL_RUNTIME`) handles:
+The download URLs in `ModelCatalogService.swift` point to real Hugging
+Face GGUF endpoints. The `URLSession` implementation handles:
 - **Wi-Fi-only** via `allowsCellularAccess = false`
 - **Resume on interruption** — resume data stored in UserDefaults, picked up
   automatically when the user retries a failed download

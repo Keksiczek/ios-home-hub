@@ -29,7 +29,11 @@ struct ModelCapabilityProfile: Sendable, Equatable {
     /// Canonical lowercase family name (e.g. `"llama"`, `"phi"`, `"qwen"`).
     let family: String
 
-    // MARK: - llama.cpp parameters (consumed by LlamaContextHandle)
+    // MARK: - llama.cpp parameters (consumed by LlamaContextHandle only)
+    //
+    // The MLX backend ignores everything in this section — `MLXLLM.ChatSession`
+    // owns its own attention / batch / KV-cache settings. Kept here so the
+    // opt-in llama.cpp path stays a one-flag flip without per-family rework.
 
     /// Whether flash attention is safe for this family.
     ///
@@ -71,7 +75,8 @@ struct ModelCapabilityProfile: Sendable, Equatable {
     /// tokens accumulate in long conversations and must be accounted for
     /// to avoid underestimating prompt size.
     ///
-    /// Calibrated values per family (approximate, measured on llama.cpp):
+    /// Calibrated values per family (approximate, measured against the
+    /// shared BPE tokenizer vocabulary used by both runtimes):
     /// - llama: 7  — `<|start_header_id|>role<|end_header_id|>\n\n…<|eot_id|>`
     /// - qwen:  5  — `<|im_start|>role\n…<|im_end|>\n`
     /// - mistral: 6 — `[INST] … [/INST]` (instruction variant)
