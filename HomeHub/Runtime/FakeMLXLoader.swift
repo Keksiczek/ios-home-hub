@@ -63,13 +63,24 @@ final class FakeMLXLoader: MLXLoader, @unchecked Sendable {
     }
 }
 
-/// A mock MLX container that does nothing but satisfies the protocol.
+/// A mock MLX container that satisfies the protocol shape but cannot
+/// run inference. It exists so progress / lifecycle tests can drive the
+/// load → unload state machine without spinning up Metal.
+///
+/// `perform(_:)` traps on purpose: the only way to reach it is via
+/// `MLXRuntime.generate(...)` against a fake-loaded model, which is a
+/// programming error in the test setup — production code never wires
+/// `FakeMLXLoader` outside the `--use-fake-mlx-loader` argument path.
+/// The trap message is chosen to make that obvious in the failure log.
 final class MockMLXModelContainer: MLXModelContainer, @unchecked Sendable {
     func perform<R: Sendable>(
         _ action: @Sendable (ModelContext) async throws -> sending R
     ) async rethrows -> sending R {
-        // This will crash if we actually try to use the context.
-        // For progress/lifecycle tests we shouldn't reach here.
-        fatalError("MockMLXModelContainer.perform not implemented. Use for lifecycle tests only.")
+        fatalError(
+            "MockMLXModelContainer.perform was invoked. This container is for " +
+            "load/unload lifecycle tests only — driving `MLXRuntime.generate` " +
+            "against it indicates the test wired the fake loader into a code " +
+            "path that requires a real Metal-backed container."
+        )
     }
 }

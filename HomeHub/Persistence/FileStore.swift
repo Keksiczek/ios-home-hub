@@ -14,20 +14,15 @@ actor FileStore: Store {
 
     init() {
         let fileManager = FileManager.default
-        // `URL.applicationSupportDirectory` is non-failable (iOS 16+) and
-        // returns the sandboxed Application Support path. The previous
-        // `try! fileManager.url(…)` would crash the app at launch if the
-        // lookup ever threw — rare, but fatal and unrecoverable.
-        let localSupport = URL.applicationSupportDirectory
-
-        // Attempt to get the ubiquitous container for iCloud sync.
-        // Fallback to local application support if iCloud is unavailable.
-        if let ubiquityURL = fileManager.url(forUbiquityContainerIdentifier: nil) {
-            self.rootURL = ubiquityURL.appendingPathComponent("Documents").appendingPathComponent("HomeHub", isDirectory: true)
-        } else {
-            self.rootURL = localSupport.appendingPathComponent("HomeHub", isDirectory: true)
-        }
-        
+        // `URL.applicationSupportDirectory` is non-failable on iOS 16+ and
+        // returns the sandboxed Application Support path. We intentionally
+        // do NOT consult `forUbiquityContainerIdentifier:` — the app ships
+        // without an iCloud entitlement (private, offline-first by design),
+        // so that call would always return nil and the dead branch was
+        // pure noise. If iCloud sync is ever added, gate the bridge on the
+        // entitlement and put it behind a feature flag like HOMEHUB_SWIFTDATA.
+        self.rootURL = URL.applicationSupportDirectory
+            .appendingPathComponent("HomeHub", isDirectory: true)
         try? fileManager.createDirectory(at: rootURL, withIntermediateDirectories: true)
 
         let encoder = JSONEncoder()

@@ -1,6 +1,17 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
+<!--
+  HomeKit entitlement (`com.apple.developer.homekit`) is INTENTIONALLY
+  omitted. Apple gates HomeKit capability behind the paid Developer
+  Program; including it here would break local builds for contributors
+  signing with a personal Apple ID team. Without the entitlement,
+  `HMHomeManager` simply reports zero homes and `HomeKitSkill` returns
+  `noHomeFound` — already handled gracefully (no crash). To enable
+  real HomeKit control, add `<key>com.apple.developer.homekit</key>
+  <true/>` below in your local fork and ensure your provisioning
+  profile includes the HomeKit capability.
+-->
 <dict>
 	<key>com.apple.security.application-groups</key>
 	<array>
