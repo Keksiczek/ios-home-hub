@@ -380,12 +380,26 @@ def check_imports_vs_products(repo_root: Path,
                               target_deps: dict[str, list[dict]]) -> list[str]:
     """
     Walk Swift sources and verify that any `import X` for a known third-party
-    module is matched by a `product: X` declared on the relevant target.
+    module is matched by a `product: Y` declared on the relevant target.
     Catches the bug where someone adds an import but forgets to update
     project.yml — the build fails late with `No such module`.
+
+    IMPORT_TO_PRODUCT maps Swift module name → the product name that must be
+    declared in project.yml.  Hub and Tokenizers are internal targets of the
+    swift-transformers `Transformers` product — they are NOT standalone products.
     """
-    KNOWN = {"WhisperKit", "Hub", "Tokenizers", "MLX", "MLXNN",
-             "MLXLLM", "MLXLMCommon"}
+    # module-import name → required product: declaration in project.yml
+    IMPORT_TO_PRODUCT = {
+        "WhisperKit":   "WhisperKit",
+        "Hub":          "Transformers",   # internal target of Transformers product
+        "Tokenizers":   "Transformers",   # internal target; also in product targets list
+        "Transformers": "Transformers",
+        "MLX":          "MLX",
+        "MLXNN":        "MLXNN",
+        "MLXLLM":       "MLXLLM",
+        "MLXLMCommon":  "MLXLMCommon",
+    }
+    KNOWN = set(IMPORT_TO_PRODUCT.keys())
 
     sources_for_target: dict[str, set[Path]] = {
         "HomeHub":       set((repo_root / "HomeHub").rglob("*.swift")),
@@ -412,11 +426,14 @@ def check_imports_vs_products(repo_root: Path,
                 if mod in KNOWN:
                     used.setdefault(mod, f)
         for mod, f in used.items():
-            if mod not in declared:
+            required_product = IMPORT_TO_PRODUCT[mod]
+            if required_product not in declared:
                 rel = f.relative_to(repo_root)
                 errors.append(
                     f"  target '{tname}' imports '{mod}' in {rel} "
-                    f"but project.yml does not declare `product: {mod}` on it."
+                    f"but project.yml does not declare `product: {required_product}` on it."
+                    + (f" ('{mod}' is an internal target of the '{required_product}' product)"
+                       if mod != required_product else "")
                 )
     return errors
 

@@ -77,11 +77,13 @@ packages:
   MLXLM:
     url: https://github.com/ml-explore/mlx-swift-lm
     branch: main
-  # Explicit direct dependency on swift-transformers.
-  # HubIntegration.swift imports Hub and Tokenizers unconditionally.
-  # Listing the package here (rather than relying on mlx-swift-lm's
-  # transitive pull) locks the version and avoids TensorUtils conflicts.
-  # from: 0.1.14 is the minimum version that works with WhisperKit 0.11.0.
+  # Explicit direct dependency on swift-transformers so the version is
+  # pinned rather than resolved transitively through mlx-swift-lm.
+  # from: 0.1.14 is the minimum compatible with WhisperKit 0.11.0.
+  #
+  # NOTE: swift-transformers exports ONE library product: "Transformers"
+  # (targets: ["Tokenizers", "Generation", "Models"]).  "Hub" and "Tokenizers"
+  # are internal targets — they must NOT be referenced as product names.
   SwiftTransformers:
     url: https://github.com/huggingface/swift-transformers
     from: 0.1.14
@@ -139,11 +141,10 @@ targets:
         product: MLXLLM
       - package: MLXLM
         product: MLXLMCommon
-      # Hub + Tokenizers for HubIntegration.swift (direct imports, not via Transformers).
+      # Transformers is the only exported library product in swift-transformers.
+      # Hub and Tokenizers are internal targets of it (not standalone products).
       - package: SwiftTransformers
-        product: Hub
-      - package: SwiftTransformers
-        product: Tokenizers
+        product: Transformers
       # WhisperKit for VoiceService.swift on-device STT.
       - package: WhisperKit
         product: WhisperKit

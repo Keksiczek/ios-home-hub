@@ -15,8 +15,8 @@ private final class PhaseSignal: @unchecked Sendable {
 /// MLX-backed local runtime for Apple Silicon — the primary backend.
 ///
 /// **Why this is the default:** MLX has no native binary dependency beyond
-/// what SPM resolves (`mlx-swift`, `mlx-swift-lm`, `swift-transformers`,
-/// `Hub`, `Tokenizers`). It runs out-of-the-box on a fresh checkout, no
+/// what SPM resolves (`mlx-swift`, `mlx-swift-lm`, `swift-transformers`
+/// via its `Transformers` product). It runs out-of-the-box on a fresh checkout, no
 /// xcframework drop required, and uses Apple's Metal compute graph
 /// directly. The optional `LlamaCppRuntime` is the secondary path; see
 /// `RoutingRuntime`.

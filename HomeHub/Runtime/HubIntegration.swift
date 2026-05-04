@@ -1,4 +1,7 @@
 import Foundation
+// Hub and Tokenizers are internal targets of the swift-transformers `Transformers`
+// library product.  We depend on product: Transformers in project.yml / Package.swift;
+// both modules are compiled into the build graph and importable here.
 import Hub
 import Tokenizers
 import MLXLMCommon
