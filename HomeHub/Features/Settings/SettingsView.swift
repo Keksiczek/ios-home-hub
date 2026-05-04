@@ -89,6 +89,11 @@ struct SettingsView: View {
             NavigationLink("System prompts") {
                 SystemPromptManagerView()
             }
+            LabeledContent("Active preset") {
+                Text(settings.current.activeSystemPromptPreset.name)
+                    .foregroundStyle(HHTheme.accent)
+                    .font(HHTheme.caption)
+            }
 
             Divider()
                 .padding(.vertical, 4)
