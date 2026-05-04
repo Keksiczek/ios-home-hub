@@ -295,7 +295,10 @@ cd ios-home-hub
 # 1. Spec is structurally sound (works on Linux too — no Xcode required)
 make ci
 
-# 2. Sources of truth are in sync
+# 2. Sources of truth are in sync.
+#    The build-ios CI job (macOS) runs the same `xcodegen generate` and
+#    fails if the committed pbxproj or shared schemes drift from project.yml,
+#    so green CI implies this step would also be clean here.
 make generate                     # regenerates project.pbxproj from project.yml
 git diff --quiet HomeHub.xcodeproj/project.pbxproj || \
   echo "pbxproj changed — commit the regeneration"
@@ -303,13 +306,17 @@ git diff --quiet HomeHub.xcodeproj/project.pbxproj || \
 # 3. Packages resolve against the committed lockfile
 make resolve
 
-# 4. App target compiles (needs llama.xcframework sibling and macOS+Xcode)
+# 4. App target compiles on the iOS Simulator (matches the build-ios CI job;
+#    macOS + Xcode required; NO llama.xcframework needed for default MLX-only build)
 make build
 ```
 
-If `make ci` passes but `make build` fails, the root cause is almost always
-either (a) `llama.xcframework` is not placed as a sibling of the repo, or
-(b) Xcode's local SourcePackages cache is stale — see the table below.
+If `make ci` passes but `make build` fails on a fresh checkout, the root
+cause is almost always (a) you skipped step 2 above and the committed
+pbxproj is missing files added since it was last regenerated, or
+(b) Xcode's local SourcePackages cache is stale (`rm -rf
+~/Library/Developer/Xcode/DerivedData/HomeHub-*`). The optional llama.cpp
+opt-in is the only path that needs `llama.xcframework`.
 
 ## Known failure modes — quick diagnosis
 

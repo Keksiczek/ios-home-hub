@@ -1,6 +1,5 @@
 import Foundation
 import MLX
-import MLXNN
 import MLXLLM
 import MLXLMCommon
 import os

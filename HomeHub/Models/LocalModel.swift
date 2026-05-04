@@ -238,7 +238,7 @@ extension LocalModel {
         quantization: "4-bit",
         sizeBytes: 4_000_000_000,
         contextLength: 8192,
-        downloadURL: URL(string: "https://huggingface.co/mlx-community/mock-model")!,
+        downloadURL: URL(static: "https://huggingface.co/mlx-community/mock-model"),
         installState: .notInstalled,
         recommendedFor: [.iPhone, .iPadMSeries],
         license: "Llama 3",

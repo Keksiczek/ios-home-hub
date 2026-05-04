@@ -1,7 +1,8 @@
 # HomeHub — developer workflow targets
 #
-# Prereqs: Xcode 15.4+, xcodegen (`brew install xcodegen`),
-#          llama.xcframework placed as a sibling of this repo root.
+# Prereqs: Xcode 15.4+, xcodegen (`brew install xcodegen`).
+# llama.xcframework is OPTIONAL — only needed if you opt in to llama.cpp
+# via HOMEHUB_LLAMA_RUNTIME (see README). The default build is MLX-only.
 #
 # Typical first-time flow:
 #   make setup          # generate project + resolve packages
@@ -9,11 +10,11 @@
 
 SCHEME   = HomeHub
 PROJECT  = HomeHub.xcodeproj
-DEST     = generic/platform=iOS
+DEST     = platform=iOS Simulator,name=iPhone 16
 
 # ── Primary targets ───────────────────────────────────────────────────────────
 
-.PHONY: setup generate resolve validate check ci build test clean sync-resolved verify-transformers help
+.PHONY: setup generate resolve validate check ci build build-device test clean sync-resolved verify-transformers help
 
 ## Full first-time or post-merge setup (generate project + fetch packages).
 setup: generate resolve
@@ -31,21 +32,32 @@ resolve:
 	  -project $(PROJECT) \
 	  -scheme  $(SCHEME)
 
-## Compile the app target (requires llama.xcframework as sibling of repo root).
+## Compile the app target on the iOS Simulator (no signing required).
+## Matches what the build-ios CI job runs — green CI implies this passes.
 ## Does NOT install or archive — use Xcode or xcodebuild archive for that.
 build:
 	xcodebuild build \
 	  -project     $(PROJECT) \
 	  -scheme       $(SCHEME) \
-	  -destination  '$(DEST)' \
+	  -destination  '$(DEST)'
+
+## Compile for a generic iOS device.
+## Requires either DEVELOPMENT_TEAM set in your local .xcconfig, OR the
+## CODE_SIGNING_ALLOWED=NO override below (which produces an unsignable .app
+## — useful only for arch / Metal sanity-checking, not for device deploy).
+build-device:
+	xcodebuild build \
+	  -project     $(PROJECT) \
+	  -scheme       $(SCHEME) \
+	  -destination 'generic/platform=iOS' \
 	  CODE_SIGNING_ALLOWED=NO
 
-## Run unit tests in the iOS simulator.
+## Run unit tests in the iOS simulator (same destination as `make build`).
 test:
 	xcodebuild test \
 	  -project $(PROJECT) \
 	  -scheme  $(SCHEME) \
-	  -destination 'platform=iOS Simulator,name=iPhone 16'
+	  -destination '$(DEST)'
 
 ## Verify swift-transformers product boundary (no Hub/Tokenizers as product names).
 ## Runs automatically as part of `make check` / `make ci`.
@@ -85,8 +97,9 @@ help:
 	@echo "  resolve             — fetch / verify SPM packages"
 	@echo "  verify-transformers — check swift-transformers product boundary"
 	@echo "  validate            — check project.yml for duplicate keys / bad refs"
-	@echo "  build               — compile (needs llama.xcframework sibling)"
-	@echo "  test                — run unit tests in simulator"
+	@echo "  build               — compile on iPhone 16 simulator (no signing; matches CI)"
+	@echo "  build-device        — compile for generic iOS device (needs signing or override)"
+	@echo "  test                — run unit tests on iPhone 16 simulator"
 	@echo "  check               — boundary + validate + smoke-test"
 	@echo "  ci                  — run the same guardrails CI runs (no Xcode needed)"
 	@echo "  clean               — clean derived data"

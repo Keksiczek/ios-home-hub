@@ -1,0 +1,81 @@
+# Real iOS build + tests on macOS. Catches the classes of regression the
+# Linux-only validate-spec workflow can't see:
+#
+#   1. Stale project.pbxproj or shared schemes — anything that drifts from
+#      project.yml after `xcodegen generate` (this includes new source files
+#      added on disk that nobody re-generated for).
+#   2. Real compile failures — broken imports, MLX API removals, Swift errors.
+#   3. Test failures — unit suite red on a fresh clone.
+#
+# Kept deliberately minimal: one job, one simulator destination, no archive,
+# no signing. Local repro is `make build` / `make test`.
+#
+# Runner choice: `macos-15` ships with Xcode 16.x by default and includes the
+# `iPhone 16` simulator referenced by both this job and the Makefile, so we
+# don't need to install runtimes manually. We don't pin Xcode with
+# `xcode-select` — printing the resolved version below makes it visible in
+# logs, and bumping the runner image bumps Xcode in lockstep.
+name: build-ios
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain versions
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Install xcodegen + xcbeautify
+        run: brew install xcodegen xcbeautify
+
+      - name: Regenerate project from project.yml
+        run: xcodegen generate
+
+      - name: Fail if committed pbxproj or schemes are stale
+        # Authoritative drift guard: if `xcodegen generate` produced any
+        # change in pbxproj or shared schemes, someone forgot to commit the
+        # regeneration — or hand-edited the .pbxproj, which the README
+        # forbids. Either way, fail loudly.
+        run: |
+          if ! git diff --exit-code -- \
+              HomeHub.xcodeproj/project.pbxproj \
+              HomeHub.xcodeproj/xcshareddata/xcschemes; then
+            echo "::error::Committed Xcode project is out of sync with project.yml. Run 'make generate' and commit the result."
+            exit 1
+          fi
+
+      - name: Resolve Swift packages against committed lockfile
+        run: |
+          xcodebuild -resolvePackageDependencies \
+            -project HomeHub.xcodeproj \
+            -scheme  HomeHub
+
+      - name: Build on iPhone 16 simulator (no signing)
+        # `set -o pipefail` ensures a non-zero xcodebuild exit code fails the
+        # step even though it's piped into xcbeautify. NO `|| true` anywhere
+        # — a broken build MUST turn the job red.
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project HomeHub.xcodeproj \
+            -scheme  HomeHub \
+            -destination 'platform=iOS Simulator,name=iPhone 16' \
+            | xcbeautify
+
+      - name: Test on iPhone 16 simulator
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -project HomeHub.xcodeproj \
+            -scheme  HomeHub \
+            -destination 'platform=iOS Simulator,name=iPhone 16' \
+            | xcbeautify
