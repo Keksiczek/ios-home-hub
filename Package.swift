@@ -52,8 +52,10 @@ let package = Package(
         // support that no longer requires TensorUtils as a standalone import.
         .package(url: "https://github.com/argmaxinc/WhisperKit", from: "0.11.0"),
         .package(url: "https://github.com/ml-explore/mlx-swift", from: "0.21.0"),
-        // mlx-swift-lm has no stable tag series yet; pinned via Package.resolved.
-        .package(url: "https://github.com/ml-explore/mlx-swift-lm", branch: "main"),
+        // mlx-swift-lm has no stable tag series; pin a concrete revision so
+        // CI / fresh clones never silently roll forward off `main`.
+        .package(url: "https://github.com/ml-explore/mlx-swift-lm",
+                 revision: "7e2b7107be52ffbfe488f3c7987d3f52c1858b4b"),
         // Explicit direct dependency so Hub and Tokenizers resolve from a pinned
         // version rather than whatever mlx-swift-lm pulls transitively.
         // from: "0.1.14" is the first version after the TensorUtils restructure

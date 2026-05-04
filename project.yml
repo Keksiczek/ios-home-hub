@@ -74,9 +74,15 @@ packages:
   MLX:
     url: https://github.com/ml-explore/mlx-swift
     from: 0.21.0
+  # mlx-swift-lm has no stable tag series yet, so we pin to a specific
+  # revision rather than `branch: main`.  branch: main means "whatever main
+  # was when xcodebuild last resolved", which silently changes when someone
+  # nukes their SourcePackages cache. Pinning the SHA here keeps project.yml,
+  # Package.swift and Package.resolved literally identical — `make ci`
+  # cross-checks them and fails fast on drift.
   MLXLM:
     url: https://github.com/ml-explore/mlx-swift-lm
-    branch: main
+    revision: 7e2b7107be52ffbfe488f3c7987d3f52c1858b4b
   # Explicit direct dependency on swift-transformers so the version is
   # pinned rather than resolved transitively through mlx-swift-lm.
   # from: 0.1.14 is the minimum compatible with WhisperKit 0.11.0.
