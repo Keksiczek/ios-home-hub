@@ -149,6 +149,21 @@ struct SettingsView: View {
                     Task { await settings.set(\.guardrailsConfig, to: config) }
                 }
             ))
+
+            Divider()
+                .padding(.vertical, 4)
+
+            Button(role: .destructive) {
+                Task {
+                    await personalization.update(assistant: AssistantProfile.defaultAssistant)
+                    await settings.update(AppSettings.default)
+                }
+            } label: {
+                HStack {
+                    Image(systemName: "arrow.counterclockwise")
+                    Text("Reset to defaults")
+                }
+            }
         } footer: {
             Text("Customize assistant personality, system prompts, safety rules, and context layers.")
         }
