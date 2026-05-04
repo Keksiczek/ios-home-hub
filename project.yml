@@ -109,7 +109,9 @@ settings:
   base:
     SWIFT_VERSION: "5.10"
     GENERATE_INFOPLIST_FILE: YES
-    IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+    # IPHONEOS_DEPLOYMENT_TARGET is owned by `options.deploymentTarget.iOS`
+    # at the top of this file. Setting it again here would shadow the
+    # project-level value and silently drift.
     ENABLE_USER_SCRIPT_SANDBOXING: YES
 
 targets:
@@ -179,6 +181,18 @@ targets:
           UIInterfaceOrientationLandscapeRight
         NSMicrophoneUsageDescription: "Potřebujeme mikrofon pro možnost hlasové konverzace offline."
         NSSpeechRecognitionUsageDescription: "Nativní rozpoznávání hovoru pro diktování přes Apple infrastrukturu beze slov mimo zařízení."
+        # Usage descriptions for the Skills registered by default in
+        # SkillManager.init. Without these, iOS terminates the app the
+        # moment HMHomeManager() is constructed or EKEventStore.requestAccess
+        # is called — Apple enforces the keys at the OS level. Even users
+        # who never invoke the skills must have the keys present, because
+        # the prompt assembler may surface them to the model and the user
+        # may trigger them via a tool call.
+        NSHomeKitUsageDescription: "Pro ovládání chytrých zařízení v domácnosti přes asistenta."
+        NSCalendarsUsageDescription: "Pro čtení a vytváření událostí v kalendáři přes asistenta."
+        NSCalendarsFullAccessUsageDescription: "Pro plnou práci s kalendářem (čtení i zápis událostí) přes asistenta na iOS 17+."
+        NSRemindersUsageDescription: "Pro čtení a vytváření připomínek přes asistenta."
+        NSRemindersFullAccessUsageDescription: "Pro plnou práci s připomínkami (čtení i zápis) přes asistenta na iOS 17+."
         # App uses only standard HTTPS/TLS for model downloads and no custom
         # cryptography — declare exemption so App Store review doesn't flag
         # the build as missing an export-compliance answer. If this changes
