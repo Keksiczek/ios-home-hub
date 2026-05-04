@@ -101,6 +101,16 @@ struct SettingsView: View {
             Text("Safety")
                 .font(HHTheme.caption)
                 .foregroundStyle(HHTheme.textSecondary)
+            Toggle("All guardrails", isOn: Binding(
+                get: { settings.current.guardrailsConfig.hardRulesEnabled && settings.current.guardrailsConfig.privacyGuardrailEnabled },
+                set: { newValue in
+                    var config = settings.current.guardrailsConfig
+                    config.hardRulesEnabled = newValue
+                    config.privacyGuardrailEnabled = newValue
+                    Task { await settings.set(\.guardrailsConfig, to: config) }
+                }
+            ))
+            .bold()
             Toggle("Hard rules", isOn: Binding(
                 get: { settings.current.guardrailsConfig.hardRulesEnabled },
                 set: { newValue in
@@ -109,6 +119,7 @@ struct SettingsView: View {
                     Task { await settings.set(\.guardrailsConfig, to: config) }
                 }
             ))
+            .padding(.leading, 12)
             Toggle("Privacy guardrail", isOn: Binding(
                 get: { settings.current.guardrailsConfig.privacyGuardrailEnabled },
                 set: { newValue in
@@ -117,11 +128,24 @@ struct SettingsView: View {
                     Task { await settings.set(\.guardrailsConfig, to: config) }
                 }
             ))
+            .padding(.leading, 12)
 
             Text("Context layers")
                 .font(HHTheme.caption)
                 .foregroundStyle(HHTheme.textSecondary)
                 .padding(.top, 8)
+            Toggle("All layers", isOn: Binding(
+                get: { settings.current.guardrailsConfig.factsEnabled && settings.current.guardrailsConfig.episodesEnabled && settings.current.guardrailsConfig.fileExcerptsEnabled && settings.current.guardrailsConfig.skillInstructionsEnabled },
+                set: { newValue in
+                    var config = settings.current.guardrailsConfig
+                    config.factsEnabled = newValue
+                    config.episodesEnabled = newValue
+                    config.fileExcerptsEnabled = newValue
+                    config.skillInstructionsEnabled = newValue
+                    Task { await settings.set(\.guardrailsConfig, to: config) }
+                }
+            ))
+            .bold()
             Toggle("Remembered facts", isOn: Binding(
                 get: { settings.current.guardrailsConfig.factsEnabled },
                 set: { newValue in
@@ -130,6 +154,7 @@ struct SettingsView: View {
                     Task { await settings.set(\.guardrailsConfig, to: config) }
                 }
             ))
+            .padding(.leading, 12)
             Toggle("Recent episodes", isOn: Binding(
                 get: { settings.current.guardrailsConfig.episodesEnabled },
                 set: { newValue in
@@ -138,6 +163,7 @@ struct SettingsView: View {
                     Task { await settings.set(\.guardrailsConfig, to: config) }
                 }
             ))
+            .padding(.leading, 12)
             Toggle("File excerpts", isOn: Binding(
                 get: { settings.current.guardrailsConfig.fileExcerptsEnabled },
                 set: { newValue in
@@ -146,6 +172,7 @@ struct SettingsView: View {
                     Task { await settings.set(\.guardrailsConfig, to: config) }
                 }
             ))
+            .padding(.leading, 12)
             Toggle("Skill instructions", isOn: Binding(
                 get: { settings.current.guardrailsConfig.skillInstructionsEnabled },
                 set: { newValue in
@@ -154,6 +181,7 @@ struct SettingsView: View {
                     Task { await settings.set(\.guardrailsConfig, to: config) }
                 }
             ))
+            .padding(.leading, 12)
 
             Divider()
                 .padding(.vertical, 4)
