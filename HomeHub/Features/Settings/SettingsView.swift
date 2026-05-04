@@ -70,6 +70,23 @@ struct SettingsView: View {
                     Task { await personalization.update(assistant: a) }
                 }
             ))
+            Picker("Tone", selection: Binding(
+                get: { personalization.assistantProfile.tone },
+                set: { newValue in
+                    var a = personalization.assistantProfile
+                    a.tone = newValue
+                    Task { await personalization.update(assistant: a) }
+                }
+            )) {
+                ForEach(AssistantTone.allCases) { tone in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(tone.label).tag(tone)
+                        Text(tone.blurb)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
             NavigationLink("System prompts") {
                 SystemPromptManagerView()
             }
