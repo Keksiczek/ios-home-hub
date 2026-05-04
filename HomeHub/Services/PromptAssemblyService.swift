@@ -180,16 +180,23 @@ final class PromptAssemblyService {
         }
 
         // L1. Durable facts
-        appendFacts(from: package, to: &chunks)
+        if package.settings.guardrailsConfig.factsEnabled {
+            appendFacts(from: package, to: &chunks)
+        }
 
         // L2. Episodic summaries
-        appendEpisodes(from: package, to: &chunks)
+        if package.settings.guardrailsConfig.episodesEnabled {
+            appendEpisodes(from: package, to: &chunks)
+        }
 
         // L3. Source excerpts
-        appendFileExcerpts(from: package, to: &chunks)
+        if package.settings.guardrailsConfig.fileExcerptsEnabled {
+            appendFileExcerpts(from: package, to: &chunks)
+        }
 
         // L4. Agentic tool instructions
-        if let skills = package.skillInstructions, !skills.isEmpty {
+        if package.settings.guardrailsConfig.skillInstructionsEnabled,
+           let skills = package.skillInstructions, !skills.isEmpty {
             chunks.append(skills)
         }
 

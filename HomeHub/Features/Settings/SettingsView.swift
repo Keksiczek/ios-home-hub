@@ -19,6 +19,7 @@ struct SettingsView: View {
             Form {
                 profileSection
                 assistantSection
+                promptConfigSection
                 languageSection
                 toolsSection
                 memorySection
@@ -72,7 +73,17 @@ struct SettingsView: View {
             NavigationLink("System prompts") {
                 SystemPromptManagerView()
             }
-            Toggle("Hard rules (output format, honesty)", isOn: Binding(
+        }
+    }
+
+    // MARK: - Prompt configuration
+
+    private var promptConfigSection: some View {
+        Section {
+            Text("Safety")
+                .font(HHTheme.caption)
+                .foregroundStyle(HHTheme.textSecondary)
+            Toggle("Hard rules", isOn: Binding(
                 get: { settings.current.guardrailsConfig.hardRulesEnabled },
                 set: { newValue in
                     var config = settings.current.guardrailsConfig
@@ -88,8 +99,47 @@ struct SettingsView: View {
                     Task { await settings.set(\.guardrailsConfig, to: config) }
                 }
             ))
+
+            Text("Context layers")
+                .font(HHTheme.caption)
+                .foregroundStyle(HHTheme.textSecondary)
+                .padding(.top, 8)
+            Toggle("Remembered facts", isOn: Binding(
+                get: { settings.current.guardrailsConfig.factsEnabled },
+                set: { newValue in
+                    var config = settings.current.guardrailsConfig
+                    config.factsEnabled = newValue
+                    Task { await settings.set(\.guardrailsConfig, to: config) }
+                }
+            ))
+            Toggle("Recent episodes", isOn: Binding(
+                get: { settings.current.guardrailsConfig.episodesEnabled },
+                set: { newValue in
+                    var config = settings.current.guardrailsConfig
+                    config.episodesEnabled = newValue
+                    Task { await settings.set(\.guardrailsConfig, to: config) }
+                }
+            ))
+            Toggle("File excerpts", isOn: Binding(
+                get: { settings.current.guardrailsConfig.fileExcerptsEnabled },
+                set: { newValue in
+                    var config = settings.current.guardrailsConfig
+                    config.fileExcerptsEnabled = newValue
+                    Task { await settings.set(\.guardrailsConfig, to: config) }
+                }
+            ))
+            Toggle("Skill instructions", isOn: Binding(
+                get: { settings.current.guardrailsConfig.skillInstructionsEnabled },
+                set: { newValue in
+                    var config = settings.current.guardrailsConfig
+                    config.skillInstructionsEnabled = newValue
+                    Task { await settings.set(\.guardrailsConfig, to: config) }
+                }
+            ))
+        } header: {
+            Text("Prompt configuration")
         } footer: {
-            Text("Guardrails control safety rules in the system prompt. Disable for unrestricted output.")
+            Text("Customize which safety rules and context layers are included in the system prompt.")
         }
     }
 
