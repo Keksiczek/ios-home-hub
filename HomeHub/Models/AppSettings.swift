@@ -49,6 +49,8 @@ struct AppSettings: Codable, Equatable {
     /// Optional location hint injected into the system prompt. Defaults
     /// to Nymburk, CZ for the current user; blank disables the line.
     var locationHint: String
+    /// Configuration for which safety guardrails are active in prompt assembly.
+    var guardrailsConfig: GuardrailsConfig
 
     static let `default` = AppSettings(
         memoryEnabled: true,
@@ -70,7 +72,8 @@ struct AppSettings: Codable, Equatable {
         language: .auto,
         answerLength: .balanced,
         enabledTools: AppSettings.defaultEnabledTools,
-        locationHint: "Nymburk, CZ"
+        locationHint: "Nymburk, CZ",
+        guardrailsConfig: .default
     )
 
     /// Tools registered in `SkillManager` by default. Kept in sync with
@@ -93,6 +96,7 @@ struct AppSettings: Codable, Equatable {
         case systemPromptPresets, activeSystemPromptPresetID
         case showTokenUsage
         case language, answerLength, enabledTools, locationHint
+        case guardrailsConfig
         // Retained only for migration from the previous schema.
         case responseStyle
     }
@@ -117,7 +121,8 @@ struct AppSettings: Codable, Equatable {
         language: AppLanguage,
         answerLength: AnswerLength,
         enabledTools: Set<String>,
-        locationHint: String
+        locationHint: String,
+        guardrailsConfig: GuardrailsConfig = .default
     ) {
         self.memoryEnabled = memoryEnabled
         self.autoExtractMemory = autoExtractMemory
@@ -139,6 +144,7 @@ struct AppSettings: Codable, Equatable {
         self.answerLength = answerLength
         self.enabledTools = enabledTools
         self.locationHint = locationHint
+        self.guardrailsConfig = guardrailsConfig
     }
 
     init(from decoder: Decoder) throws {
@@ -173,9 +179,10 @@ struct AppSettings: Codable, Equatable {
 
         self.showTokenUsage = try c.decodeIfPresent(Bool.self, forKey: .showTokenUsage) ?? fallback.showTokenUsage
 
-        self.language       = try c.decodeIfPresent(AppLanguage.self,   forKey: .language)     ?? fallback.language
-        self.enabledTools   = try c.decodeIfPresent(Set<String>.self,   forKey: .enabledTools) ?? fallback.enabledTools
-        self.locationHint   = try c.decodeIfPresent(String.self,        forKey: .locationHint) ?? fallback.locationHint
+        self.language         = try c.decodeIfPresent(AppLanguage.self,   forKey: .language)         ?? fallback.language
+        self.enabledTools     = try c.decodeIfPresent(Set<String>.self,   forKey: .enabledTools)     ?? fallback.enabledTools
+        self.locationHint     = try c.decodeIfPresent(String.self,        forKey: .locationHint)     ?? fallback.locationHint
+        self.guardrailsConfig = try c.decodeIfPresent(GuardrailsConfig.self, forKey: .guardrailsConfig) ?? fallback.guardrailsConfig
 
         // Migration path for installs that persisted the previous
         // `responseStyle: "leanCI" | "casual"` field. Map leanCI→concise

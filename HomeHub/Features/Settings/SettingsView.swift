@@ -72,6 +72,24 @@ struct SettingsView: View {
             NavigationLink("System prompts") {
                 SystemPromptManagerView()
             }
+            Toggle("Hard rules (output format, honesty)", isOn: Binding(
+                get: { settings.current.guardrailsConfig.hardRulesEnabled },
+                set: { newValue in
+                    var config = settings.current.guardrailsConfig
+                    config.hardRulesEnabled = newValue
+                    Task { await settings.set(\.guardrailsConfig, to: config) }
+                }
+            ))
+            Toggle("Privacy guardrail", isOn: Binding(
+                get: { settings.current.guardrailsConfig.privacyGuardrailEnabled },
+                set: { newValue in
+                    var config = settings.current.guardrailsConfig
+                    config.privacyGuardrailEnabled = newValue
+                    Task { await settings.set(\.guardrailsConfig, to: config) }
+                }
+            ))
+        } footer: {
+            Text("Guardrails control safety rules in the system prompt. Disable for unrestricted output.")
         }
     }
 
