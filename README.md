@@ -216,13 +216,17 @@ this sequence to avoid silent version mismatches:
 > - `SwiftTransformers` (the package key in `project.yml`) must be `>= 0.1.14`
 >   and `WhisperKit` must be `>= 0.11.0`.  Earlier combinations produce
 >   `Unable to find module dependency: 'TensorUtils'` at build time.
+> - The correct product name for `swift-transformers` is `Transformers`
+>   (not `Hub` or `Tokenizers` — those are internal targets).  Referencing them
+>   as products causes `product 'Hub' not found in package 'swift-transformers'`.
+>   Run `make verify-transformers` to catch this class of mistake automatically.
 
 #### Version constraint rationale
 
 | Package | Constraint | Reason |
 |---------|-----------|--------|
 | `WhisperKit` | `from: 0.11.0` | 0.9.x imports `TensorUtils` as a standalone module that was removed from swift-transformers in 0.1.x |
-| `SwiftTransformers` | `from: 0.1.14` | First release where `Hub` and `Tokenizers` are stable products; `TensorUtils` is not a standalone import |
+| `SwiftTransformers` | `from: 0.1.14` | Minimum version compatible with WhisperKit 0.11.0; exports `Transformers` library product (`Hub` and `Tokenizers` are internal targets, not standalone products) |
 | `MLX` | `from: 0.21.0` | Minimum version tested with the MLXRuntime implementation |
 | `MLXLM` | `branch: main` | No stable tag series yet; pinned via `Package.resolved` revision |
 
@@ -312,7 +316,7 @@ either (a) `llama.xcframework` is not placed as a sibling of the repo, or
 | Symptom | Almost certainly caused by | Fix |
 |---------|---------------------------|-----|
 | `Unable to find module dependency: 'TensorUtils'` | A WhisperKit version older than 0.11.0 was resolved (often via a duplicate YAML key in `project.yml` that silently downgraded the pin). | `make validate` — it flags duplicate keys and version drift. Then re-pin to `from: 0.11.0` and `make sync-resolved`. |
-| `Missing package product 'Hub'` / `'Tokenizers'` | `swift-transformers` is being pulled transitively via mlx-swift-lm but project.yml/Package.swift doesn't declare it as a direct dependency. | Both files now declare it directly — make sure your `project.yml` has the `SwiftTransformers:` package and `product: Hub` / `product: Tokenizers` under the HomeHub target. |
+| `Missing package product 'Hub'` / `'Tokenizers'` | `project.yml` or `Package.swift` references `product: Hub` or `product: Tokenizers` — those are internal targets, not exported library products. The only exported product is `Transformers`. | Make sure `project.yml` has `product: Transformers` under the HomeHub target and `Package.swift` uses `.product(name: "Transformers", package: "swift-transformers")`. Run `make verify-transformers` to verify. |
 | `xcodebuild: error: The project ... does not contain a scheme named 'HomeHub'` | The committed shared scheme is missing. | Check `HomeHub.xcodeproj/xcshareddata/xcschemes/HomeHub.xcscheme` exists. If not, `make generate` will recreate it. |
 | `error: 'AppIcon' image asset is missing` warning on every build | `Assets.xcassets/AppIcon.appiconset/Contents.json` references a file that doesn't exist. | The set is intentionally empty in this repo. Drop a real 1024×1024 PNG into the appiconset and add `"filename": "<name>.png"` back to `Contents.json`. |
 | Local diff in `project.pbxproj` you didn't make | Either (a) you opened the project in Xcode without running `xcodegen generate` first, or (b) someone hand-edited it. | Run `make generate` to bring it back to canonical form, then commit. |

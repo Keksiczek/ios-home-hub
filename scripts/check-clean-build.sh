@@ -97,29 +97,49 @@ else
   FAIL=1
 fi
 
-# ── 6. swift-transformers Hub/Tokenizers in project.yml ──────────────────────
-echo "--- Checking Hub and Tokenizers are declared in project.yml ---"
-if grep -q "product: Hub" "$REPO_ROOT/project.yml" && \
-   grep -q "product: Tokenizers" "$REPO_ROOT/project.yml"; then
-  green "Hub and Tokenizers products declared in project.yml"
+# ── 6a. swift-transformers boundary guardrail ────────────────────────────────
+echo "--- Running swift-transformers boundary guardrail ---"
+if bash "$REPO_ROOT/scripts/verify-swift-transformers-boundary.sh" 2>&1; then
+  : # guardrail prints its own green/red lines
 else
-  red "Hub and/or Tokenizers missing from project.yml dependencies"
   FAIL=1
 fi
 
-# ── 7. Package.swift uses Hub + Tokenizers (not Transformers) ────────────────
-echo "--- Checking Package.swift product names ---"
-if grep -q '"Hub"' "$REPO_ROOT/Package.swift" && \
-   grep -q '"Tokenizers"' "$REPO_ROOT/Package.swift"; then
-  green "Package.swift uses Hub + Tokenizers products"
+# ── 6. swift-transformers: only the Transformers product, not internal targets ──
+# swift-transformers exports one library product: "Transformers".
+# "Hub" and "Tokenizers" are internal targets — referencing them as products
+# causes: product 'Hub' not found in package 'swift-transformers'.
+echo "--- Checking swift-transformers uses Transformers product (not Hub/Tokenizers) ---"
+if grep -q "product: Transformers" "$REPO_ROOT/project.yml"; then
+  green "project.yml uses product: Transformers (correct)"
 else
-  red "Package.swift missing Hub and/or Tokenizers"
+  red "project.yml missing 'product: Transformers' for SwiftTransformers"
   FAIL=1
 fi
-if grep -q '"Transformers"' "$REPO_ROOT/Package.swift"; then
-  red "Package.swift still references legacy 'Transformers' product"
+for bad_product in Hub Tokenizers; do
+  if grep -E "^\s+-\s+package:\s+SwiftTransformers" "$REPO_ROOT/project.yml" -A1 \
+     | grep -q "product: $bad_product"; then
+    red "project.yml references 'product: $bad_product' from SwiftTransformers — this is an internal target, not a product. Use 'product: Transformers'."
+    FAIL=1
+  fi
+done
+
+# ── 7. Package.swift uses Transformers product (not internal Hub/Tokenizers) ──
+echo "--- Checking Package.swift swift-transformers product name ---"
+if grep -qE '\.product\(name:\s*"Transformers",\s*package:\s*"swift-transformers"\)' \
+   "$REPO_ROOT/Package.swift"; then
+  green "Package.swift uses .product(name: \"Transformers\", ...) (correct)"
+else
+  red "Package.swift missing .product(name: \"Transformers\", package: \"swift-transformers\")"
   FAIL=1
 fi
+for bad_product in Hub Tokenizers; do
+  if grep -qE "\.product\(name:\s*\"$bad_product\",\s*package:\s*\"swift-transformers\"\)" \
+     "$REPO_ROOT/Package.swift"; then
+    red "Package.swift references product '$bad_product' from swift-transformers — internal target, not a product. Use 'Transformers'."
+    FAIL=1
+  fi
+done
 
 # ── 8. pbxproj has XCRemoteSwiftPackageReference entries ─────────────────────
 echo "--- Checking pbxproj package sections ---"
@@ -176,16 +196,16 @@ else
 fi
 
 # ── 12. import ↔ project.yml product consistency ─────────────────────────────
-# (Also covered by validate-project-spec.py, kept here as a second line of
-#  defence with cheap greps.)
+# Hub and Tokenizers are internal targets of the swift-transformers Transformers
+# product.  import Hub / import Tokenizers are valid Swift (the modules are
+# compiled into the build graph), but the PRODUCT reference must be Transformers.
 echo "--- Checking import/product consistency ---"
 HUB_IMPORT=$(grep -l "^import Hub" "$REPO_ROOT/HomeHub/Runtime/"*.swift 2>/dev/null | head -1 || true)
 if [ -n "$HUB_IMPORT" ]; then
-  if grep -q "product: Hub" "$REPO_ROOT/project.yml" && \
-     grep -q "product: Tokenizers" "$REPO_ROOT/project.yml"; then
-    green "HubIntegration.swift: Hub + Tokenizers imports match project.yml declarations"
+  if grep -q "product: Transformers" "$REPO_ROOT/project.yml"; then
+    green "HubIntegration.swift: Hub/Tokenizers imports backed by product: Transformers in project.yml"
   else
-    red "HubIntegration.swift imports Hub/Tokenizers but project.yml is missing those products"
+    red "HubIntegration.swift imports Hub/Tokenizers but project.yml is missing 'product: Transformers' for SwiftTransformers"
     FAIL=1
   fi
 fi

@@ -34,9 +34,11 @@ import PackageDescription
 // in swift-transformers 0.1.x. Using 0.9.x with swift-transformers ≥ 0.1.14
 // produces "No such module 'TensorUtils'" at build time.
 //
-// We import Hub and Tokenizers directly (not the full Transformers product)
-// to avoid pulling in the macro build targets and TensorUtils, which are
-// not needed by HubIntegration.swift.
+// swift-transformers exports one library product: Transformers
+// (targets: ["Tokenizers", "Generation", "Models"]).
+// Hub and Tokenizers are internal targets of that product — they are NOT
+// exported as standalone library products. Depending on product: Transformers
+// makes all three targets (and their deps, including Hub) available for import.
 // ---------------------------------------------------------------------
 
 let package = Package(
@@ -56,6 +58,7 @@ let package = Package(
         // version rather than whatever mlx-swift-lm pulls transitively.
         // from: "0.1.14" is the first version after the TensorUtils restructure
         // that is compatible with WhisperKit 0.11.0 and mlx-swift-lm main.
+        // from: "0.1.14" is the minimum version compatible with WhisperKit 0.11.0.
         .package(url: "https://github.com/huggingface/swift-transformers", from: "0.1.14"),
     ],
     targets: [
@@ -67,10 +70,9 @@ let package = Package(
                 .product(name: "MLXNN",         package: "mlx-swift"),
                 .product(name: "MLXLLM",        package: "mlx-swift-lm"),
                 .product(name: "MLXLMCommon",   package: "mlx-swift-lm"),
-                // Hub and Tokenizers only — avoids the full Transformers product
-                // which pulls in TensorUtils and macro build targets we don't need.
-                .product(name: "Hub",           package: "swift-transformers"),
-                .product(name: "Tokenizers",    package: "swift-transformers"),
+                // Transformers is the only exported library product in swift-transformers.
+                // Hub and Tokenizers are internal targets compiled as part of it.
+                .product(name: "Transformers",  package: "swift-transformers"),
             ],
             path: "HomeHub",
             exclude: [

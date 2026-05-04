@@ -134,8 +134,7 @@
 		HH00000000000000000000022 /* MLXNN in Frameworks */ = {isa = PBXBuildFile; productRef = HH00000000000000000000012 /* MLXNN */; };
 		HH00000000000000000000023 /* MLXLLM in Frameworks */ = {isa = PBXBuildFile; productRef = HH00000000000000000000013 /* MLXLLM */; };
 		HH00000000000000000000024 /* MLXLMCommon in Frameworks */ = {isa = PBXBuildFile; productRef = HH00000000000000000000014 /* MLXLMCommon */; };
-		HH00000000000000000000025 /* Hub in Frameworks */ = {isa = PBXBuildFile; productRef = HH00000000000000000000015 /* Hub */; };
-		HH00000000000000000000026 /* Tokenizers in Frameworks */ = {isa = PBXBuildFile; productRef = HH00000000000000000000016 /* Tokenizers */; };
+		HH00000000000000000000025 /* Transformers in Frameworks */ = {isa = PBXBuildFile; productRef = HH00000000000000000000015 /* Transformers */; };
 		HH00000000000000000000027 /* WhisperKit in Frameworks */ = {isa = PBXBuildFile; productRef = HH00000000000000000000017 /* WhisperKit */; };
 /* End PBXBuildFile section */
 
@@ -302,8 +301,7 @@
 				HH00000000000000000000022 /* MLXNN in Frameworks */,
 				HH00000000000000000000023 /* MLXLLM in Frameworks */,
 				HH00000000000000000000024 /* MLXLMCommon in Frameworks */,
-				HH00000000000000000000025 /* Hub in Frameworks */,
-				HH00000000000000000000026 /* Tokenizers in Frameworks */,
+				HH00000000000000000000025 /* Transformers in Frameworks */,
 				HH00000000000000000000027 /* WhisperKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -645,8 +643,7 @@
 				HH00000000000000000000012 /* MLXNN */,
 				HH00000000000000000000013 /* MLXLLM */,
 				HH00000000000000000000014 /* MLXLMCommon */,
-				HH00000000000000000000015 /* Hub */,
-				HH00000000000000000000016 /* Tokenizers */,
+				HH00000000000000000000015 /* Transformers */,
 				HH00000000000000000000017 /* WhisperKit */,
 			);
 			productName = HomeHub;
@@ -1221,15 +1218,10 @@
 			package = HH00000000000000000000002 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */;
 			productName = MLXLMCommon;
 		};
-		HH00000000000000000000015 /* Hub */ = {
+		HH00000000000000000000015 /* Transformers */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = HH00000000000000000000003 /* XCRemoteSwiftPackageReference "swift-transformers" */;
-			productName = Hub;
-		};
-		HH00000000000000000000016 /* Tokenizers */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = HH00000000000000000000003 /* XCRemoteSwiftPackageReference "swift-transformers" */;
-			productName = Tokenizers;
+			productName = Transformers;
 		};
 		HH00000000000000000000017 /* WhisperKit */ = {
 			isa = XCSwiftPackageProductDependency;
