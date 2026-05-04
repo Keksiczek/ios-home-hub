@@ -19,7 +19,6 @@ struct SettingsView: View {
             Form {
                 profileSection
                 assistantSection
-                promptConfigSection
                 languageSection
                 toolsSection
                 memorySection
@@ -90,13 +89,10 @@ struct SettingsView: View {
             NavigationLink("System prompts") {
                 SystemPromptManagerView()
             }
-        }
-    }
 
-    // MARK: - Prompt configuration
+            Divider()
+                .padding(.vertical, 4)
 
-    private var promptConfigSection: some View {
-        Section {
             Text("Safety")
                 .font(HHTheme.caption)
                 .foregroundStyle(HHTheme.textSecondary)
@@ -153,10 +149,8 @@ struct SettingsView: View {
                     Task { await settings.set(\.guardrailsConfig, to: config) }
                 }
             ))
-        } header: {
-            Text("Prompt configuration")
         } footer: {
-            Text("Customize which safety rules and context layers are included in the system prompt.")
+            Text("Customize assistant personality, system prompts, safety rules, and context layers.")
         }
     }
 
