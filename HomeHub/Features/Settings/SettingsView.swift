@@ -69,9 +69,136 @@ struct SettingsView: View {
                     Task { await personalization.update(assistant: a) }
                 }
             ))
+            Picker("Tone", selection: Binding(
+                get: { personalization.assistantProfile.tone },
+                set: { newValue in
+                    var a = personalization.assistantProfile
+                    a.tone = newValue
+                    Task { await personalization.update(assistant: a) }
+                }
+            )) {
+                ForEach(AssistantTone.allCases) { tone in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(tone.label).tag(tone)
+                        Text(tone.blurb)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
             NavigationLink("System prompts") {
                 SystemPromptManagerView()
             }
+            LabeledContent("Active preset") {
+                Text(settings.current.activeSystemPromptPreset.name)
+                    .foregroundStyle(HHTheme.accent)
+                    .font(HHTheme.caption)
+            }
+
+            Divider()
+                .padding(.vertical, 4)
+
+            Text("Safety")
+                .font(HHTheme.caption)
+                .foregroundStyle(HHTheme.textSecondary)
+            Toggle("All guardrails", isOn: Binding(
+                get: { settings.current.guardrailsConfig.hardRulesEnabled && settings.current.guardrailsConfig.privacyGuardrailEnabled },
+                set: { newValue in
+                    var config = settings.current.guardrailsConfig
+                    config.hardRulesEnabled = newValue
+                    config.privacyGuardrailEnabled = newValue
+                    Task { await settings.set(\.guardrailsConfig, to: config) }
+                }
+            ))
+            .bold()
+            Toggle("Hard rules", isOn: Binding(
+                get: { settings.current.guardrailsConfig.hardRulesEnabled },
+                set: { newValue in
+                    var config = settings.current.guardrailsConfig
+                    config.hardRulesEnabled = newValue
+                    Task { await settings.set(\.guardrailsConfig, to: config) }
+                }
+            ))
+            .padding(.leading, 12)
+            Toggle("Privacy guardrail", isOn: Binding(
+                get: { settings.current.guardrailsConfig.privacyGuardrailEnabled },
+                set: { newValue in
+                    var config = settings.current.guardrailsConfig
+                    config.privacyGuardrailEnabled = newValue
+                    Task { await settings.set(\.guardrailsConfig, to: config) }
+                }
+            ))
+            .padding(.leading, 12)
+
+            Text("Context layers")
+                .font(HHTheme.caption)
+                .foregroundStyle(HHTheme.textSecondary)
+                .padding(.top, 8)
+            Toggle("All layers", isOn: Binding(
+                get: { settings.current.guardrailsConfig.factsEnabled && settings.current.guardrailsConfig.episodesEnabled && settings.current.guardrailsConfig.fileExcerptsEnabled && settings.current.guardrailsConfig.skillInstructionsEnabled },
+                set: { newValue in
+                    var config = settings.current.guardrailsConfig
+                    config.factsEnabled = newValue
+                    config.episodesEnabled = newValue
+                    config.fileExcerptsEnabled = newValue
+                    config.skillInstructionsEnabled = newValue
+                    Task { await settings.set(\.guardrailsConfig, to: config) }
+                }
+            ))
+            .bold()
+            Toggle("Remembered facts", isOn: Binding(
+                get: { settings.current.guardrailsConfig.factsEnabled },
+                set: { newValue in
+                    var config = settings.current.guardrailsConfig
+                    config.factsEnabled = newValue
+                    Task { await settings.set(\.guardrailsConfig, to: config) }
+                }
+            ))
+            .padding(.leading, 12)
+            Toggle("Recent episodes", isOn: Binding(
+                get: { settings.current.guardrailsConfig.episodesEnabled },
+                set: { newValue in
+                    var config = settings.current.guardrailsConfig
+                    config.episodesEnabled = newValue
+                    Task { await settings.set(\.guardrailsConfig, to: config) }
+                }
+            ))
+            .padding(.leading, 12)
+            Toggle("File excerpts", isOn: Binding(
+                get: { settings.current.guardrailsConfig.fileExcerptsEnabled },
+                set: { newValue in
+                    var config = settings.current.guardrailsConfig
+                    config.fileExcerptsEnabled = newValue
+                    Task { await settings.set(\.guardrailsConfig, to: config) }
+                }
+            ))
+            .padding(.leading, 12)
+            Toggle("Skill instructions", isOn: Binding(
+                get: { settings.current.guardrailsConfig.skillInstructionsEnabled },
+                set: { newValue in
+                    var config = settings.current.guardrailsConfig
+                    config.skillInstructionsEnabled = newValue
+                    Task { await settings.set(\.guardrailsConfig, to: config) }
+                }
+            ))
+            .padding(.leading, 12)
+
+            Divider()
+                .padding(.vertical, 4)
+
+            Button(role: .destructive) {
+                Task {
+                    await personalization.update(assistant: AssistantProfile.defaultAssistant)
+                    await settings.update(AppSettings.default)
+                }
+            } label: {
+                HStack {
+                    Image(systemName: "arrow.counterclockwise")
+                    Text("Reset to defaults")
+                }
+            }
+        } footer: {
+            Text("Customize assistant personality, system prompts, safety rules, and context layers.")
         }
     }
 

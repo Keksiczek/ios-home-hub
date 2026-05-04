@@ -22,8 +22,34 @@ struct SystemPromptManagerView: View {
         settings.current.activeSystemPromptPresetID
     }
 
+    private var guardrailsStatus: String {
+        let config = settings.current.guardrailsConfig
+        let enabled = [config.hardRulesEnabled, config.privacyGuardrailEnabled].filter { $0 }.count
+        if enabled == 2 { return "Safe mode ✓" }
+        if enabled == 0 { return "Unrestricted" }
+        return "Mixed"
+    }
+
+    private var contexLayersStatus: String {
+        let config = settings.current.guardrailsConfig
+        let enabled = [config.factsEnabled, config.episodesEnabled, config.fileExcerptsEnabled, config.skillInstructionsEnabled].filter { $0 }.count
+        if enabled == 4 { return "Full context ✓" }
+        if enabled == 0 { return "Minimal" }
+        return "\(enabled)/4 layers"
+    }
+
     var body: some View {
         List {
+            Section("Current configuration") {
+                LabeledContent("Active preset") {
+                    Text(settings.current.activeSystemPromptPreset.name)
+                        .foregroundStyle(HHTheme.accent)
+                        .font(.subheadline)
+                }
+                LabeledContent("Safety", value: guardrailsStatus)
+                LabeledContent("Context", value: contexLayersStatus)
+            }
+
             Section {
                 ForEach(presets) { preset in
                     Button {
