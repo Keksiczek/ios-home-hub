@@ -5,6 +5,14 @@
 # Package.resolved as text. The build itself still happens locally on macOS
 # (XcodeGen + Xcode); this job only catches the silent-failure config bugs
 # that historically wasted hours of debugging.
+#
+# Steps:
+#  1. validate-project-spec.py  — duplicate YAML keys, broken package refs,
+#                                  import/product drift, version drift.
+#  2. verify-swift-transformers-boundary.sh — catches the class of bugs where
+#     Hub/Tokenizers internal targets are referenced as SwiftPM products.
+#  3. check-clean-build.sh  — repository hygiene (hardcoded paths, missing
+#                              files, tracked xcuserdata, etc.).
 name: validate-project-spec
 
 on:
@@ -24,5 +32,7 @@ jobs:
         run: pip install pyyaml
       - name: Validate project.yml + cross-source consistency
         run: python3 scripts/validate-project-spec.py
+      - name: Verify swift-transformers product boundary
+        run: bash scripts/verify-swift-transformers-boundary.sh
       - name: Smoke-check repository state
         run: bash scripts/check-clean-build.sh
