@@ -141,8 +141,6 @@ targets:
       # ── Swift Package dependencies ────────────────────────────────────────────
       - package: MLX
         product: MLX
-      - package: MLX
-        product: MLXNN
       - package: MLXLM
         product: MLXLLM
       - package: MLXLM

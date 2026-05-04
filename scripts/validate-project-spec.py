@@ -395,7 +395,6 @@ def check_imports_vs_products(repo_root: Path,
         "Tokenizers":   "Transformers",   # internal target; also in product targets list
         "Transformers": "Transformers",
         "MLX":          "MLX",
-        "MLXNN":        "MLXNN",
         "MLXLLM":       "MLXLLM",
         "MLXLMCommon":  "MLXLMCommon",
     }

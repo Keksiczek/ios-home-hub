@@ -52,12 +52,12 @@ build-device:
 	  -destination 'generic/platform=iOS' \
 	  CODE_SIGNING_ALLOWED=NO
 
-## Run unit tests in the iOS simulator.
+## Run unit tests in the iOS simulator (same destination as `make build`).
 test:
 	xcodebuild test \
 	  -project $(PROJECT) \
 	  -scheme  $(SCHEME) \
-	  -destination 'platform=iOS Simulator,name=iPhone 16'
+	  -destination '$(DEST)'
 
 ## Verify swift-transformers product boundary (no Hub/Tokenizers as product names).
 ## Runs automatically as part of `make check` / `make ci`.

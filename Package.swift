@@ -69,7 +69,6 @@ let package = Package(
             dependencies: [
                 .product(name: "WhisperKit",    package: "WhisperKit"),
                 .product(name: "MLX",           package: "mlx-swift"),
-                .product(name: "MLXNN",         package: "mlx-swift"),
                 .product(name: "MLXLLM",        package: "mlx-swift-lm"),
                 .product(name: "MLXLMCommon",   package: "mlx-swift-lm"),
                 // Transformers is the only exported library product in swift-transformers.
