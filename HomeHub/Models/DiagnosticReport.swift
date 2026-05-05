@@ -27,6 +27,11 @@ struct DiagnosticReport: Codable, Equatable {
     let catalog: CatalogStats
     let lastBudget: Budget?
     let recentTelemetry: [String]
+    /// Snapshot of the active guardrails configuration. Included so bug
+    /// reports make it immediately clear whether hard rules / privacy
+    /// guardrails are enabled and which context layers are active — without
+    /// that, "model behaves unexpectedly" reports are very hard to reproduce.
+    let guardrails: GuardrailsSnapshot
 
     struct Device: Codable, Equatable {
         let modelName: String
@@ -114,6 +119,17 @@ struct DiagnosticReport: Codable, Equatable {
         let totalPromptTokens: Int
         let historyKept: Int
         let historyDropped: Int
+    }
+
+    /// Snapshot of the active guardrails configuration, populated from
+    /// `AppSettings.guardrailsConfig` at export time.
+    struct GuardrailsSnapshot: Codable, Equatable {
+        let hardRulesEnabled: Bool
+        let privacyGuardrailEnabled: Bool
+        /// Enabled context layers ordered by name (e.g. ["episodes", "facts"]).
+        let enabledContextLayers: [String]
+        /// Canonical preset label: "default", "unrestricted", or "custom".
+        let activePreset: String
     }
 
     /// Renders the report as pretty-printed JSON the user can paste into

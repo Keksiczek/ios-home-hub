@@ -28,7 +28,8 @@ final class DiagnosticReportTests: XCTestCase {
             build: .init(
                 cppBridge: "llama.cpp",
                 downloadMode: "URLSession background (real)",
-                realRuntimeFlag: true
+                realRuntimeFlag: true,
+                primaryBackend: "mlx"
             ),
             runtime: .init(
                 identifier: "llama.cpp",
@@ -69,7 +70,10 @@ final class DiagnosticReportTests: XCTestCase {
                 installed: 1,
                 downloading: 0,
                 failed: 0,
-                userAdded: 0
+                userAdded: 0,
+                mlxModels: 4,
+                ggufModels: 1,
+                usableInThisBuild: 4
             ),
             lastBudget: .init(
                 family: "Gemma2",
@@ -83,7 +87,13 @@ final class DiagnosticReportTests: XCTestCase {
                 "12:30:05 ▶ Generation started",
                 "12:30:06 ⚡ First token 1240ms",
                 "12:30:11 ■ 50t @ 9.4t/s (5300ms)"
-            ]
+            ],
+            guardrails: .init(
+                hardRulesEnabled: true,
+                privacyGuardrailEnabled: true,
+                enabledContextLayers: ["episodes", "facts", "fileExcerpts", "skillInstructions"],
+                activePreset: "default"
+            )
         )
     }
 
@@ -167,7 +177,7 @@ final class DiagnosticReportTests: XCTestCase {
         let allowedKeys: Set<String> = [
             "generatedAt", "appVersion", "device", "build", "runtime",
             "activeModel", "lastGeneration", "memory", "settings",
-            "catalog", "lastBudget", "recentTelemetry"
+            "catalog", "lastBudget", "recentTelemetry", "guardrails"
         ]
         let actualKeys = Set(dict.keys)
         let extras = actualKeys.subtracting(allowedKeys)
@@ -175,6 +185,45 @@ final class DiagnosticReportTests: XCTestCase {
             "Diagnostic report has unexpected top-level key(s): \(extras). " +
             "Anything new shipped here goes to user bug reports — confirm " +
             "it's not personal data before adding to the allow-list.")
+    }
+
+    // MARK: - Guardrails snapshot (task 2B)
+
+    func testGuardrailsFieldsPresentInJSON() {
+        let json = sampleReport().jsonString()
+        let mustContain = [
+            "\"guardrails\"",
+            "\"hardRulesEnabled\"",
+            "\"privacyGuardrailEnabled\"",
+            "\"enabledContextLayers\"",
+            "\"activePreset\""
+        ]
+        for key in mustContain {
+            XCTAssertTrue(json.contains(key),
+                          "Guardrails JSON missing key \(key)")
+        }
+    }
+
+    func testGuardrailsSnapshotRoundTrips() throws {
+        let original = sampleReport()
+        let json = original.jsonString()
+        let data = try XCTUnwrap(json.data(using: .utf8))
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let decoded = try decoder.decode(DiagnosticReport.self, from: data)
+        XCTAssertEqual(decoded.guardrails, original.guardrails)
+    }
+
+    func testGuardrailsUnrestrictedPresetLabel() {
+        let g = GuardrailsConfig.unrestricted
+        var layers: [String] = []
+        if g.factsEnabled           { layers.append("facts") }
+        if g.episodesEnabled        { layers.append("episodes") }
+        if g.fileExcerptsEnabled    { layers.append("fileExcerpts") }
+        if g.skillInstructionsEnabled { layers.append("skillInstructions") }
+        let preset: String = (g == .default) ? "default" : (g == .unrestricted) ? "unrestricted" : "custom"
+        XCTAssertEqual(preset, "unrestricted")
+        XCTAssertFalse(layers.isEmpty, "Unrestricted config still has context layers enabled")
     }
 
     func testReportEncodesNilActiveModelGracefully() throws {
@@ -191,7 +240,8 @@ final class DiagnosticReportTests: XCTestCase {
             settings: report.settings,
             catalog: report.catalog,
             lastBudget: nil,
-            recentTelemetry: []
+            recentTelemetry: [],
+            guardrails: report.guardrails
         )
         report = nilActive
         let json = report.jsonString()

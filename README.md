@@ -128,6 +128,24 @@ If you do opt in, place `llama.xcframework` as a **sibling of the repo root**:
 Build it once (see [Integrating the real llama.cpp runtime](#integrating-the-real-llamacpp-runtime))
 and it stays in place across branches and clones.
 
+### First-time setup: copy signing template
+
+Before building on a real device, create your local signing override:
+
+```bash
+cp LocalOverride.xcconfig.template LocalOverride.xcconfig
+# Open LocalOverride.xcconfig and replace YOUR_TEAM_ID with your
+# 10-character Apple Developer Team ID.
+# Find it at: https://developer.apple.com/account → Membership
+```
+
+`LocalOverride.xcconfig` is listed in `.gitignore` so your personal Team ID
+is never committed. The template (`LocalOverride.xcconfig.template`) **is**
+committed and serves as the on-ramp for every contributor.
+
+> **Simulator builds** work without a Team ID. Only device builds need
+> a valid `DEVELOPMENT_TEAM`.
+
 ### Option A: XcodeGen (recommended — fully reproducible)
 
 ```bash

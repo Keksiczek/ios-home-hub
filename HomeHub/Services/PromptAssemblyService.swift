@@ -73,13 +73,15 @@ final class PromptAssemblyService {
         let historyTokens = trimResult.kept.reduce(0) {
             $0 + budgeter.tokensForMessage(content: $1.content)
         }
+        // Use the accurate (NLTokenizer-backed) estimator for the one-shot
+        // per-turn counts; the hot streaming path still uses the fast heuristic.
         let report = PromptBudgetReport(
             family: profile.family,
             mode: mode,
             sections: [
-                .init(name: "system",     tokens: budgeter.tokens(in: system)),
+                .init(name: "system",     tokens: budgeter.tokensAccurate(in: system)),
                 .init(name: "history",    tokens: historyTokens),
-                .init(name: "user_input", tokens: budgeter.tokensForMessage(content: package.userInput))
+                .init(name: "user_input", tokens: budgeter.tokensAccurate(in: package.userInput))
             ],
             historyMessagesKept: trimResult.kept.count,
             historyMessagesDropped: trimResult.dropped,

@@ -2,6 +2,19 @@ import Foundation
 import SwiftUI
 import UIKit
 
+// MARK: - ConversationServiceError
+
+enum ConversationServiceError: LocalizedError {
+    case generationTimeout
+
+    var errorDescription: String? {
+        switch self {
+        case .generationTimeout:
+            return "Generation did not complete within the allowed time. Please try again."
+        }
+    }
+}
+
 /// Orchestrates chat. This is where the runtime, memory, prompt
 /// assembly, and persistence meet. UI never calls the runtime
 /// directly — it goes through `send(...)`.
@@ -31,6 +44,9 @@ final class ConversationService: ObservableObject {
 
     private var activeStreams: [UUID: Task<Void, Never>] = [:]
     private var summaryByConversation: [UUID: ConversationSummary] = [:]
+    /// Keyed by conversationID; set to `true` by the timeout watchdog task
+    /// before it calls `cancelStream`. Cleared in `performSend`'s defer block.
+    private var timedOutConversations: Set<UUID> = []
 
     init(
         store: any Store,
@@ -381,7 +397,26 @@ final class ConversationService: ObservableObject {
         }
 
         streamingConversationIDs.insert(conversationID)
+
+        // Timeout watchdog: cancels the stream and marks the message `.failed`
+        // if generation hangs beyond `generationTimeoutSeconds`. The watchdog
+        // task is cancelled in `defer` whenever generation completes normally,
+        // so it never fires on a successful turn.
+        let timeoutSeconds = settings.current.generationTimeoutSeconds
+        let watchdog = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(timeoutSeconds))
+            } catch {
+                return // Normal cancellation — generation finished in time.
+            }
+            guard let self, self.streamingConversationIDs.contains(conversationID) else { return }
+            self.timedOutConversations.insert(conversationID)
+            self.cancelStream(in: conversationID)
+        }
+
         defer {
+            watchdog.cancel()
+            timedOutConversations.remove(conversationID)
             Self.endBackgroundTask(bgTaskID)
             streamingConversationIDs.remove(conversationID)
             activeStreams[conversationID] = nil
@@ -621,12 +656,21 @@ final class ConversationService: ObservableObject {
             break
         }
 
-        // Final cancellation reconciliation: if the user cancelled mid-stream
-        // and the message wasn't already marked as `.cancelled` by the runtime
-        // (or the loop broke before any event arrived), record it now and
-        // persist so the UI doesn't leave a stale `.streaming` placeholder.
+        // Final cancellation reconciliation: distinguish a user-initiated cancel
+        // from a timeout. The timeout watchdog inserts the conversationID into
+        // `timedOutConversations` before calling `cancelStream`, so we can tell
+        // them apart here. Timeout → `.failed` with an explanatory message;
+        // user cancel → `.cancelled` (intentional, no error copy needed).
         if Task.isCancelled, assistantMessage.status == .streaming {
-            assistantMessage.status = .cancelled
+            if timedOutConversations.contains(conversationID) {
+                assistantMessage.status = .failed
+                let timeoutMsg = "⏱ \(ConversationServiceError.generationTimeout.errorDescription ?? "Generation timeout")"
+                assistantMessage.content = assistantMessage.content.isEmpty
+                    ? timeoutMsg
+                    : assistantMessage.content + "\n\n" + timeoutMsg
+            } else {
+                assistantMessage.status = .cancelled
+            }
             messagesByConversation[conversationID]?[assistantIndex] = assistantMessage
             try? await store.save(message: assistantMessage)
         }

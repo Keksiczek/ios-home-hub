@@ -51,6 +51,10 @@ struct AppSettings: Codable, Equatable {
     var locationHint: String
     /// Configuration for which safety guardrails are active in prompt assembly.
     var guardrailsConfig: GuardrailsConfig
+    /// Maximum seconds a single generation may run before it is cancelled and
+    /// marked as failed. Covers the entire agentic-loop duration, not just a
+    /// single model pass. Default: 120 s.
+    var generationTimeoutSeconds: Int
 
     static let `default` = AppSettings(
         memoryEnabled: true,
@@ -73,7 +77,8 @@ struct AppSettings: Codable, Equatable {
         answerLength: .balanced,
         enabledTools: AppSettings.defaultEnabledTools,
         locationHint: "Nymburk, CZ",
-        guardrailsConfig: .default
+        guardrailsConfig: .default,
+        generationTimeoutSeconds: 120
     )
 
     /// Tools registered in `SkillManager` by default. Kept in sync with
@@ -97,6 +102,7 @@ struct AppSettings: Codable, Equatable {
         case showTokenUsage
         case language, answerLength, enabledTools, locationHint
         case guardrailsConfig
+        case generationTimeoutSeconds
         // Retained only for migration from the previous schema.
         case responseStyle
     }
@@ -122,7 +128,8 @@ struct AppSettings: Codable, Equatable {
         answerLength: AnswerLength,
         enabledTools: Set<String>,
         locationHint: String,
-        guardrailsConfig: GuardrailsConfig = .default
+        guardrailsConfig: GuardrailsConfig = .default,
+        generationTimeoutSeconds: Int = 120
     ) {
         self.memoryEnabled = memoryEnabled
         self.autoExtractMemory = autoExtractMemory
@@ -145,6 +152,7 @@ struct AppSettings: Codable, Equatable {
         self.enabledTools = enabledTools
         self.locationHint = locationHint
         self.guardrailsConfig = guardrailsConfig
+        self.generationTimeoutSeconds = generationTimeoutSeconds
     }
 
     init(from decoder: Decoder) throws {
@@ -183,6 +191,7 @@ struct AppSettings: Codable, Equatable {
         self.enabledTools     = try c.decodeIfPresent(Set<String>.self,   forKey: .enabledTools)     ?? fallback.enabledTools
         self.locationHint     = try c.decodeIfPresent(String.self,        forKey: .locationHint)     ?? fallback.locationHint
         self.guardrailsConfig = try c.decodeIfPresent(GuardrailsConfig.self, forKey: .guardrailsConfig) ?? fallback.guardrailsConfig
+        self.generationTimeoutSeconds = try c.decodeIfPresent(Int.self, forKey: .generationTimeoutSeconds) ?? fallback.generationTimeoutSeconds
 
         // Migration path for installs that persisted the previous
         // `responseStyle: "leanCI" | "casual"` field. Map leanCI→concise

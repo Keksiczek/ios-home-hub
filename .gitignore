@@ -57,3 +57,6 @@ Carthage/Build/
 # Local environment / secrets
 .env
 *.local
+
+# Developer-local signing overrides (copy from LocalOverride.xcconfig.template)
+LocalOverride.xcconfig

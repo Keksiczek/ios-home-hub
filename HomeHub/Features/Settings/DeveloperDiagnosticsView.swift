@@ -597,7 +597,25 @@ struct DeveloperDiagnosticsView: View {
                 usableInThisBuild: catalog.usableModels.count
             ),
             lastBudget: budget,
-            recentTelemetry: telemetryLog
+            recentTelemetry: telemetryLog,
+            guardrails: {
+                let g = s.guardrailsConfig
+                var layers: [String] = []
+                if g.factsEnabled           { layers.append("facts") }
+                if g.episodesEnabled        { layers.append("episodes") }
+                if g.fileExcerptsEnabled    { layers.append("fileExcerpts") }
+                if g.skillInstructionsEnabled { layers.append("skillInstructions") }
+                let preset: String
+                if g == .default        { preset = "default" }
+                else if g == .unrestricted { preset = "unrestricted" }
+                else                    { preset = "custom" }
+                return DiagnosticReport.GuardrailsSnapshot(
+                    hardRulesEnabled: g.hardRulesEnabled,
+                    privacyGuardrailEnabled: g.privacyGuardrailEnabled,
+                    enabledContextLayers: layers.sorted(),
+                    activePreset: preset
+                )
+            }()
         )
     }
 

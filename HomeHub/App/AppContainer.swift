@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import os
 
 /// The single dependency container for the app.
 ///
@@ -385,7 +386,17 @@ final class AppContainer: ObservableObject {
 
         let store: any Store
         #if HOMEHUB_SWIFTDATA
-        store = SwiftDataStore()
+        do {
+            store = try SwiftDataStore()
+        } catch {
+            // Schema migration failure or on-disk corruption. Fall back to
+            // FileStore so the app remains usable; the user's model data is
+            // preserved on disk and may become accessible again after an app
+            // update that handles the migration.
+            let log = Logger(subsystem: "HomeHub", category: "AppContainer")
+            log.error("SwiftDataStore init failed, falling back to FileStore: \(error.localizedDescription, privacy: .public)")
+            store = FileStore()
+        }
         #else
         store = FileStore()
         #endif

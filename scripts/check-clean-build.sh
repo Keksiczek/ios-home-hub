@@ -264,6 +264,18 @@ if [ -f "$ICON_JSON" ]; then
   fi
 fi
 
+# ── 16. LocalOverride.xcconfig exists (developer signing) ────────────────────
+# LocalOverride.xcconfig is gitignored; without it Xcode uses an empty
+# DEVELOPMENT_TEAM and code-signing fails on a real device.  This is a
+# WARNING (not a hard failure) so CI — which signs via a provisioning profile
+# injected by the CI environment — is not blocked.
+echo "--- Checking LocalOverride.xcconfig (developer signing) ---"
+if [ -f "$REPO_ROOT/LocalOverride.xcconfig" ]; then
+  green "LocalOverride.xcconfig present"
+else
+  warn "LocalOverride.xcconfig missing — copy from LocalOverride.xcconfig.template and fill in your DEVELOPMENT_TEAM"
+fi
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo ""
 if [ "$FAIL" -eq 0 ]; then
