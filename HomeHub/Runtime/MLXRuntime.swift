@@ -86,6 +86,10 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
 
     private let loader: any MLXLoader
 
+    /// Suppresses repeat warnings about unsupported sampler parameters so
+    /// they appear only once per model load rather than on every generation.
+    private var hasLoggedSamplerWarnings = false
+
     init(loader: any MLXLoader = DefaultMLXLoader()) {
         self.loader = loader
     }
@@ -166,8 +170,10 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
             }
 
             // A new container invalidates any cached session from the previous load.
+            // Reset the sampler-warning flag so the next generation logs once.
             sessionLock.lock()
             activeSession = nil
+            hasLoggedSamplerWarnings = false
             sessionLock.unlock()
 
             let duration = Int(Date().timeIntervalSince(start) * 1000)
@@ -246,11 +252,28 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                         return
                     }
 
-                    // NOTE: MLXLMCommon.GenerateParameters (current version) only exposes
-                    // maxTokens, temperature, and topP. The following RuntimeParameters
-                    // fields are accepted by the contract but NOT forwarded to the MLX
-                    // backend: topK, minP, repeatPenalty, repeatPenaltyLastN,
-                    // frequencyPenalty, presencePenalty.
+                    // Map RuntimeParameters → GenerateParameters.
+                    // The pinned mlx-swift-lm revision exposes maxTokens, temperature,
+                    // and topP. topK, minP, and repeatPenalty are not part of this
+                    // version's public API; we log them once per model load so they are
+                    // visible in logs without flooding every generation.
+                    self.sessionLock.lock()
+                    let needsWarning = !self.hasLoggedSamplerWarnings
+                    if needsWarning { self.hasLoggedSamplerWarnings = true }
+                    self.sessionLock.unlock()
+
+                    if needsWarning {
+                        if parameters.topK != 0 {
+                            log.warning("MLX: topK (\(parameters.topK, privacy: .public)) not supported by current GenerateParameters, skipping")
+                        }
+                        if parameters.minP != 0 {
+                            log.warning("MLX: minP (\(parameters.minP, privacy: .public)) not supported by current GenerateParameters, skipping")
+                        }
+                        if parameters.repeatPenalty != 1.0 {
+                            log.warning("MLX: repeatPenalty (\(parameters.repeatPenalty, privacy: .public)) not supported by current GenerateParameters, skipping")
+                        }
+                    }
+
                     let generateParameters = GenerateParameters(
                         maxTokens: parameters.maxTokens,
                         temperature: Float(parameters.temperature),

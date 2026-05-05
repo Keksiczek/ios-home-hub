@@ -1,5 +1,19 @@
 import Foundation
 import SwiftData
+import os
+
+// MARK: - SwiftDataStoreError
+
+enum SwiftDataStoreError: LocalizedError {
+    case containerInitFailed(underlying: Error)
+
+    var errorDescription: String? {
+        switch self {
+        case .containerInitFailed(let underlying):
+            return "SwiftData container initialisation failed: \(underlying.localizedDescription)"
+        }
+    }
+}
 
 // MARK: - SwiftData Models
 
@@ -184,7 +198,9 @@ actor SwiftDataStore: Store {
     private let container: ModelContainer
     private let context: ModelContext
 
-    init() {
+    private static let log = Logger(subsystem: "HomeHub", category: "SwiftDataStore")
+
+    init() throws {
         let schema = Schema([
             SDConversation.self,
             SDMessage.self,
@@ -198,21 +214,29 @@ actor SwiftDataStore: Store {
             isStoredInMemoryOnly: false,
             allowsSave: true
         )
-        // SwiftData container construction can fail on schema migration
-        // mismatches between app versions. `try!` here would crash without
-        // any actionable context in the device crash log; rethrowing isn't
-        // an option (init is non-throwing because it backs a Store actor),
-        // so we surface the underlying error in the fatalError message
-        // — the developer will see it in console.app / Xcode's crash
-        // navigator instead of a bare EXC_BREAKPOINT.
         do {
             self.container = try ModelContainer(for: schema, configurations: [config])
         } catch {
-            fatalError("SwiftDataStore: failed to construct ModelContainer: \(error)")
+            Self.log.error("SwiftDataStore: ModelContainer init failed: \(error.localizedDescription, privacy: .public)")
+            throw SwiftDataStoreError.containerInitFailed(underlying: error)
         }
         self.context = ModelContext(container)
         self.context.autosaveEnabled = true
     }
+
+    #if DEBUG
+    /// Testing seam — injects a pre-built container or simulates init failure.
+    /// Do NOT use in production code.
+    init(containerFactory: () throws -> ModelContainer) throws {
+        do {
+            self.container = try containerFactory()
+        } catch {
+            throw SwiftDataStoreError.containerInitFailed(underlying: error)
+        }
+        self.context = ModelContext(container)
+        self.context.autosaveEnabled = false
+    }
+    #endif
 
     // MARK: - Profiles (stored as JSON blobs)
 

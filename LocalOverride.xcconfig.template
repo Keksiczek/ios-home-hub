@@ -1,0 +1,15 @@
+// LocalOverride.xcconfig — developer-local overrides (NOT committed to git)
+//
+// First-time setup:
+//   cp LocalOverride.xcconfig.template LocalOverride.xcconfig
+//   # Then edit LocalOverride.xcconfig and replace YOUR_TEAM_ID with your
+//   # Apple Developer Team ID (10-character alphanumeric string).
+//   # Find yours at: https://developer.apple.com/account → Membership
+//
+// This file (LocalOverride.xcconfig) is listed in .gitignore so your
+// personal signing identity is never committed.
+//
+// The template (LocalOverride.xcconfig.template) IS committed so every
+// developer on the team gets the setup instructions on a fresh clone.
+
+DEVELOPMENT_TEAM = YOUR_TEAM_ID
