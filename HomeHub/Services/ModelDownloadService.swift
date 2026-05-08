@@ -153,9 +153,13 @@ final class ModelDownloadService: ObservableObject {
             await runtime.unload()
         }
 
-        // Remove file from disk.
+        // Remove file or MLX cache from disk.
         do {
-            try await localModels.remove(modelID)
+            if let model = catalog.model(withID: modelID), model.format == .mlx, let repoId = model.repoId {
+                try await localModels.removeMLXCache(for: repoId)
+            } else {
+                try await localModels.remove(modelID)
+            }
         } catch {
             log.error("Failed to remove model file for '\(modelID, privacy: .public)': \(error.localizedDescription, privacy: .public)")
         }
@@ -315,7 +319,7 @@ final class ModelDownloadService: ObservableObject {
             throw URLImportError.invalidName
         }
         guard let scheme = url.scheme?.lowercased(),
-              scheme == "http" || scheme == "https" else {
+              scheme == "http" || scheme == "https" || scheme == "mlx" else {
             throw URLImportError.invalidURL
         }
 
@@ -341,6 +345,9 @@ final class ModelDownloadService: ObservableObject {
         let safeSanitized = sanitized.isEmpty ? "custom" : sanitized
         let modelID = "user-\(safeSanitized)-\(Int(Date().timeIntervalSince1970) % 100_000)"
 
+        let isMLX = url.scheme?.lowercased() == "mlx"
+        let repoId = isMLX ? url.absoluteString.replacingOccurrences(of: "mlx://", with: "") : nil
+
         let model = LocalModel(
             id: modelID,
             displayName: trimmedName,
@@ -358,16 +365,20 @@ final class ModelDownloadService: ObservableObject {
             installState: .notInstalled,
             recommendedFor: [.iPhone, .iPadMSeries],
             license: "Unknown",
-            // The "Add from URL" flow only accepts direct .gguf links —
-            // see `validateModelURL`. Mark explicitly so the new MLX-default
-            // doesn't accidentally route a GGUF URL into the MLX backend.
-            backend: .llamaCpp,
-            format: .gguf,
+            // The "Add from URL" flow supports both .gguf links and mlx:// repos.
+            backend: isMLX ? .mlx : .llamaCpp,
+            format: isMLX ? .mlx : .gguf,
+            repoId: repoId,
             isUserAdded: true
         )
 
         catalog.addUserModel(model)
-        start(model)
+        
+        // MLX models don't need a separate download pass — they download 
+        // JIT during the first load. GGUF models start downloading immediately.
+        if !isMLX {
+            start(model)
+        }
     }
 
     /// Rewrites Hugging Face `blob/` URLs to `resolve/` so the download
@@ -389,6 +400,8 @@ final class ModelDownloadService: ObservableObject {
     /// metadata files. Keeps the user out of the slow-fail loop where a
     /// download succeeds, validation fails, and they have to start over.
     nonisolated static func validateModelURL(_ url: URL) throws {
+        if url.scheme?.lowercased() == "mlx" { return }
+        
         let path = url.path.lowercased()
         // Hugging Face repo-overview / file-tree pages.
         if path.contains("/tree/") || path.hasSuffix("/main") || path.hasSuffix("/master") {

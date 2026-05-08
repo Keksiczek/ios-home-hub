@@ -85,20 +85,18 @@ struct AddFromURLSheet: View {
     /// at load time.
     @ViewBuilder
     private var buildBackendNotice: some View {
-        if !RuntimeBackendAvailability.llamaCppAvailable {
-            Section {
-                Label {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("This build runs MLX models only.")
-                            .font(HHTheme.subheadline.weight(.semibold))
-                        Text("The Add-from-URL flow imports GGUF files for the llama.cpp runtime, which requires the optional `HOMEHUB_LLAMA_RUNTIME` build flag. Imported models will appear in the catalog but won't load until you opt in.")
-                            .font(HHTheme.caption)
-                            .foregroundStyle(HHTheme.textSecondary)
-                    }
-                } icon: {
-                    Image(systemName: "info.circle.fill")
-                        .foregroundStyle(HHTheme.accent)
+        Section {
+            Label {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Support for GGUF and MLX.")
+                        .font(HHTheme.subheadline.weight(.semibold))
+                    Text("Paste a direct GGUF link for llama.cpp, or use `mlx://repo/id` to import an MLX model from Hugging Face.")
+                        .font(HHTheme.caption)
+                        .foregroundStyle(HHTheme.textSecondary)
                 }
+            } icon: {
+                Image(systemName: "info.circle.fill")
+                    .foregroundStyle(HHTheme.accent)
             }
         }
     }
@@ -116,7 +114,7 @@ struct AddFromURLSheet: View {
         } header: {
             Text("Required")
         } footer: {
-            Text("URL must point directly to a .gguf file (e.g. on Hugging Face). Hugging Face `/blob/` links are auto-rewritten to `/resolve/`.")
+            Text("Enter a direct .gguf URL (https://...) or an MLX repo (mlx://mlx-community/Llama-3.2-1B-Instruct-4bit).")
         }
     }
 
@@ -139,12 +137,12 @@ struct AddFromURLSheet: View {
         case .ok(let result):
             Section {
                 probeRow(
-                    icon: result.isGGUF ? "checkmark.seal.fill" : "exclamationmark.triangle.fill",
-                    color: result.isGGUF ? HHTheme.success : HHTheme.warning,
-                    title: result.isGGUF ? "Valid GGUF" : "Reachable, but not a GGUF",
-                    detail: result.isGGUF
-                        ? "First 4 bytes match the GGUF magic header."
-                        : "First 4 bytes don't match GGUF. Download will fail validation."
+                    icon: result.isGGUF || urlString.lowercased().hasPrefix("mlx://") ? "checkmark.seal.fill" : "exclamationmark.triangle.fill",
+                    color: result.isGGUF || urlString.lowercased().hasPrefix("mlx://") ? HHTheme.success : HHTheme.warning,
+                    title: urlString.lowercased().hasPrefix("mlx://") ? "MLX Repo" : (result.isGGUF ? "Valid GGUF" : "Reachable, but not a GGUF"),
+                    detail: urlString.lowercased().hasPrefix("mlx://")
+                        ? "MLX repository identifier will be used."
+                        : (result.isGGUF ? "First 4 bytes match the GGUF magic header." : "First 4 bytes don't match GGUF. Download will fail validation.")
                 )
                 if let size = result.sizeBytes, size > 0 {
                     probeRow(
@@ -230,8 +228,13 @@ struct AddFromURLSheet: View {
             return
         }
         guard let url = URL(string: trimmed),
-              url.scheme == "http" || url.scheme == "https" else {
+              url.scheme == "http" || url.scheme == "https" || url.scheme == "mlx" else {
             probe = .idle
+            return
+        }
+        
+        if url.scheme == "mlx" {
+            probe = .ok(ModelDownloadService.URLProbe(sizeBytes: nil, isGGUF: false, suggestedName: url.lastPathComponent, statusCode: 200, detail: nil))
             return
         }
         probe = .probing
@@ -289,8 +292,8 @@ struct AddFromURLSheet: View {
             return
         }
         guard let url = URL(string: trimmedURL),
-              url.scheme == "https" || url.scheme == "http" else {
-            validationError = "URL must start with http:// or https://."
+              url.scheme == "https" || url.scheme == "http" || url.scheme == "mlx" else {
+            validationError = "URL must start with http://, https:// or mlx://."
             return
         }
 
