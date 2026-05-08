@@ -2,6 +2,8 @@ import Foundation
 import MLX
 import MLXLLM
 import MLXLMCommon
+import Tokenizers
+import Hub
 import os
 
 // Used to track download→prepare phase transition inside a @Sendable closure.
@@ -135,7 +137,7 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
 
         let config = ModelConfiguration(id: repoId)
         let downloader = HubApiDownloader()
-        let tokenizerLoader = SwiftTransformersTokenizerLoader()
+        let tokenizerLoader = SwiftTransformersTokenizerLoader(modelFamily: model.family)
 
         // Emit .preparing when download fraction hits 1.0 (download done,
         // Metal compilation begins). For warm-cache loads where no progress
@@ -184,8 +186,10 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
             self.log.info("MLX: Load cancelled for '\(repoId, privacy: .public)'")
             throw CancellationError()
         } catch {
-            self.log.error("MLX: Failed to load model container: \(error.localizedDescription, privacy: .public)")
-            throw RuntimeError.initializationFailed("Failed to load MLX model: \(error.localizedDescription)")
+            let descriptiveError = error.mlxDescriptiveMessage
+            self.log.error("MLX: Failed to load model '\(repoId, privacy: .public)': \(descriptiveError, privacy: .public)")
+            
+            throw RuntimeError.initializationFailed("Failed to load MLX model: \(descriptiveError)")
         }
     }
 
@@ -327,6 +331,7 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                     case .assistant, .none: .assistant
                     }
 
+                    session.parameters = generateParameters
                     let responseStream = session.streamResponse(
                         to: lastContent,
                         role: lastRole,
@@ -334,12 +339,22 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                         videos: []
                     )
 
+                    var buffer = ""
+                    var lastYieldTime = Date()
+
                     for try await piece in responseStream {
                         if Task.isCancelled { break }
 
                         tokensGenerated += 1
                         currentText += piece
-                        continuation.yield(.token(piece))
+                        buffer += piece
+
+                        let now = Date()
+                        if now.timeIntervalSince(lastYieldTime) >= 0.1 {
+                            continuation.yield(.token(buffer))
+                            buffer = ""
+                            lastYieldTime = now
+                        }
 
                         if tokensGenerated >= parameters.maxTokens {
                             hitMaxTokens = true
@@ -354,6 +369,10 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                             }
                         }
                         if shouldStop { break }
+                    }
+
+                    if !buffer.isEmpty {
+                        continuation.yield(.token(buffer))
                     }
 
                     self.sessionLock.lock()
@@ -399,13 +418,24 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                             context: context
                         )
 
+                        var buffer = ""
+                        var lastYieldTime = Date()
+
                         for await generation in genStream {
                             if Task.isCancelled { break }
                             switch generation {
                             case .chunk(let text):
                                 tokensGenerated += 1
                                 currentText += text
-                                continuation.yield(.token(text))
+                                buffer += text
+
+                                let now = Date()
+                                if now.timeIntervalSince(lastYieldTime) >= 0.1 {
+                                    continuation.yield(.token(buffer))
+                                    buffer = ""
+                                    lastYieldTime = now
+                                }
+
                                 if tokensGenerated >= parameters.maxTokens {
                                     hitMaxTokens = true
                                     break
@@ -423,6 +453,10 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                             @unknown default:
                                 break
                             }
+                        }
+
+                        if !buffer.isEmpty {
+                            continuation.yield(.token(buffer))
                         }
                     }
                 }
@@ -476,5 +510,43 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
 
     func handleBackground() async {
         self.log.info("MLX: App backgrounded")
+    }
+}
+
+// MARK: - Diagnostic Helpers
+
+private extension Error {
+    /// Extracts a readable case name from Tokenizer or Hub errors.
+    var mlxDescriptiveMessage: String {
+        // 1. Handle Tokenizers.TokenizerError (the source of "error 0")
+        if let tokError = self as? Tokenizers.TokenizerError {
+            return switch tokError {
+            case .missingConfig: "TokenizerError.missingConfig"
+            case .missingTokenizerClassInConfig: "TokenizerError.missingTokenizerClassInConfig"
+            case .unsupportedTokenizer(let msg): "TokenizerError.unsupportedTokenizer(\(msg))"
+            case .missingVocab: "TokenizerError.missingVocab"
+            case .malformedVocab: "TokenizerError.malformedVocab"
+            case .chatTemplate(let msg): "TokenizerError.chatTemplate(\(msg))"
+            case .missingChatTemplate: "TokenizerError.missingChatTemplate"
+            case .tooLong(let msg): "TokenizerError.tooLong(\(msg))"
+            case .mismatchedConfig(let msg): "TokenizerError.mismatchedConfig(\(msg))"
+            @unknown default: "TokenizerError.unknown(\(String(describing: tokError)))"
+            }
+        }
+        
+        // 2. Handle Hub.HubApiError
+        if let hubError = self as? Hub.HubApiError {
+            return switch hubError {
+            case .unauthorized: "HubApiError.unauthorized"
+            case .notFound: "HubApiError.notFound"
+            case .downloadError(let msg): "HubApiError.downloadError(\(msg))"
+            case .parseError: "HubApiError.parseError"
+            case .malformedUrl: "HubApiError.malformedUrl"
+            @unknown default: "HubApiError.unknown(\(String(describing: hubError)))"
+            }
+        }
+        
+        // 3. Standard fallback
+        return localizedDescription
     }
 }

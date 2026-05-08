@@ -111,7 +111,7 @@ configFiles:
 
 settings:
   base:
-    SWIFT_VERSION: "5.10"
+    SWIFT_VERSION: "6.0"
     GENERATE_INFOPLIST_FILE: YES
     # IPHONEOS_DEPLOYMENT_TARGET is owned by `options.deploymentTarget.iOS`
     # at the top of this file. Setting it again here would shadow the

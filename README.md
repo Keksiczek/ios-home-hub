@@ -1,8 +1,69 @@
-# HomeHub
+# HomeHub 🏠
 
-A private, offline-first personal AI assistant for iPhone and iPad.
-Local LLM inference, personal memory, onboarding, and a clean
-native SwiftUI interface. No cloud, no accounts, no data leaving the device.
+**Your private, offline-first personal AI assistant for iPhone and iPad.**
+
+HomeHub brings the power of local LLMs to your pocket. No cloud, no accounts, no data leaving your device. Experience a truly private assistant that remembers your preferences, executes native tasks, and learns from your conversations — all powered by Apple's MLX.
+
+## 🌟 Key Features
+
+- **Local MLX Inference**: High-performance LLM execution optimized for Apple Silicon (A18 Pro, M-series).
+- **Agentic Skills**: Native integration with HomeKit, Calendar, Reminders, and Web Search.
+- **Personal Memory**: Durable long-term memory that captures facts and context from your chats.
+- **Document & Image Analysis**: Built-in RAG (Retrieval-Augmented Generation) for PDFs and OCR for images.
+- **Privacy First**: Everything stays on-device. No telemetry, no cloud processing.
+- **Premium UI**: Native SwiftUI interface with haptic feedback, swipe actions, and fluid animations.
+
+## 🚀 Getting Started
+
+### Prerequisites
+
+- **Hardware**: iPhone 16 Pro (8GB RAM) or iPad with M-series chip.
+- **Software**: iOS 17.0+
+- **Developer Tools**: Xcode 15.4+, `brew install xcodegen`
+
+### Quick Setup
+
+1. **Clone & Configure**:
+   ```bash
+   git clone https://github.com/Keksiczek/ios-home-hub
+   cd ios-home-hub
+   cp LocalOverride.xcconfig.template LocalOverride.xcconfig
+   # Edit LocalOverride.xcconfig with your Team ID
+   ```
+
+2. **Generate Project**:
+   ```bash
+   make setup
+   open HomeHub.xcodeproj
+   ```
+
+3. **Build & Run**:
+   Select your device and press **Cmd+R**.
+
+## 🧠 Runtime Backends
+
+HomeHub uses a hybrid routing architecture:
+
+- **MLX (Primary)**: The default high-performance path. Supports `mlx-community` models.
+- **llama.cpp (Optional)**: Support for GGUF models. Requires `HOMEHUB_LLAMA_RUNTIME` flag and `llama.xcframework`.
+- **Custom Import**: Use `mlx://repo-id` to import any MLX model directly from Hugging Face.
+
+## 🛠 Skills & Tools
+
+HomeHub agents can perform actions using the following tools:
+
+- **Calculator**: Native arithmetic for reliable results.
+- **Calendar**: Check and manage your schedule.
+- **Reminders**: Stay on top of your tasks.
+- **HomeKit**: Control your smart home devices locally.
+- **Web Search**: Real-time information via DuckDuckGo Lite (privacy-respecting).
+- **Device Info**: Access battery, thermal state, and storage metrics.
+
+## 📖 Documentation
+
+- [Developer Walkthrough](walkthrough.md) — Detailed technical breakdown of recent changes.
+- [Model Catalog Guide](HomeHub/Services/ModelCatalogService.swift) — How models are curated and managed.
+- [Agent Protocol](HomeHub/Services/Skills/Skill.swift) — How to implement new native skills.
 
 ## Status
 

@@ -65,9 +65,12 @@ enum ChatTextSanitizer {
         guard !content.isEmpty else { return content }
 
         var cleaned = content
-        for token in controlTokens {
-            // `replacingOccurrences` is sufficient — tokens are fixed strings.
-            cleaned = cleaned.replacingOccurrences(of: token, with: "")
+        // Use a single regex pass to strip all control tokens. This is significantly 
+        // faster than 30+ sequential `replacingOccurrences` calls, especially 
+        // during streaming when this is called frequently on growing strings.
+        if let regex = tokensRegex {
+            let range = NSRange(cleaned.startIndex..., in: cleaned)
+            cleaned = regex.stringByReplacingMatches(in: cleaned, range: range, withTemplate: "")
         }
 
         // Drop the U+FFFD replacement character. It only ever appears when
@@ -128,4 +131,12 @@ enum ChatTextSanitizer {
 
         return cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
     }
+
+    /// Pre-compiled regex for all control tokens.
+    private static let tokensRegex: NSRegularExpression? = {
+        let pattern = controlTokens
+            .map { NSRegularExpression.escapedPattern(for: $0) }
+            .joined(separator: "|")
+        return try? NSRegularExpression(pattern: pattern)
+    }()
 }

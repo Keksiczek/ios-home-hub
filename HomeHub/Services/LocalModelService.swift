@@ -106,6 +106,15 @@ actor LocalModelService {
         mlxCacheURL(for: repoId)
     }
 
+    /// Removes the MLX cache directory for a given repository.
+    func removeMLXCache(for repoId: String) throws {
+        let cacheDir = mlxCacheURL(for: repoId)
+        if fileManager.fileExists(atPath: cacheDir.path) {
+            try fileManager.removeItem(at: cacheDir)
+            log.info("Deleted MLX cache directory for '\(repoId, privacy: .public)'")
+        }
+    }
+
     // MARK: - GGUF Support
     func isInstalled(_ modelID: String) -> Bool {
         fileManager.fileExists(atPath: localURL(for: modelID).path)

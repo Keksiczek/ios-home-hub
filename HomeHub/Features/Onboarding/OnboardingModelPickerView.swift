@@ -9,38 +9,64 @@ struct OnboardingModelPickerView: View {
     /// Sort order: usable-in-this-build first (MLX-default builds get MLX up
     /// top), then disabled-with-reason at the bottom. Stable: keeps catalog
     /// declaration order within each group.
-    private var orderedModels: [LocalModel] {
-        let usable = catalog.models.filter { $0.isUsableInThisBuild }
-        let disabled = catalog.models.filter { !$0.isUsableInThisBuild }
-        return usable + disabled
+    @State private var showAllModels = false
+
+    /// Recommended models (MLX and usable)
+    private var recommendedModels: [LocalModel] {
+        catalog.models.filter { $0.isUsableInThisBuild && $0.backend == .mlx }
+    }
+
+    /// Other models (GGUF or non-usable)
+    private var otherModels: [LocalModel] {
+        catalog.models.filter { !recommendedModels.contains($0) }
     }
 
     var body: some View {
         HHScreen(
             eyebrow: "Step 1",
             title: "Choose a model.",
-            subtitle: "Download a model to get started. The app runs entirely on-device — no model, no chat. You can add more or import custom models later from Settings → Models."
+            subtitle: "Select a model to get started. HomeHub runs entirely on-device for maximum privacy."
         ) {
             VStack(spacing: HHTheme.spaceM) {
-                ForEach(orderedModels) { model in
+                SectionHeader(title: "Recommended", subtitle: "Optimized for your device")
+                
+                ForEach(recommendedModels) { model in
                     ModelPickerRow(
                         model: model,
                         isSelected: drafts.selectedModelID == model.id,
-                        // Resume picks up an interrupted download from
-                        // its saved bytes; bare retry starts over. Both
-                        // funnel through `downloads.start(_:)` which
-                        // looks up the resume blob internally.
                         hasResumeData: downloads.hasResumeData(for: model.id),
-                        onSelect: {
-                            // Refuse to select a model the build can't load.
-                            // The row already shows a disabled affordance and
-                            // the unavailable reason; this stops the user from
-                            // sailing through onboarding into a hard error.
-                            guard model.isUsableInThisBuild else { return }
-                            drafts.selectedModelID = model.id
-                        },
+                        onSelect: { drafts.selectedModelID = model.id },
                         onDownload: { downloads.start(model) }
                     )
+                }
+
+                if !otherModels.isEmpty {
+                    if showAllModels {
+                        SectionHeader(title: "Other Models", subtitle: "Alternative formats and legacy models")
+                            .padding(.top, HHTheme.spaceM)
+                        
+                        ForEach(otherModels) { model in
+                            ModelPickerRow(
+                                model: model,
+                                isSelected: drafts.selectedModelID == model.id,
+                                hasResumeData: downloads.hasResumeData(for: model.id),
+                                onSelect: {
+                                    guard model.isUsableInThisBuild else { return }
+                                    drafts.selectedModelID = model.id
+                                },
+                                onDownload: { downloads.start(model) }
+                            )
+                        }
+                    } else {
+                        Button {
+                            withAnimation { showAllModels = true }
+                        } label: {
+                            Text("Show more formats…")
+                                .font(HHTheme.caption)
+                                .foregroundStyle(HHTheme.accent)
+                                .padding(.vertical, HHTheme.spaceS)
+                        }
+                    }
                 }
             }
         } footer: {
@@ -198,5 +224,25 @@ private struct ModelPickerRow: View {
                     .tint(HHTheme.accent)
             }
         }
+    }
+}
+
+private struct SectionHeader: View {
+    let title: String
+    let subtitle: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title.uppercased())
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(HHTheme.textSecondary)
+            if let subtitle = subtitle {
+                Text(subtitle)
+                    .font(HHTheme.caption2)
+                    .foregroundStyle(HHTheme.textSecondary.opacity(0.8))
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 4)
     }
 }

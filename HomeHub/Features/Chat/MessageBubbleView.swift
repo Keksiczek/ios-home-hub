@@ -213,16 +213,16 @@ private struct TypingIndicator: View {
         HStack(spacing: 4) {
             ForEach(0..<3, id: \.self) { i in
                 Circle()
-                    .fill(HHTheme.textSecondary.opacity(phase == i ? 0.8 : 0.3))
+                    .fill(HHTheme.textSecondary)
                     .frame(width: 6, height: 6)
+                    .scaleEffect(phase == i ? 1.0 : 0.7)
+                    .opacity(phase == i ? 1.0 : 0.3)
             }
         }
+        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: phase)
         .onAppear {
-            Task {
-                while !Task.isCancelled {
-                    try? await Task.sleep(nanoseconds: 300_000_000)
-                    await MainActor.run { phase = (phase + 1) % 3 }
-                }
+            Timer.scheduledTimer(withTimeInterval: 0.35, repeats: true) { _ in
+                phase = (phase + 1) % 3
             }
         }
     }

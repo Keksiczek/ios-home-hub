@@ -246,11 +246,12 @@ final class PromptAssemblyService {
         // L2. Episodes
         appendEpisodes(from: package, to: &chunks)
 
-        // Short tool reminder instead of full L4 instructions
+        // Short, direct tool reminder. Prevents the model from repeating 
+        // instructions and gets straight to the user's answer.
         chunks.append("""
-        You just used a tool and received an <Observation> with the result. \
-        Use that information to formulate a helpful, natural response to the user. \
-        Do NOT output another <tool_call> block unless absolutely necessary.
+        Tool Observation: Use the provided <Observation> to answer the user. \
+        Be direct and natural. Do NOT use another tool unless the observation \
+        is missing critical data.
         """)
 
         if package.settings.guardrailsConfig.privacyGuardrailEnabled {

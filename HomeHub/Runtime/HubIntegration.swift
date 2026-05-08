@@ -56,9 +56,28 @@ struct HubApiDownloader: Downloader {
 /// into `MLXLMCommon.Tokenizer`, satisfying the type requirements of the
 /// `loadModelContainer(from:using:configuration:progressHandler:)` API.
 struct SwiftTransformersTokenizerLoader: TokenizerLoader {
+    private let modelFamily: String?
+
+    init(modelFamily: String? = nil) {
+        self.modelFamily = modelFamily
+    }
+
     func load(from directory: URL) async throws -> any MLXLMCommon.Tokenizer {
-        let upstream = try await AutoTokenizer.from(modelFolder: directory)
-        return SwiftTransformersTokenizerBridge(upstream)
+        do {
+            let upstream = try await AutoTokenizer.from(modelFolder: directory)
+            return SwiftTransformersTokenizerBridge(upstream, modelFamily: modelFamily)
+        } catch {
+            // Log what is actually present in the folder for easier debugging on device
+            let fm = FileManager.default
+            let files = (try? fm.contentsOfDirectory(atPath: directory.path))?.joined(separator: ", ") ?? "unreadable"
+            
+            HHLog.runtime.error("""
+                Tokenizer load failed at: \(directory.path)
+                Found files: \(files)
+                Error: \(error)
+                """)
+            throw error
+        }
     }
 }
 
@@ -72,9 +91,11 @@ struct SwiftTransformersTokenizerLoader: TokenizerLoader {
 /// `MLXHuggingFace` product (which requires bringing in its own macro build target).
 private struct SwiftTransformersTokenizerBridge: MLXLMCommon.Tokenizer, @unchecked Sendable {
     private let upstream: any Tokenizers.Tokenizer
+    private let modelFamily: String?
 
-    init(_ upstream: any Tokenizers.Tokenizer) {
+    init(_ upstream: any Tokenizers.Tokenizer, modelFamily: String? = nil) {
         self.upstream = upstream
+        self.modelFamily = modelFamily
     }
 
     func encode(text: String, addSpecialTokens: Bool) -> [Int] {
@@ -103,9 +124,112 @@ private struct SwiftTransformersTokenizerBridge: MLXLMCommon.Tokenizer, @uncheck
         tools: [[String: any Sendable]]?,
         additionalContext: [String: any Sendable]?
     ) throws -> [Int] {
+        // SAFETY: "\($0)" is standard Swift string interpolation of the value —
+        // NOT a literal backslash sequence. This correctly calls description/CustomStringConvertible.
         let stringMessages = messages.map { dict in
             dict.compactMapValues { "\($0)" }
         }
-        return try upstream.applyChatTemplate(messages: stringMessages)
+
+        do {
+            return try upstream.applyChatTemplate(messages: stringMessages)
+        } catch let error as Tokenizers.TokenizerError {
+            switch error {
+
+            case .missingChatTemplate:
+                // FALLBACK ACTIVATED: no chat_template key in tokenizer_config.json
+                HHLog.runtime.warning("""
+                    MLX [applyChatTemplate]: upstream threw TokenizerError.missingChatTemplate \
+                    — tokenizer config contains no Jinja template. \
+                    Activating conservative fallback render \
+                    (family: \(self.modelFamily ?? "default/ChatML", privacy: .public)).
+                    """)
+
+            case .chatTemplate(let templateMsg):
+                // FALLBACK ACTIVATED: template present but Jinja execution failed
+                HHLog.runtime.warning("""
+                    MLX [applyChatTemplate]: upstream threw TokenizerError.chatTemplate \
+                    (\(templateMsg, privacy: .public)) \
+                    — Jinja template execution error. \
+                    Activating conservative fallback render \
+                    (family: \(self.modelFamily ?? "default/ChatML", privacy: .public)).
+                    """)
+
+            default:
+                // Non-template tokenizer errors: propagate normally, do NOT use fallback.
+                throw error
+            }
+
+            // ⚠️ EXPLICIT LIMITATION: tools and additionalContext require Jinja template
+            // execution and are NOT supported in the conservative fallback render path.
+            // If provided, they are ignored and a warning is emitted so the caller is aware.
+            if tools != nil || additionalContext != nil {
+                HHLog.runtime.warning("""
+                    MLX [applyChatTemplate fallback]: tools and/or additionalContext were provided \
+                    but are NOT supported in the fallback render path — they will be ignored.
+                    """)
+            }
+
+            let runtimePrompt = reconstructRuntimePrompt(from: stringMessages)
+            let rendered = ChatTemplate.render(runtimePrompt, family: modelFamily ?? "")
+
+            // addSpecialTokens: false — safety choice for fallback path:
+            //   PRO: Prevents double-BOS tokens. ChatTemplate.render() already 
+            //        includes BOS/header tokens for Llama3, Gemma2, and Gemma3. 
+            //        Using false ensures AutoTokenizer doesn't prepend a 
+            //        second BOS at the byte level.
+            return upstream.encode(text: rendered, addSpecialTokens: false)
+
+        } catch {
+            throw error
+        }
+    }
+
+    /// Converts a flat `[[String: String]]` message array into a `RuntimePrompt`
+    /// for the conservative fallback renderer.
+    ///
+    /// **Multiple system messages**: the *first* system message becomes
+    /// `RuntimePrompt.systemPrompt`. Each additional system message is kept
+    /// in-band as a `.system` role `RuntimeMessage`. Renderer behaviour:
+    /// - ChatML / Llama3 / Gemma3 — render them as inline system turns. ✅
+    /// - Gemma2 — silently drops inline `.system` turns by design
+    ///   (`ChatTemplate.renderGemma2`). A warning is logged here so this is
+    ///   explicit rather than truly silent.
+    private func reconstructRuntimePrompt(from messages: [[String: String]]) -> RuntimePrompt {
+        var systemPrompt = ""
+        var runtimeMessages: [RuntimeMessage] = []
+        var extraSystemCount = 0
+
+        for msg in messages {
+            let role = msg["role"] ?? "user"
+            let content = msg["content"] ?? ""
+
+            if role == "system" {
+                if systemPrompt.isEmpty {
+                    systemPrompt = content
+                } else {
+                    // Additional system messages: kept in-band as .system turns.
+                    extraSystemCount += 1
+                    runtimeMessages.append(RuntimeMessage(role: .system, content: content))
+                }
+            } else {
+                let runtimeRole: RuntimeMessage.Role = switch role {
+                case "assistant": .assistant
+                default:          .user
+                }
+                runtimeMessages.append(RuntimeMessage(role: runtimeRole, content: content))
+            }
+        }
+
+        if extraSystemCount > 0 {
+            HHLog.runtime.warning("""
+                MLX [applyChatTemplate fallback]: \(extraSystemCount, privacy: .public) extra \
+                system message(s) found after the first. Rendered inline as .system turns. \
+                Gemma2 will silently drop them — this is documented behaviour in \
+                ChatTemplate.renderGemma2.
+                """)
+        }
+
+        return RuntimePrompt(systemPrompt: systemPrompt, messages: runtimeMessages)
     }
 }
+

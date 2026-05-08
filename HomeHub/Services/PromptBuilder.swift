@@ -135,13 +135,9 @@ enum PromptBuilder {
         // should say "I can't compute this reliably without the Calculator
         // tool" rather than guess.
         if lower.contains("calculator") {
-            rules.append("- For ANY arithmetic, numeric, unit, or percentage " +
-                         "computation you MUST call the Calculator tool. " +
-                         "Do not compute in your head, do not guess.")
+            rules.append("- Please use the Calculator tool for arithmetic or numeric computations.")
         } else {
-            rules.append("- The Calculator tool is currently disabled. If the " +
-                         "user asks for a numeric computation, say so and ask " +
-                         "them to enable it — do not compute in your head.")
+            rules.append("- The Calculator tool is currently disabled.")
         }
 
         if lower.contains("websearch") {

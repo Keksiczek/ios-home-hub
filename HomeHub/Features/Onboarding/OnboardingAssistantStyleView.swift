@@ -78,12 +78,14 @@ private struct ToneRow: View {
             .padding(HHTheme.spaceM)
             .background(
                 RoundedRectangle(cornerRadius: HHTheme.cornerMedium, style: .continuous)
-                    .fill(HHTheme.surface)
+                    .fill(isSelected ? HHTheme.accent.opacity(0.05) : HHTheme.surface)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: HHTheme.cornerMedium, style: .continuous)
                     .stroke(isSelected ? HHTheme.accent : HHTheme.stroke, lineWidth: isSelected ? 1.5 : 1)
             )
+            .scaleEffect(isSelected ? 1.02 : 1.0)
+            .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isSelected)
         }
         .buttonStyle(.plain)
     }

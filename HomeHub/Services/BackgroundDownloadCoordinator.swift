@@ -43,6 +43,9 @@ final class BackgroundDownloadCoordinator: NSObject {
     /// Stored by `AppDelegate` when the system wakes the app for this session.
     private var systemCompletionHandler: (() -> Void)?
 
+    /// Throttling for progress updates to prevent UI thread saturation.
+    private var lastProgressYield: [String: ContinuousClock.Instant] = [:]
+
     // MARK: - Callbacks (set once by ModelDownloadService; called on @MainActor)
 
     var onProgress: (@Sendable @MainActor (_ modelID: String, _ fraction: Double) -> Void)?
@@ -129,6 +132,16 @@ extension BackgroundDownloadCoordinator: URLSessionDownloadDelegate {
         let fraction = min(
             Double(totalBytesWritten) / Double(totalBytesExpectedToWrite), 1.0
         )
+
+        // Throttle updates to ~10Hz (100ms) to prevent MainActor spam
+        let now = ContinuousClock.now
+        let last = mapQueue.sync { lastProgressYield[modelID] }
+        
+        if let last, now < last + .milliseconds(100) {
+            return
+        }
+        
+        mapQueue.sync { lastProgressYield[modelID] = now }
         Task { @MainActor [weak self] in self?.onProgress?(modelID, fraction) }
     }
 
