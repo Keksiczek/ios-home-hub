@@ -111,8 +111,11 @@ configFiles:
 
 settings:
   base:
+    DEVELOPMENT_TEAM: 8Y755TXDN8
+    CODE_SIGN_STYLE: Automatic
     SWIFT_VERSION: "6.0"
     GENERATE_INFOPLIST_FILE: YES
+
     # IPHONEOS_DEPLOYMENT_TARGET is owned by `options.deploymentTarget.iOS`
     # at the top of this file. Setting it again here would shadow the
     # project-level value and silently drift.

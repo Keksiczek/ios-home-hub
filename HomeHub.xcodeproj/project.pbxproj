@@ -743,15 +743,19 @@
 				LastUpgradeCheck = 1540;
 				TargetAttributes = {
 					0F61A399A9FC5475945573AB = {
-						DevelopmentTeam = MHCMT64ZTD;
+						DevelopmentTeam = 8Y755TXDN8;
+						ProvisioningStyle = Automatic;
 					};
 					27DF3E3541C53527ABBE7AE8 = {
-						DevelopmentTeam = MHCMT64ZTD;
+						DevelopmentTeam = 8Y755TXDN8;
+						ProvisioningStyle = Automatic;
 					};
 					BCE3B88C507A9E6C6664FA6D = {
-						DevelopmentTeam = MHCMT64ZTD;
+						DevelopmentTeam = 8Y755TXDN8;
+						ProvisioningStyle = Automatic;
 					};
 				};
+
 			};
 			buildConfigurationList = 9D862A5311F596793B6A46AF /* Build configuration list for PBXProject "HomeHub" */;
 			developmentRegion = en;
