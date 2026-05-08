@@ -374,7 +374,9 @@ final class ConversationService: ObservableObject {
     private func stopSequences(for model: LocalModel?) -> [String] {
         switch model?.family.lowercased() {
         case "gemma3", "gemma2": return ["<end_of_turn>"]
-        case "llama":            return ["<|eot_id|>"]
+        case "llama":            return ["<|eot_id|>", "<|end_of_text|>"]
+        case "phi":              return ["<|end|>", "<|endoftext|>", "<|im_end|>"]
+        case "qwen":             return ["<|im_end|>", "<|endoftext|>"]
         default:                 return []
         }
     }
@@ -580,6 +582,10 @@ final class ConversationService: ObservableObject {
 
             let runtimePrompt = prompts.build(from: loopPackage)
             assistantMessage.status = .streaming
+            
+            // UX: Subtle haptic to confirm generation has physically started
+            // (after embedding, search, and memory retrieval finishes).
+            HHHaptics.impact(.light, enabled: settings.current.haptics)
 
             do {
                 let stream = runtime.generate(prompt: runtimePrompt, parameters: parameters)
@@ -592,6 +598,11 @@ final class ConversationService: ObservableObject {
                         assistantMessage.status = (reason == .cancelled) ? .cancelled : .complete
                         messagesByConversation[conversationID]?[assistantIndex] = assistantMessage
                         try? await store.save(message: assistantMessage)
+                        
+                        // UX: Soft haptic to signify turn completion
+                        if reason == .stop || reason == .length {
+                            HHHaptics.impact(.soft, enabled: settings.current.haptics)
+                        }
                     }
                 }
             } catch {
@@ -601,6 +612,15 @@ final class ConversationService: ObservableObject {
                 } else {
                     assistantMessage.content += "\n\n⚠︎ \(error.localizedDescription)"
                 }
+                messagesByConversation[conversationID]?[assistantIndex] = assistantMessage
+                try? await store.save(message: assistantMessage)
+                break
+            }
+
+            // Fallback for empty responses
+            if assistantMessage.status == .complete && assistantMessage.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                assistantMessage.status = .failed
+                assistantMessage.content = "⚠︎ Model vrátil prázdnou odpověď. Zkuste zprávu přeformulovat."
                 messagesByConversation[conversationID]?[assistantIndex] = assistantMessage
                 try? await store.save(message: assistantMessage)
                 break

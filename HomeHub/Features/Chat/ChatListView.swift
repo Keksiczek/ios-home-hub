@@ -29,8 +29,15 @@ struct ChatListView: View {
                             } label: {
                                 ChatRowView(conversation: convo)
                             }
+                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                Button(role: .destructive) {
+                                    HHHaptics.notification(.warning, enabled: settings.current.haptics)
+                                    Task { await conversations.deleteConversation(convo.id) }
+                                } label: {
+                                    Label("Delete", systemImage: "trash")
+                                }
+                            }
                         }
-                        .onDelete(perform: delete)
                     }
                     .listStyle(.insetGrouped)
                 }

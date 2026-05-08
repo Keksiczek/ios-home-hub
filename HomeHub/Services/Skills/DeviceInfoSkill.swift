@@ -50,6 +50,16 @@ struct DeviceInfoSkill: Skill {
             }
         }()
 
+        let thermalState: String = {
+            switch ProcessInfo.processInfo.thermalState {
+            case .nominal:  return "nominal"
+            case .fair:     return "fair"
+            case .serious:  return "serious (throttling possible)"
+            case .critical: return "critical (immediate cooling needed)"
+            @unknown default: return "unknown"
+            }
+        }()
+
         let (freeBytes, totalBytes) = storageBytes()
 
         return Snapshot(
@@ -59,6 +69,7 @@ struct DeviceInfoSkill: Skill {
             model: device.model,
             batteryLevel: batteryLevel,
             batteryState: batteryState,
+            thermalState: thermalState,
             freeStorageBytes: freeBytes,
             totalStorageBytes: totalBytes
         )
@@ -88,6 +99,7 @@ struct DeviceInfoSkill: Skill {
         let model: String
         let batteryLevel: Int?
         let batteryState: String
+        let thermalState: String
         let freeStorageBytes: Int64?
         let totalStorageBytes: Int64?
 
@@ -101,6 +113,8 @@ struct DeviceInfoSkill: Skill {
             } else {
                 lines.append("Battery: unavailable (\(batteryState))")
             }
+
+            lines.append("Thermal state: \(thermalState)")
 
             if let free = freeStorageBytes, let total = totalStorageBytes, total > 0 {
                 let fmt = ByteCountFormatter()

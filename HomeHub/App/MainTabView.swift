@@ -2,7 +2,7 @@ import SwiftUI
 
 struct MainTabView: View {
     @EnvironmentObject private var appState: AppState
-    @EnvironmentObject private var settings: SettingsService
+    @EnvironmentObject private var runtime: RuntimeManager
     @Environment(\.horizontalSizeClass) private var hSizeClass
     @State private var showingSidebar = false
 
@@ -28,6 +28,9 @@ struct MainTabView: View {
             case .models:   ModelsView()
             case .settings: SettingsView()
             }
+        }
+        .overlay(alignment: .bottom) {
+            loadingOverlay
         }
         .environment(\.showSidebarMenu) { showingSidebar = true }
         .sheet(isPresented: $showingSidebar) {
@@ -67,8 +70,34 @@ struct MainTabView: View {
             case .settings: SettingsView()
             }
         }
+        .overlay(alignment: .bottom) {
+            loadingOverlay
+        }
         .onChange(of: appState.selectedTab) { _, _ in
             HHHaptics.selection(enabled: settings.current.haptics)
+        }
+    }
+
+    @ViewBuilder
+    private var loadingOverlay: some View {
+        if case .loading(let modelID) = runtime.state {
+            HStack(spacing: 12) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Loading \(modelID.split(separator: "/").last ?? "model")…")
+                    .font(HHTheme.caption.weight(.medium))
+                    .foregroundStyle(HHTheme.textSecondary)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(
+                Capsule()
+                    .fill(HHTheme.surface)
+                    .shadow(color: .black.opacity(0.1), radius: 10, y: 4)
+            )
+            .padding(.bottom, 20)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+            .animation(.spring(response: 0.4, dampingFraction: 0.8), value: modelID)
         }
     }
 }

@@ -17,16 +17,45 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
-                profileSection
-                assistantSection
-                languageSection
-                toolsSection
-                memorySection
-                generationSection
-                appearanceSection
-                privacySection
-                aboutSection
-                developerSection
+                DisclosureGroup {
+                    profileSection
+                    assistantSection
+                    languageSection
+                } label: {
+                    Label("Assistant & Identity", systemImage: "person.circle.fill")
+                        .font(HHTheme.subheadline.weight(.semibold))
+                }
+
+                DisclosureGroup {
+                    toolsSection
+                    memorySection
+                } label: {
+                    Label("Intelligence & Skills", systemImage: "cpu.fill")
+                        .font(HHTheme.subheadline.weight(.semibold))
+                }
+
+                DisclosureGroup {
+                    generationSection
+                } label: {
+                    Label("Generation Engine", systemImage: "bolt.fill")
+                        .font(HHTheme.subheadline.weight(.semibold))
+                }
+
+                DisclosureGroup {
+                    appearanceSection
+                    privacySection
+                } label: {
+                    Label("App Experience", systemImage: "paintpalette.fill")
+                        .font(HHTheme.subheadline.weight(.semibold))
+                }
+
+                DisclosureGroup {
+                    aboutSection
+                    developerSection
+                } label: {
+                    Label("System & Info", systemImage: "info.circle.fill")
+                        .font(HHTheme.subheadline.weight(.semibold))
+                }
             }
             .navigationTitle("Settings")
             .toolbar {
@@ -197,6 +226,8 @@ struct SettingsView: View {
                     Text("Reset to defaults")
                 }
             }
+        } header: {
+            Text("Personality & Safety")
         } footer: {
             Text("Customize assistant personality, system prompts, safety rules, and context layers.")
         }
