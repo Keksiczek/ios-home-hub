@@ -2,7 +2,7 @@ import Foundation
 // Hub and Tokenizers are internal targets of the swift-transformers `Transformers`
 // library product.  We depend on product: Transformers in project.yml / Package.swift;
 // both modules are compiled into the build graph and importable here.
-import Hub
+ import Hub
 import Tokenizers
 import MLXLMCommon
 
@@ -83,7 +83,7 @@ private struct SwiftTransformersTokenizerBridge: MLXLMCommon.Tokenizer, @uncheck
 
     func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String {
         // swift-transformers uses `decode(tokens:)` — note the parameter label difference.
-        upstream.decode(tokens: tokenIds, skipSpecialTokens: skipSpecialTokens)
+        upstream.decode(tokens: tokenIds)
     }
 
     func convertTokenToId(_ token: String) -> Int? {
@@ -103,14 +103,9 @@ private struct SwiftTransformersTokenizerBridge: MLXLMCommon.Tokenizer, @uncheck
         tools: [[String: any Sendable]]?,
         additionalContext: [String: any Sendable]?
     ) throws -> [Int] {
-        do {
-            return try upstream.applyChatTemplate(
-                messages: messages,
-                tools: tools,
-                additionalContext: additionalContext
-            )
-        } catch Tokenizers.TokenizerError.missingChatTemplate {
-            throw MLXLMCommon.TokenizerError.missingChatTemplate
+        let stringMessages = messages.map { dict in
+            dict.compactMapValues { "\($0)" }
         }
+        return try upstream.applyChatTemplate(messages: stringMessages)
     }
 }

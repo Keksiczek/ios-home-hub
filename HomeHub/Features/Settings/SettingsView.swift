@@ -60,8 +60,8 @@ struct SettingsView: View {
     // MARK: - Assistant
 
     private var assistantSection: some View {
-        Section("Assistant") {
-            TextField("Name", text: Binding(
+        Section {
+            TextField("Name", text: Binding<String>(
                 get: { personalization.assistantProfile.name },
                 set: { newValue in
                     var a = personalization.assistantProfile
@@ -69,7 +69,7 @@ struct SettingsView: View {
                     Task { await personalization.update(assistant: a) }
                 }
             ))
-            Picker("Tone", selection: Binding(
+            Picker("Tone", selection: Binding<AssistantTone>(
                 get: { personalization.assistantProfile.tone },
                 set: { newValue in
                     var a = personalization.assistantProfile

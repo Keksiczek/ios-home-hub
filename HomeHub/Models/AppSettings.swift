@@ -208,6 +208,33 @@ struct AppSettings: Codable, Equatable {
             self.answerLength = fallback.answerLength
         }
     }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(memoryEnabled, forKey: .memoryEnabled)
+        try c.encode(autoExtractMemory, forKey: .autoExtractMemory)
+        try c.encode(streamingEnabled, forKey: .streamingEnabled)
+        try c.encode(maxResponseTokens, forKey: .maxResponseTokens)
+        try c.encode(temperature, forKey: .temperature)
+        try c.encode(topP, forKey: .topP)
+        try c.encode(topK, forKey: .topK)
+        try c.encode(minP, forKey: .minP)
+        try c.encode(repeatPenalty, forKey: .repeatPenalty)
+        try c.encode(repeatPenaltyLastN, forKey: .repeatPenaltyLastN)
+        try c.encode(haptics, forKey: .haptics)
+        try c.encode(theme, forKey: .theme)
+        try c.encodeIfPresent(selectedModelID, forKey: .selectedModelID)
+        try c.encode(systemPromptPresets, forKey: .systemPromptPresets)
+        try c.encode(activeSystemPromptPresetID, forKey: .activeSystemPromptPresetID)
+        try c.encode(showTokenUsage, forKey: .showTokenUsage)
+        try c.encode(language, forKey: .language)
+        try c.encode(answerLength, forKey: .answerLength)
+        try c.encode(enabledTools, forKey: .enabledTools)
+        try c.encode(locationHint, forKey: .locationHint)
+        try c.encode(guardrailsConfig, forKey: .guardrailsConfig)
+        try c.encode(generationTimeoutSeconds, forKey: .generationTimeoutSeconds)
+    }
+
 }
 
 extension AppSettings {

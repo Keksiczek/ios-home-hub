@@ -69,7 +69,7 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
     }
     #endif
 
-    private var container: any MLXModelContainer?
+    private var container: (any MLXModelContainer)?
     private var activeTask: Task<Void, Never>?
     private var activeGenerationID: UUID?
     /// Single authoritative "busy" flag. Protected by sessionLock.
@@ -125,7 +125,7 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
         }
         sessionLock.unlock()
 
-        log.info("MLX: Preparing to load model '\(model.displayName, privacy: .public)'")
+        self.log.info("MLX: Preparing to load model '\(model.displayName, privacy: .public)'")
 
         guard let repoId = model.repoId else {
             throw RuntimeError.incompatibleModel(
@@ -151,7 +151,7 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
             }
         }
 
-        log.debug("MLX: Starting load for '\(repoId, privacy: .public)'")
+        self.log.debug("MLX: Starting load for '\(repoId, privacy: .public)'")
         let start = Date()
 
         do {
@@ -179,18 +179,18 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
             let duration = Int(Date().timeIntervalSince(start) * 1000)
             self.loadedModel = model
             await telemetry.emit(.modelLoaded(handle: ModelHandle(from: model), durationMs: duration))
-            log.info("MLX: Model '\(model.displayName, privacy: .public)' loaded in \(duration)ms")
+            self.log.info("MLX: Model '\(model.displayName, privacy: .public)' loaded in \(duration)ms")
         } catch is CancellationError {
-            log.info("MLX: Load cancelled for '\(repoId, privacy: .public)'")
+            self.log.info("MLX: Load cancelled for '\(repoId, privacy: .public)'")
             throw CancellationError()
         } catch {
-            log.error("MLX: Failed to load model container: \(error.localizedDescription, privacy: .public)")
+            self.log.error("MLX: Failed to load model container: \(error.localizedDescription, privacy: .public)")
             throw RuntimeError.initializationFailed("Failed to load MLX model: \(error.localizedDescription)")
         }
     }
 
     func unload() async {
-        log.info("MLX: Unloading model (manual or policy-driven)")
+        self.log.info("MLX: Unloading model (manual or policy-driven)")
         sessionLock.lock()
         activeTask?.cancel()
         activeTask = nil
@@ -207,12 +207,12 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
         defer { sessionLock.unlock() }
 
         if activeSession?.conversationID == conversationID {
-            log.info("MLX: Invalidating session for conversation \(conversationID, privacy: .public)")
+            self.log.info("MLX: Invalidating session for conversation \(conversationID, privacy: .public)")
             activeSession = nil
         }
 
         if activeGenerationID == conversationID {
-            log.info("MLX: Cancelling active generation for conversation \(conversationID, privacy: .public) due to invalidation")
+            self.log.info("MLX: Cancelling active generation for conversation \(conversationID, privacy: .public) due to invalidation")
             activeTask?.cancel()
             activeTask = nil
             activeGenerationID = nil
@@ -224,263 +224,257 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
         prompt: RuntimePrompt,
         parameters: RuntimeParameters
     ) -> AsyncThrowingStream<RuntimeEvent, Error> {
-        AsyncThrowingStream { continuation in
-            // Use a single conversationID throughout this closure and the task body.
-            let conversationID = parameters.conversationID ?? UUID()
+        let (stream, continuation) = AsyncThrowingStream<RuntimeEvent, Error>.makeStream()
 
-            // Atomically check and set isGenerating. Both happen under the same
-            // lock acquisition, eliminating the TOCTOU race from split check/set.
-            self.sessionLock.lock()
-            guard !self.isGenerating else {
-                self.sessionLock.unlock()
-                log.warning("MLX: Generation/load already in progress — blocking concurrent request for \(conversationID, privacy: .public)")
-                continuation.finish(throwing: RuntimeError.generationInProgress)
-                return
-            }
-            self.isGenerating = true
-            self.activeGenerationID = conversationID
+        let conversationID = parameters.conversationID ?? UUID()
+
+        self.sessionLock.lock()
+        guard !self.isGenerating else {
             self.sessionLock.unlock()
+            self.log.warning("MLX: Generation/load already in progress — blocking concurrent request for \(conversationID, privacy: .public)")
+            continuation.finish(throwing: RuntimeError.generationInProgress)
+            return stream
+        }
+        self.isGenerating = true
+        self.activeGenerationID = conversationID
+        self.sessionLock.unlock()
 
-            let task = Task {
-                do {
-                    guard let container = self.container else {
-                        continuation.finish(throwing: RuntimeError.noModelLoaded)
-                        self.sessionLock.lock()
-                        self.isGenerating = false
-                        self.activeGenerationID = nil
-                        self.sessionLock.unlock()
-                        return
-                    }
-
-                    // Map RuntimeParameters → GenerateParameters.
-                    // The pinned mlx-swift-lm revision exposes maxTokens, temperature,
-                    // and topP. topK, minP, and repeatPenalty are not part of this
-                    // version's public API; we log them once per model load so they are
-                    // visible in logs without flooding every generation.
+        let task = Task {
+            do {
+                guard let container = self.container else {
+                    continuation.finish(throwing: RuntimeError.noModelLoaded)
                     self.sessionLock.lock()
-                    let needsWarning = !self.hasLoggedSamplerWarnings
-                    if needsWarning { self.hasLoggedSamplerWarnings = true }
+                    self.isGenerating = false
+                    self.activeGenerationID = nil
                     self.sessionLock.unlock()
+                    return
+                }
 
-                    if needsWarning {
-                        if parameters.topK != 0 {
-                            log.warning("MLX: topK (\(parameters.topK, privacy: .public)) not supported by current GenerateParameters, skipping")
-                        }
-                        if parameters.minP != 0 {
-                            log.warning("MLX: minP (\(parameters.minP, privacy: .public)) not supported by current GenerateParameters, skipping")
-                        }
-                        if parameters.repeatPenalty != 1.0 {
-                            log.warning("MLX: repeatPenalty (\(parameters.repeatPenalty, privacy: .public)) not supported by current GenerateParameters, skipping")
-                        }
+                self.sessionLock.lock()
+                let needsWarning = !self.hasLoggedSamplerWarnings
+                if needsWarning { self.hasLoggedSamplerWarnings = true }
+                self.sessionLock.unlock()
+
+                if needsWarning {
+                    if parameters.topK != 0 {
+                        self.log.warning("MLX: topK (\(parameters.topK, privacy: .public)) not supported by current GenerateParameters, skipping")
                     }
+                    if parameters.minP != 0 {
+                        self.log.warning("MLX: minP (\(parameters.minP, privacy: .public)) not supported by current GenerateParameters, skipping")
+                    }
+                    if parameters.repeatPenalty != 1.0 {
+                        self.log.warning("MLX: repeatPenalty (\(parameters.repeatPenalty, privacy: .public)) not supported by current GenerateParameters, skipping")
+                    }
+                }
 
-                    let generateParameters = GenerateParameters(
-                        maxTokens: parameters.maxTokens,
-                        temperature: Float(parameters.temperature),
-                        topP: Float(parameters.topP)
-                    )
+                let generateParameters = GenerateParameters(
+                    maxTokens: parameters.maxTokens,
+                    temperature: Float(parameters.temperature),
+                    topP: Float(parameters.topP)
+                )
 
-                    let start = Date()
-                    var tokensGenerated = 0
-                    var currentText = ""
-                    var hitMaxTokens = false
+                let start = Date()
+                var tokensGenerated = 0
+                var currentText = ""
+                var hitMaxTokens = false
 
-                    if let nativeContainer = self.container as? ModelContainer {
-                        // --- NATIVE PATH (ChatSession) ---
-                        self.sessionLock.lock()
-                        let currentActive = self.activeSession
-                        let session: ChatSession
+                if let nativeContainer = self.container as? ModelContainer {
+                    self.sessionLock.lock()
+                    let currentActive = self.activeSession
+                    let session: ChatSession
 
-                        if let existing = currentActive,
-                           existing.conversationID == conversationID,
-                           existing.systemPrompt == prompt.systemPrompt,
-                           prompt.messages.count >= existing.messages.count,
-                           prompt.messages.prefix(existing.messages.count).elementsEqual(existing.messages, by: { $0.content == $1.content && $0.role == $1.role }) {
-                            session = existing.session
-                            log.debug("MLX: Reusing existing session for \(conversationID, privacy: .public)")
-                        } else {
-                            if currentActive != nil {
-                                log.info("MLX: Session mismatch or reset — starting fresh for \(conversationID, privacy: .public)")
-                            }
-
-                            let toNativeMessage: (RuntimeMessage) -> Chat.Message = { msg in
-                                switch msg.role {
-                                case .system:    return .system(msg.content)
-                                case .user:      return .user(msg.content)
-                                case .assistant: return .assistant(msg.content)
-                                }
-                            }
-
-                            let history: [Chat.Message] = prompt.messages.dropLast().map(toNativeMessage)
-                            session = ChatSession(
-                                nativeContainer,
-                                instructions: prompt.systemPrompt.isEmpty ? nil : prompt.systemPrompt,
-                                history: history
-                            )
-
-                            self.activeSession = ActiveSession(
-                                conversationID: conversationID,
-                                systemPrompt: prompt.systemPrompt,
-                                messages: Array(prompt.messages.dropLast()),
-                                session: session
-                            )
-                        }
-                        self.sessionLock.unlock()
-
-                        let lastMessage = prompt.messages.last
-                        let lastContent = lastMessage?.content ?? ""
-                        let lastRole: Chat.Message.Role = switch lastMessage?.role {
-                        case .system: .system
-                        case .user: .user
-                        case .assistant, .none: .assistant
+                    if let existing = currentActive,
+                       existing.conversationID == conversationID,
+                       existing.systemPrompt == prompt.systemPrompt,
+                       prompt.messages.count >= existing.messages.count,
+                       prompt.messages.prefix(existing.messages.count).elementsEqual(existing.messages, by: { $0.content == $1.content && $0.role == $1.role }) {
+                        session = existing.session
+                        self.log.debug("MLX: Reusing existing session for \(conversationID, privacy: .public)")
+                    } else {
+                        if currentActive != nil {
+                            self.log.info("MLX: Session mismatch or reset — starting fresh for \(conversationID, privacy: .public)")
                         }
 
-                        let stream = session.streamResponse(
-                            to: lastContent,
-                            role: lastRole,
-                            parameters: generateParameters
+                        let toNativeMessage: (RuntimeMessage) -> Chat.Message = { msg in
+                            switch msg.role {
+                            case .system: return .system(msg.content)
+                            case .user: return .user(msg.content)
+                            case .assistant: return .assistant(msg.content)
+                            }
+                        }
+
+                        let history: [Chat.Message] = prompt.messages.dropLast().map(toNativeMessage)
+                        session = ChatSession(
+                            nativeContainer,
+                            instructions: prompt.systemPrompt.isEmpty ? nil : prompt.systemPrompt,
+                            history: history
                         )
 
-                        for try await piece in stream {
-                            if Task.isCancelled { break }
-
-                            tokensGenerated += 1
-                            currentText += piece
-                            continuation.yield(.token(piece))
-
-                            if tokensGenerated >= parameters.maxTokens {
-                                hitMaxTokens = true
-                                break
-                            }
-
-                            var shouldStop = false
-                            for stopSeq in parameters.stopSequences {
-                                if currentText.hasSuffix(stopSeq) {
-                                    shouldStop = true
-                                    break
-                                }
-                            }
-                            if shouldStop { break }
-                        }
-
-                        self.sessionLock.lock()
-                        if !Task.isCancelled {
-                            if self.activeSession?.conversationID == conversationID && self.activeSession?.session === session {
-                                self.activeSession?.messages = prompt.messages
-                                self.activeSession?.messages.append(RuntimeMessage(role: .assistant, content: currentText))
-                            }
-                        } else {
-                            if self.activeSession?.session === session {
-                                log.info("MLX: Session invalidated due to task cancellation for \(conversationID, privacy: .public)")
-                                self.activeSession = nil
-                            }
-                        }
-                        self.sessionLock.unlock()
-
-                    } else {
-                        // --- STATELESS FALLBACK (tests / non-native container) ---
-                        log.info("MLX: Using stateless fallback generation")
-                        var messages: [[String: String]] = []
-                        if !prompt.systemPrompt.isEmpty {
-                            messages.append(["role": "system", "content": prompt.systemPrompt])
-                        }
-                        for msg in prompt.messages {
-                            let roleString: String = switch msg.role {
-                            case .system: "system"
-                            case .user: "user"
-                            case .assistant: "assistant"
-                            }
-                            messages.append(["role": roleString, "content": msg.content])
-                        }
-
-                        try await container.perform { context in
-                            let userInput = UserInput(messages: messages.map { message in
-                                var dict: [String: Any] = [:]
-                                for (k, v) in message { dict[k] = v }
-                                return dict
-                            })
-                            let input = try await context.processor.prepare(input: userInput)
-
-                            _ = try MLXLMCommon.generate(
-                                input: input,
-                                parameters: generateParameters,
-                                context: context
-                            ) { tokens in
-                                if Task.isCancelled { return .stop }
-
-                                tokensGenerated += 1
-                                let newText = context.tokenizer.decode(tokenIds: tokens)
-
-                                if newText.count > currentText.count {
-                                    let chunk = String(newText.dropFirst(currentText.count))
-                                    currentText = newText
-                                    continuation.yield(.token(chunk))
-                                }
-
-                                if tokensGenerated >= parameters.maxTokens {
-                                    hitMaxTokens = true
-                                    return .stop
-                                }
-                                for stopSeq in parameters.stopSequences {
-                                    if currentText.hasSuffix(stopSeq) { return .stop }
-                                }
-                                return .more
-                            }
-                        }
-                    }
-
-                    // Final cleanup: reset busy state.
-                    self.sessionLock.lock()
-                    if self.activeTask === task {
-                        self.activeTask = nil
-                        self.activeGenerationID = nil
-                        self.isGenerating = false
+                        self.activeSession = ActiveSession(
+                            conversationID: conversationID,
+                            systemPrompt: prompt.systemPrompt,
+                            messages: Array(prompt.messages.dropLast()),
+                            session: session
+                        )
                     }
                     self.sessionLock.unlock()
 
-                    let durationMs = Int(Date().timeIntervalSince(start) * 1000)
-                    let tps = durationMs > 0 ? (Double(tokensGenerated) / Double(durationMs)) * 1000.0 : 0.0
+                    let lastMessage = prompt.messages.last
+                    let lastContent = lastMessage?.content ?? ""
+                    let lastRole: Chat.Message.Role = switch lastMessage?.role {
+                    case .system: .system
+                    case .user: .user
+                    case .assistant, .none: .assistant
+                    }
 
-                    let stats = RuntimeStats(
-                        tokensGenerated: tokensGenerated,
-                        tokensPerSecond: tps,
-                        totalDurationMs: durationMs
+                    let responseStream = session.streamResponse(
+                        to: lastContent,
+                        role: lastRole,
+                        images: [],
+                        videos: []
                     )
 
-                    let finishReason: RuntimeEvent.FinishReason =
-                        Task.isCancelled ? .cancelled : (hitMaxTokens ? .length : .stop)
-                    continuation.yield(.finished(reason: finishReason, stats: stats))
-                    continuation.finish()
+                    for try await piece in responseStream {
+                        if Task.isCancelled { break }
 
-                } catch {
+                        tokensGenerated += 1
+                        currentText += piece
+                        continuation.yield(.token(piece))
+
+                        if tokensGenerated >= parameters.maxTokens {
+                            hitMaxTokens = true
+                            break
+                        }
+
+                        var shouldStop = false
+                        for stopSeq in parameters.stopSequences {
+                            if currentText.hasSuffix(stopSeq) {
+                                shouldStop = true
+                                break
+                            }
+                        }
+                        if shouldStop { break }
+                    }
+
                     self.sessionLock.lock()
-                    if self.activeTask === task {
-                        self.activeTask = nil
-                        self.activeGenerationID = nil
-                        self.isGenerating = false
+                    if !Task.isCancelled {
+                        if self.activeSession?.conversationID == conversationID && self.activeSession?.session === session {
+                            self.activeSession?.messages = prompt.messages
+                            self.activeSession?.messages.append(RuntimeMessage(role: .assistant, content: currentText))
+                        }
+                    } else {
+                        if self.activeSession?.session === session {
+                            self.log.info("MLX: Session invalidated due to task cancellation for \(conversationID, privacy: .public)")
+                            self.activeSession = nil
+                        }
                     }
                     self.sessionLock.unlock()
-                    log.error("MLX: Generation failed: \(error.localizedDescription, privacy: .public)")
-                    continuation.finish(throwing: error)
+
+                } else {
+                    self.log.info("MLX: Using stateless fallback generation")
+                    var messages: [[String: String]] = []
+                    if !prompt.systemPrompt.isEmpty {
+                        messages.append(["role": "system", "content": prompt.systemPrompt])
+                    }
+                    for msg in prompt.messages {
+                        let roleString: String = switch msg.role {
+                        case .system: "system"
+                        case .user: "user"
+                        case .assistant: "assistant"
+                        }
+                        messages.append(["role": roleString, "content": msg.content])
+                    }
+
+                    try await container.perform { context in
+                        let userInput = UserInput(messages: messages.map { message in
+                            var dict: [String: Any] = [:]
+                            for (k, v) in message { dict[k] = v }
+                            return dict
+                        })
+                        let input = try await context.processor.prepare(input: userInput)
+
+                        let genStream = try MLXLMCommon.generate(
+                            input: input,
+                            parameters: generateParameters,
+                            context: context
+                        )
+
+                        for await generation in genStream {
+                            if Task.isCancelled { break }
+                            switch generation {
+                            case .chunk(let text):
+                                tokensGenerated += 1
+                                currentText += text
+                                continuation.yield(.token(text))
+                                if tokensGenerated >= parameters.maxTokens {
+                                    hitMaxTokens = true
+                                    break
+                                }
+                                var stop = false
+                                for s in parameters.stopSequences {
+                                    if currentText.hasSuffix(s) {
+                                        stop = true
+                                        break
+                                    }
+                                }
+                                if stop { break }
+                            case .info:
+                                break
+                            @unknown default:
+                                break
+                            }
+                        }
+                    }
                 }
-            }
 
-            self.sessionLock.lock()
-            self.activeTask = task
-            self.sessionLock.unlock()
+                self.sessionLock.lock()
+                self.activeTask = nil
+                self.activeGenerationID = nil
+                self.isGenerating = false
+                self.sessionLock.unlock()
 
-            continuation.onTermination = { @Sendable _ in
-                task.cancel()
+                let durationMs = Int(Date().timeIntervalSince(start) * 1000)
+                let tps = durationMs > 0 ? (Double(tokensGenerated) / Double(durationMs)) * 1000.0 : 0.0
+
+                let stats = RuntimeStats(
+                    tokensGenerated: tokensGenerated,
+                    tokensPerSecond: tps,
+                    totalDurationMs: durationMs
+                )
+
+                let finishReason: RuntimeEvent.FinishReason =
+                    Task.isCancelled ? .cancelled : (hitMaxTokens ? .length : .stop)
+                continuation.yield(.finished(reason: finishReason, stats: stats))
+                continuation.finish()
+
+            } catch {
+                self.sessionLock.lock()
+                self.activeTask = nil
+                self.activeGenerationID = nil
+                self.isGenerating = false
+                self.sessionLock.unlock()
+                self.log.error("MLX: Generation failed: \(error.localizedDescription, privacy: .public)")
+                continuation.finish(throwing: error)
             }
         }
+
+        self.sessionLock.lock()
+        self.activeTask = task
+        self.sessionLock.unlock()
+
+        continuation.onTermination = { @Sendable _ in
+            task.cancel()
+        }
+
+        return stream
     }
 
     func handleMemoryPressure() async {
-        log.warning("MLX: Memory pressure received — unloading model")
+        self.log.warning("MLX: Memory pressure received — unloading model")
         await unload()
     }
 
     func handleBackground() async {
-        log.info("MLX: App backgrounded")
+        self.log.info("MLX: App backgrounded")
     }
 }
