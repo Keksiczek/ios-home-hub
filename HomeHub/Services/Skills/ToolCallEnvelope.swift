@@ -39,8 +39,20 @@ extension ToolCallEnvelope {
                                         range: startRange.upperBound..<text.endIndex)
         else { return nil }
 
-        let json = String(text[startRange.upperBound..<endRange.lowerBound])
+        var json = String(text[startRange.upperBound..<endRange.lowerBound])
             .trimmingCharacters(in: .whitespacesAndNewlines)
+            
+        // Many local models wrap the JSON payload in markdown blocks even inside the tags
+        if json.hasPrefix("```") {
+            // Strip the first line (e.g., ```json)
+            if let newlineIndex = json.firstIndex(of: "\n") {
+                json = String(json[json.index(after: newlineIndex)...])
+            }
+            if json.hasSuffix("```") {
+                json = String(json.dropLast(3))
+            }
+            json = json.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
 
         guard
             let data = json.data(using: .utf8),

@@ -19,11 +19,13 @@ struct ModelsView: View {
     @State private var infoTarget: LocalModel?
     @State private var deleteTarget: LocalModel?
     @State private var showAddFromURL = false
+    @State private var availableBytes: Int64 = 0
+    @State private var searchText = ""
 
-    private var availableBytes: Int64 {
+    private func refreshAvailableBytes() {
         let url = URL(fileURLWithPath: NSHomeDirectory())
         let v = try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
-        return v?.volumeAvailableCapacityForImportantUsage.map { Int64($0) } ?? 0
+        self.availableBytes = v?.volumeAvailableCapacityForImportantUsage.map { Int64($0) } ?? 0
     }
 
     private func hasSufficientSpace(for model: LocalModel) -> Bool {
@@ -45,19 +47,23 @@ struct ModelsView: View {
     // MARK: - Section splits
 
     private var localModels: [LocalModel] {
-        catalog.models.filter {
+        let base = catalog.models.filter {
             switch $0.installState {
             case .installed, .loaded, .downloading, .failed: return true
             case .notInstalled: return false
             }
         }
+        if searchText.isEmpty { return base }
+        return base.filter { $0.displayName.localizedCaseInsensitiveContains(searchText) || $0.family.localizedCaseInsensitiveContains(searchText) }
     }
 
     private var availableModels: [LocalModel] {
-        catalog.models.filter {
+        let base = catalog.models.filter {
             if case .notInstalled = $0.installState { return true }
             return false
         }
+        if searchText.isEmpty { return base }
+        return base.filter { $0.displayName.localizedCaseInsensitiveContains(searchText) || $0.family.localizedCaseInsensitiveContains(searchText) }
     }
 
     var body: some View {
@@ -161,8 +167,13 @@ struct ModelsView: View {
             }
             .listStyle(.insetGrouped)
             .navigationTitle("Models")
+            .searchable(text: $searchText, prompt: "Search models")
             .refreshable {
+                refreshAvailableBytes()
                 await downloads.reconcileInstallStates()
+            }
+            .onAppear {
+                refreshAvailableBytes()
             }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -192,7 +203,8 @@ struct ModelsView: View {
             ) {
                 if let model = downloadTarget {
                     if hasSufficientSpace(for: model) {
-                        Button("Download \(model.sizeBytes > 0 ? model.sizeFormatted : "")") {
+                        let label = model.sizeBytes > 0 ? "Download \(model.sizeFormatted)" : "Download"
+                        Button(label) {
                             downloads.start(model)
                             downloadTarget = nil
                         }
@@ -392,7 +404,7 @@ private struct ModelRow: View {
                 } else if model.format == .mlx {
                     // MLX idle — show the first-load disclaimer + Load button
                     HStack(spacing: HHTheme.spaceS) {
-                        Button(isLoaded ? "Unload" : "Load (Downloads ~2 GB)") {
+                        Button(isLoaded ? "Unload" : "Download & Load") {
                             isLoaded ? onUnload() : onLoad()
                         }
                         .buttonStyle(HHSecondaryButtonStyle())
@@ -444,20 +456,13 @@ private struct ModelRow: View {
                         }
                         Spacer()
                         installedMetadata
-                        if model.format != .mlx {
-                            Button(role: .destructive, action: onDelete) {
-                                Image(systemName: "trash")
-                                    .foregroundStyle(HHTheme.danger)
-                                    .imageScale(.medium)
-                            }
-                            .buttonStyle(.plain)
+                        Button(role: .destructive, action: onDelete) {
+                            Image(systemName: "trash")
+                                .foregroundStyle(HHTheme.danger)
+                                .imageScale(.medium)
                         }
+                        .buttonStyle(.plain)
                     }
-                }
-                if model.format == .mlx {
-                    Text("Managed by MLX cache. Cannot be uninstalled from the app yet.")
-                        .font(HHTheme.caption)
-                        .foregroundStyle(HHTheme.textSecondary)
                 }
                 if let reason = loadFailureReason {
                     Label(reason, systemImage: "exclamationmark.triangle.fill")
@@ -478,19 +483,12 @@ private struct ModelRow: View {
                         .foregroundStyle(HHTheme.success)
                     Spacer()
                     installedMetadata
-                    if model.format != .mlx {
-                        Button(role: .destructive, action: onDelete) {
-                            Image(systemName: "trash")
-                                .foregroundStyle(HHTheme.danger)
-                                .imageScale(.medium)
-                        }
-                        .buttonStyle(.plain)
+                    Button(role: .destructive, action: onDelete) {
+                        Image(systemName: "trash")
+                            .foregroundStyle(HHTheme.danger)
+                            .imageScale(.medium)
                     }
-                }
-                if model.format == .mlx {
-                    Text("Managed by MLX cache. Cannot be uninstalled from the app yet.")
-                        .font(HHTheme.caption)
-                        .foregroundStyle(HHTheme.textSecondary)
+                    .buttonStyle(.plain)
                 }
             }
 

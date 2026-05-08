@@ -105,7 +105,7 @@ actor SkillManager {
 
         Important rules:
         1. Output ONLY the `<tool_call>` block — stop immediately after `</tool_call>`. Add nothing else.
-        2. The `<tool_call>` block must be on a single line. No prose before or after it on that line.
+        2. Do NOT wrap the JSON in markdown code blocks (e.g., ```json). Use raw JSON inside the tag.
         3. `input` is a plain string. Do not nest JSON, do not manually escape quotes inside `input`.
         4. The system executes the tool and returns the result in an `<Observation>` block.
         5. Use the observation to write your final user-facing response.
