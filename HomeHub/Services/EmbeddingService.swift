@@ -101,11 +101,18 @@ actor EmbeddingService {
 
         guard let embedding else { return nil }
 
+        // Detect the dominant language so the embedding model picks the
+        // right tokenizer. Hardcoding `.english` for a Latin-script model
+        // produces inferior vectors on Czech / German / French content.
+        let recognizer = NLLanguageRecognizer()
+        recognizer.processString(text)
+        let language = recognizer.dominantLanguage ?? .english
+
         guard let result = try? embedding.embeddingResult(
-            for: text, language: .english
+            for: text, language: language
         ) else { return nil }
 
-        var sumVector: [Double]?
+        var sumVector: [Double] = []
         var tokenCount = 0
 
         result.enumerateTokenVectors(
@@ -116,18 +123,20 @@ actor EmbeddingService {
             }
             let doubles = floats.map(Double.init)
 
-            if sumVector == nil {
+            if sumVector.isEmpty {
                 sumVector = doubles
             } else {
-                for i in 0..<min(sumVector!.count, doubles.count) {
-                    sumVector![i] += doubles[i]
+                let limit = min(sumVector.count, doubles.count)
+                for i in 0..<limit {
+                    sumVector[i] += doubles[i]
                 }
             }
             tokenCount += 1
             return true
         }
 
-        guard let sum = sumVector, tokenCount > 0 else { return nil }
+        guard !sumVector.isEmpty, tokenCount > 0 else { return nil }
+        let sum = sumVector
 
         // Average pool
         let averaged = sum.map { $0 / Double(tokenCount) }

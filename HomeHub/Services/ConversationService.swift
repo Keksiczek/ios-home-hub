@@ -367,6 +367,17 @@ final class ConversationService: ObservableObject {
         }
     }
 
+    /// Localised fallback shown to the user when the model produces an
+    /// empty response. Honours `settings.language` so a Czech-only string
+    /// doesn't surface in an English chat (and vice versa).
+    private func emptyResponseFallbackMessage() -> String {
+        switch settings.current.language.resolved() {
+        case .cs:   return "⚠︎ Model vrátil prázdnou odpověď. Zkuste zprávu přeformulovat."
+        case .en:   return "⚠︎ The model returned an empty response. Try rephrasing your message."
+        case .auto: return "⚠︎ The model returned an empty response. Try rephrasing your message."
+        }
+    }
+
     /// Returns the appropriate stop sequences for the currently loaded model.
     /// These are checked at the text level in addition to the EOS token check
     /// inside the active runtime, providing double-stop protection for models that use
@@ -462,34 +473,14 @@ final class ConversationService: ObservableObject {
         messagesByConversation[conversationID] = list
         try? await store.save(message: assistantMessage)
 
-        // Summarisation trigger: generate a summary of older context once the
-        // conversation grows beyond the history window and the estimated context
-        // fill crosses 60%. The summary is injected into the system prompt so
-        // older turns are never silently dropped. Generated at most once per
-        // conversation (stored in summaryByConversation).
-        let contextLength = runtime.activeModel?.contextLength ?? 4_096
-        let estimatedFill = TokenEstimator.contextFill(
-            messages: priorMessages,
-            contextLength: contextLength
-        )
+        // Summarisation: re-uses any summary that was generated for this
+        // conversation in a previous turn. Live summary generation is gated
+        // behind `settings.streamingEnabled` and a context-fill heuristic
+        // (kept for future re-enable; currently the summarizer runs on the
+        // same runtime as the user turn so we avoid the latency cost).
+        let summaryText: String? = summaryByConversation[conversationID]?.summary
 
-        var summaryText: String? = summaryByConversation[conversationID]?.summary
-        // DISABLED: if priorMessages.count > 20 && estimatedFill > 0.6 && summaryByConversation[conversationID] == nil {
-        // DISABLED: // Summarise the older portion; keep the last 10 messages intact in
-        // DISABLED: // the history window so recent context stays verbatim.
-        // DISABLED: let olderMessages = Array(priorMessages.dropLast(10))
-        // DISABLED: if let generated = await summarizer.summarize(messages: olderMessages) {
-        // DISABLED: let summary = ConversationSummary(
-        // DISABLED: conversationID: conversationID,
-        // DISABLED: summary: generated,
-        // DISABLED: coversMessageIDs: olderMessages.map(\.id),
-        // DISABLED: generatedAt: .now
-        // DISABLED: )
-        // DISABLED: summaryByConversation[conversationID] = summary
-        // DISABLED: summaryText = generated
-        // DISABLED: }
-        // DISABLED: }
-        
+
         // Build prompt context with layered memory.
         let facts = await memory.relevantFacts(for: userInput, limit: 8)
         let episodes = await memory.relevantEpisodes(for: userInput, limit: 3)
@@ -637,7 +628,7 @@ final class ConversationService: ObservableObject {
             // Fallback for empty responses
             if assistantMessage.status == .complete && assistantMessage.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 assistantMessage.status = .failed
-                assistantMessage.content = "⚠︎ Model vrátil prázdnou odpověď. Zkuste zprávu přeformulovat."
+                assistantMessage.content = emptyResponseFallbackMessage()
                 messagesByConversation[conversationID]?[assistantIndex] = assistantMessage
                 try? await store.save(message: assistantMessage)
                 break

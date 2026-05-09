@@ -36,11 +36,15 @@ final class MemoryService: ObservableObject {
     }
 
     func load() async {
-        if let loaded = try? await store.loadMemoryFacts() {
-            facts = loaded
+        do {
+            facts = try await store.loadMemoryFacts()
+        } catch {
+            HHLog.memory.error("loadMemoryFacts failed: \(error.localizedDescription, privacy: .public)")
         }
-        if let loaded = try? await store.loadMemoryEpisodes() {
-            episodes = loaded
+        do {
+            episodes = try await store.loadMemoryEpisodes()
+        } catch {
+            HHLog.memory.error("loadMemoryEpisodes failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 

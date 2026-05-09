@@ -71,7 +71,7 @@ actor MemoryExtractionService {
                 )
                 candidates.append(contentsOf: llmCandidates)
             } catch {
-                // Structured extraction failed — return empty.
+                HHLog.memory.warning("structured extraction failed: \(error.localizedDescription, privacy: .public)")
             }
         }
 

@@ -18,11 +18,19 @@ final class PersonalizationService: ObservableObject {
     }
 
     func load() async {
-        if let savedUser = try? await store.loadUserProfile() {
-            userProfile = savedUser
+        do {
+            if let savedUser = try await store.loadUserProfile() {
+                userProfile = savedUser
+            }
+        } catch {
+            HHLog.settings.error("loadUserProfile failed: \(error.localizedDescription, privacy: .public)")
         }
-        if let savedAssistant = try? await store.loadAssistantProfile() {
-            assistantProfile = savedAssistant
+        do {
+            if let savedAssistant = try await store.loadAssistantProfile() {
+                assistantProfile = savedAssistant
+            }
+        } catch {
+            HHLog.settings.error("loadAssistantProfile failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -30,12 +38,20 @@ final class PersonalizationService: ObservableObject {
         var next = user
         next.updatedAt = .now
         userProfile = next
-        try? await store.save(userProfile: next)
+        do {
+            try await store.save(userProfile: next)
+        } catch {
+            HHLog.settings.error("save userProfile failed: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     func update(assistant: AssistantProfile) async {
         assistantProfile = assistant
-        try? await store.save(assistant: assistant)
+        do {
+            try await store.save(assistant: assistant)
+        } catch {
+            HHLog.settings.error("save assistant failed: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     /// Reset personalization without touching memory facts.
