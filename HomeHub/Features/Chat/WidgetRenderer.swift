@@ -39,11 +39,10 @@ struct WidgetRenderer: View {
             if let feedback = actionFeedback {
                 ActionFeedbackBanner(result: feedback)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
-                    .onAppear {
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
-                            withAnimation(.easeOut(duration: 0.3)) {
-                                actionFeedback = nil
-                            }
+                    .task {
+                        try? await Task.sleep(for: .seconds(2.5))
+                        withAnimation(.easeOut(duration: 0.3)) {
+                            actionFeedback = nil
                         }
                     }
             }

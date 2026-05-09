@@ -43,13 +43,7 @@ struct RemindersSkill: Skill {
     func execute(input: String) async throws -> String {
         let store = EKEventStore()
 
-        // Request permission
-        var hasAccess = false
-        if #available(iOS 17.0, *) {
-            hasAccess = try await store.requestFullAccessToReminders()
-        } else {
-            hasAccess = try await store.requestAccess(to: .reminder)
-        }
+        let hasAccess = try await store.requestFullAccessToReminders()
 
         guard hasAccess else {
             return "Chyba: Uživatel nepovolil přístup k připomínkám."

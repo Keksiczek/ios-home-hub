@@ -28,13 +28,7 @@ struct CalendarSkill: Skill {
     func execute(input: String) async throws -> String {
         let store = EKEventStore()
         
-        // Request permission on first use (in iOS 17 uses requestFullAccessToEvents)
-        var hasAccess = false
-        if #available(iOS 17.0, *) {
-            hasAccess = try await store.requestFullAccessToEvents()
-        } else {
-            hasAccess = try await store.requestAccess(to: .event)
-        }
+        let hasAccess = try await store.requestFullAccessToEvents()
         
         guard hasAccess else {
             return "Chyba: Uživatel nepovolil přístup ke kalendáři."

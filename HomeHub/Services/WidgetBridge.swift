@@ -71,8 +71,8 @@ enum WidgetBridge {
         }
 
         let summary = WidgetDaySummary(
-            totalFacts: facts != nil ? facts!.filter { !$0.disabled }.count : existingTotalFacts,
-            totalConversations: conversations != nil ? conversations!.count : existingTotalConversations,
+            totalFacts: facts.map { $0.filter { !$0.disabled }.count } ?? existingTotalFacts,
+            totalConversations: conversations.map(\.count) ?? existingTotalConversations,
             lastAssistantMessage: keepLastMessage ? existingLastMessage : lastAssistantMessage,
             topFacts: newTopFacts,
             updatedAt: .now
