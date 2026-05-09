@@ -43,9 +43,7 @@ final class VoiceService: ObservableObject {
     
     init() {
         speechDelegate = SpeechSynthesizerDelegate { [weak self] isSpeaking in
-            DispatchQueue.main.async {
-                self?.isSpeaking = isSpeaking
-            }
+            self?.isSpeaking = isSpeaking
         }
         synthesizer.delegate = speechDelegate
         
@@ -191,22 +189,23 @@ final class VoiceService: ObservableObject {
     }
 }
 
-private final class SpeechSynthesizerDelegate: NSObject, AVSpeechSynthesizerDelegate, Sendable {
-    let onStateChange: @Sendable (Bool) -> Void
+@MainActor
+private final class SpeechSynthesizerDelegate: NSObject, AVSpeechSynthesizerDelegate {
+    let onStateChange: (Bool) -> Void
 
-    init(onStateChange: @escaping @Sendable (Bool) -> Void) {
+    init(onStateChange: @escaping (Bool) -> Void) {
         self.onStateChange = onStateChange
     }
-    
-    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
-        onStateChange(true)
+
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
+        Task { @MainActor [self] in onStateChange(true) }
     }
-    
-    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-        onStateChange(false)
+
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+        Task { @MainActor [self] in onStateChange(false) }
     }
-    
-    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
-        onStateChange(false)
+
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+        Task { @MainActor [self] in onStateChange(false) }
     }
 }

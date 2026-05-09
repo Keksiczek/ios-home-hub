@@ -58,10 +58,15 @@ actor SkillManager {
     /// Snapshot of `(name, availability)` for every registered skill.
     /// Consumed by Settings so the user sees "Needs permission — Calendar
     /// access" next to a toggle instead of a silent failure at call time.
-    func availabilitySnapshot() -> [(name: String, availability: SkillAvailability)] {
-        skills.values
-            .map { (name: $0.name, availability: $0.availability) }
-            .sorted { $0.name < $1.name }
+    ///
+    /// `async` because `Skill.availability` is `@MainActor` (OS auth checks).
+    func availabilitySnapshot() async -> [(name: String, availability: SkillAvailability)] {
+        let skillList = Array(skills.values)   // snapshot [any Skill] while on SkillManager actor
+        return await MainActor.run {
+            skillList
+                .map { (name: $0.name, availability: $0.availability) }
+                .sorted { $0.name < $1.name }
+        }
     }
 
     /// Generates the L4 system-prompt block listing the *enabled* skills.
@@ -163,14 +168,15 @@ actor SkillManager {
                 reason: .disabled
             )
         }
-        if case .permission(let prompt) = skill.availability {
+        let avail = await MainActor.run { skill.availability }
+        if case .permission(let prompt) = avail {
             HHLog.tool.info("skill '\(skill.name, privacy: .public)' needs permission: \(prompt, privacy: .public)")
             return .error(
                 message: "This tool needs permission: \(prompt). Open Settings to grant it.",
                 reason: .permissionMissing
             )
         }
-        if case .unavailable(let reason) = skill.availability {
+        if case .unavailable(let reason) = avail {
             return .error(
                 message: "\(skill.name) is unavailable: \(reason)",
                 reason: .executionFailed
