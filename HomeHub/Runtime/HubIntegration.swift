@@ -140,55 +140,16 @@ private struct SwiftTransformersTokenizerBridge: MLXLMCommon.Tokenizer, @uncheck
 
         do {
             return try upstream.applyChatTemplate(messages: stringMessages)
-        } catch let error as Tokenizers.TokenizerError {
-            switch error {
-
-            case .missingChatTemplate:
-                // FALLBACK ACTIVATED: no chat_template key in tokenizer_config.json
-                HHLog.runtime.warning("""
-                    MLX [applyChatTemplate]: upstream threw TokenizerError.missingChatTemplate \
-                    — tokenizer config contains no Jinja template. \
-                    Activating conservative fallback render \
-                    (family: \(self.modelFamily ?? "default/ChatML", privacy: .public)).
-                    """)
-
-            case .chatTemplate(let templateMsg):
-                // FALLBACK ACTIVATED: template present but Jinja execution failed
-                HHLog.runtime.warning("""
-                    MLX [applyChatTemplate]: upstream threw TokenizerError.chatTemplate \
-                    (\(templateMsg, privacy: .public)) \
-                    — Jinja template execution error. \
-                    Activating conservative fallback render \
-                    (family: \(self.modelFamily ?? "default/ChatML", privacy: .public)).
-                    """)
-
-            default:
-                // Non-template tokenizer errors: propagate normally, do NOT use fallback.
-                throw error
-            }
-
-            // ⚠️ EXPLICIT LIMITATION: tools and additionalContext require Jinja template
-            // execution and are NOT supported in the conservative fallback render path.
-            // If provided, they are ignored and a warning is emitted so the caller is aware.
-            if tools != nil || additionalContext != nil {
-                HHLog.runtime.warning("""
-                    MLX [applyChatTemplate fallback]: tools and/or additionalContext were provided \
-                    but are NOT supported in the fallback render path — they will be ignored.
-                    """)
-            }
-
+        } catch {
             let runtimePrompt = reconstructRuntimePrompt(from: stringMessages)
             let rendered = ChatTemplate.render(runtimePrompt, family: modelFamily ?? "")
 
             // addSpecialTokens: false — safety choice for fallback path:
-            //   PRO: Prevents double-BOS tokens. ChatTemplate.render() already 
-            //        includes BOS/header tokens for Llama3, Gemma2, and Gemma3. 
-            //        Using false ensures AutoTokenizer doesn't prepend a 
+            //   PRO: Prevents double-BOS tokens. ChatTemplate.render() already
+            //        includes BOS/header tokens for Llama3, Gemma2, and Gemma3.
+            //        Using false ensures AutoTokenizer doesn't prepend a
             //        second BOS at the byte level.
             return upstream.encode(text: rendered, addSpecialTokens: false)
-
-        } catch {
-            throw error
         }
     }
 

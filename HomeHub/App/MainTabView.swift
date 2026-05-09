@@ -3,6 +3,7 @@ import SwiftUI
 struct MainTabView: View {
     @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var runtime: RuntimeManager
+    @EnvironmentObject private var settings: SettingsService
     @Environment(\.horizontalSizeClass) private var hSizeClass
     @State private var showingSidebar = false
 

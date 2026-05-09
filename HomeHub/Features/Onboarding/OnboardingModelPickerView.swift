@@ -238,7 +238,7 @@ private struct SectionHeader: View {
                 .foregroundStyle(HHTheme.textSecondary)
             if let subtitle = subtitle {
                 Text(subtitle)
-                    .font(HHTheme.caption2)
+                    .font(HHTheme.caption)
                     .foregroundStyle(HHTheme.textSecondary.opacity(0.8))
             }
         }

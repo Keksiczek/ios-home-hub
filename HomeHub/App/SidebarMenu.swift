@@ -6,11 +6,11 @@ import SwiftUI
 /// `MainTabView` via environment so every destination's toolbar can
 /// wire up the hamburger button without holding a binding directly.
 private struct ShowSidebarMenuKey: EnvironmentKey {
-    static let defaultValue: () -> Void = {}
+    static let defaultValue: @Sendable () -> Void = {}
 }
 
 extension EnvironmentValues {
-    var showSidebarMenu: () -> Void {
+    var showSidebarMenu: @Sendable () -> Void {
         get { self[ShowSidebarMenuKey.self] }
         set { self[ShowSidebarMenuKey.self] = newValue }
     }

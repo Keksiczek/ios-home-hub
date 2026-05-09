@@ -368,7 +368,6 @@ final class ModelDownloadService: ObservableObject {
             // The "Add from URL" flow supports both .gguf links and mlx:// repos.
             backend: isMLX ? .mlx : .llamaCpp,
             format: isMLX ? .mlx : .gguf,
-            repoId: repoId,
             isUserAdded: true
         )
 

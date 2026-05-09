@@ -120,12 +120,10 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
         model: LocalModel,
         progressHandler: (@Sendable (MLXLoadPhase) -> Void)?
     ) async throws {
-        sessionLock.lock()
-        if isGenerating {
-            sessionLock.unlock()
+        let alreadyGenerating = sessionLock.withLock { isGenerating }
+        if alreadyGenerating {
             throw RuntimeError.generationInProgress
         }
-        sessionLock.unlock()
 
         self.log.info("MLX: Preparing to load model '\(model.displayName, privacy: .public)'")
 
@@ -173,10 +171,10 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
 
             // A new container invalidates any cached session from the previous load.
             // Reset the sampler-warning flag so the next generation logs once.
-            sessionLock.lock()
-            activeSession = nil
-            hasLoggedSamplerWarnings = false
-            sessionLock.unlock()
+            sessionLock.withLock {
+                activeSession = nil
+                hasLoggedSamplerWarnings = false
+            }
 
             let duration = Int(Date().timeIntervalSince(start) * 1000)
             self.loadedModel = model
@@ -195,32 +193,31 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
 
     func unload() async {
         self.log.info("MLX: Unloading model (manual or policy-driven)")
-        sessionLock.lock()
-        activeTask?.cancel()
-        activeTask = nil
-        activeGenerationID = nil
-        isGenerating = false
-        activeSession = nil
-        container = nil
-        sessionLock.unlock()
-        loadedModel = nil
-    }
-
-    func invalidateSession(for conversationID: UUID) async {
-        sessionLock.lock()
-        defer { sessionLock.unlock() }
-
-        if activeSession?.conversationID == conversationID {
-            self.log.info("MLX: Invalidating session for conversation \(conversationID, privacy: .public)")
-            activeSession = nil
-        }
-
-        if activeGenerationID == conversationID {
-            self.log.info("MLX: Cancelling active generation for conversation \(conversationID, privacy: .public) due to invalidation")
+        sessionLock.withLock {
             activeTask?.cancel()
             activeTask = nil
             activeGenerationID = nil
             isGenerating = false
+            activeSession = nil
+            container = nil
+        }
+        loadedModel = nil
+    }
+
+    func invalidateSession(for conversationID: UUID) async {
+        sessionLock.withLock {
+            if activeSession?.conversationID == conversationID {
+                self.log.info("MLX: Invalidating session for conversation \(conversationID, privacy: .public)")
+                activeSession = nil
+            }
+
+            if activeGenerationID == conversationID {
+                self.log.info("MLX: Cancelling active generation for conversation \(conversationID, privacy: .public) due to invalidation")
+                activeTask?.cancel()
+                activeTask = nil
+                activeGenerationID = nil
+                isGenerating = false
+            }
         }
     }
 
@@ -247,17 +244,20 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
             do {
                 guard let container = self.container else {
                     continuation.finish(throwing: RuntimeError.noModelLoaded)
-                    self.sessionLock.lock()
-                    self.isGenerating = false
-                    self.activeGenerationID = nil
-                    self.sessionLock.unlock()
+                    self.sessionLock.withLock {
+                        self.isGenerating = false
+                        self.activeGenerationID = nil
+                    }
                     return
                 }
 
-                self.sessionLock.lock()
-                let needsWarning = !self.hasLoggedSamplerWarnings
-                if needsWarning { self.hasLoggedSamplerWarnings = true }
-                self.sessionLock.unlock()
+                let needsWarning: Bool = self.sessionLock.withLock {
+                    if !self.hasLoggedSamplerWarnings {
+                        self.hasLoggedSamplerWarnings = true
+                        return true
+                    }
+                    return false
+                }
 
                 if needsWarning {
                     if parameters.topK != 0 {
@@ -283,45 +283,45 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                 var hitMaxTokens = false
 
                 if let nativeContainer = self.container as? ModelContainer {
-                    self.sessionLock.lock()
-                    let currentActive = self.activeSession
-                    let session: ChatSession
+                    let session: ChatSession = self.sessionLock.withLock {
+                        let currentActive = self.activeSession
 
-                    if let existing = currentActive,
-                       existing.conversationID == conversationID,
-                       existing.systemPrompt == prompt.systemPrompt,
-                       prompt.messages.count >= existing.messages.count,
-                       prompt.messages.prefix(existing.messages.count).elementsEqual(existing.messages, by: { $0.content == $1.content && $0.role == $1.role }) {
-                        session = existing.session
-                        self.log.debug("MLX: Reusing existing session for \(conversationID, privacy: .public)")
-                    } else {
-                        if currentActive != nil {
-                            self.log.info("MLX: Session mismatch or reset — starting fresh for \(conversationID, privacy: .public)")
-                        }
-
-                        let toNativeMessage: (RuntimeMessage) -> Chat.Message = { msg in
-                            switch msg.role {
-                            case .system: return .system(msg.content)
-                            case .user: return .user(msg.content)
-                            case .assistant: return .assistant(msg.content)
+                        if let existing = currentActive,
+                           existing.conversationID == conversationID,
+                           existing.systemPrompt == prompt.systemPrompt,
+                           prompt.messages.count >= existing.messages.count,
+                           prompt.messages.prefix(existing.messages.count).elementsEqual(existing.messages, by: { $0.content == $1.content && $0.role == $1.role }) {
+                            self.log.debug("MLX: Reusing existing session for \(conversationID, privacy: .public)")
+                            return existing.session
+                        } else {
+                            if currentActive != nil {
+                                self.log.info("MLX: Session mismatch or reset — starting fresh for \(conversationID, privacy: .public)")
                             }
+
+                            let toNativeMessage: (RuntimeMessage) -> Chat.Message = { msg in
+                                switch msg.role {
+                                case .system: return .system(msg.content)
+                                case .user: return .user(msg.content)
+                                case .assistant: return .assistant(msg.content)
+                                }
+                            }
+
+                            let history: [Chat.Message] = prompt.messages.dropLast().map(toNativeMessage)
+                            let newSession = ChatSession(
+                                nativeContainer,
+                                instructions: prompt.systemPrompt.isEmpty ? nil : prompt.systemPrompt,
+                                history: history
+                            )
+
+                            self.activeSession = ActiveSession(
+                                conversationID: conversationID,
+                                systemPrompt: prompt.systemPrompt,
+                                messages: Array(prompt.messages.dropLast()),
+                                session: newSession
+                            )
+                            return newSession
                         }
-
-                        let history: [Chat.Message] = prompt.messages.dropLast().map(toNativeMessage)
-                        session = ChatSession(
-                            nativeContainer,
-                            instructions: prompt.systemPrompt.isEmpty ? nil : prompt.systemPrompt,
-                            history: history
-                        )
-
-                        self.activeSession = ActiveSession(
-                            conversationID: conversationID,
-                            systemPrompt: prompt.systemPrompt,
-                            messages: Array(prompt.messages.dropLast()),
-                            session: session
-                        )
                     }
-                    self.sessionLock.unlock()
 
                     let lastMessage = prompt.messages.last
                     let lastContent = lastMessage?.content ?? ""
@@ -331,7 +331,7 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                     case .assistant, .none: .assistant
                     }
 
-                    session.parameters = generateParameters
+                    session.generateParameters = generateParameters
                     let responseStream = session.streamResponse(
                         to: lastContent,
                         role: lastRole,
@@ -375,25 +375,25 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                         continuation.yield(.token(buffer))
                     }
 
-                    self.sessionLock.lock()
-                    if !Task.isCancelled {
-                        if self.activeSession?.conversationID == conversationID && self.activeSession?.session === session {
-                            self.activeSession?.messages = prompt.messages
-                            self.activeSession?.messages.append(RuntimeMessage(role: .assistant, content: currentText))
-                        }
-                    } else {
-                        if self.activeSession?.session === session {
-                            self.log.info("MLX: Session invalidated due to task cancellation for \(conversationID, privacy: .public)")
-                            self.activeSession = nil
+                    self.sessionLock.withLock {
+                        if !Task.isCancelled {
+                            if self.activeSession?.conversationID == conversationID && self.activeSession?.session === session {
+                                self.activeSession?.messages = prompt.messages
+                                self.activeSession?.messages.append(RuntimeMessage(role: .assistant, content: currentText))
+                            }
+                        } else {
+                            if self.activeSession?.session === session {
+                                self.log.info("MLX: Session invalidated due to task cancellation for \(conversationID, privacy: .public)")
+                                self.activeSession = nil
+                            }
                         }
                     }
-                    self.sessionLock.unlock()
 
                 } else {
                     self.log.info("MLX: Using stateless fallback generation")
-                    var messages: [[String: String]] = []
+                    var msgList: [[String: String]] = []
                     if !prompt.systemPrompt.isEmpty {
-                        messages.append(["role": "system", "content": prompt.systemPrompt])
+                        msgList.append(["role": "system", "content": prompt.systemPrompt])
                     }
                     for msg in prompt.messages {
                         let roleString: String = switch msg.role {
@@ -401,15 +401,16 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                         case .user: "user"
                         case .assistant: "assistant"
                         }
-                        messages.append(["role": roleString, "content": msg.content])
+                        msgList.append(["role": roleString, "content": msg.content])
                     }
 
-                    try await container.perform { context in
-                        let userInput = UserInput(messages: messages.map { message in
-                            var dict: [String: Any] = [:]
-                            for (k, v) in message { dict[k] = v }
-                            return dict
-                        })
+                    // Immutable let copy — safe to capture in @Sendable closure.
+                    // Local tracking vars are returned as a tuple so the outer scope stays mutable-free.
+                    let capturedMsgs = msgList
+                    let fallbackResult: (Int, String, Bool) = try await container.perform { context in
+                        let userInput = UserInput(
+                            messages: capturedMsgs.map { $0.mapValues { $0 as any Sendable } }
+                        )
                         let input = try await context.processor.prepare(input: userInput)
 
                         let genStream = try MLXLMCommon.generate(
@@ -420,13 +421,16 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
 
                         var buffer = ""
                         var lastYieldTime = Date()
+                        var localTokens = 0
+                        var localText = ""
+                        var localHit = false
 
                         for await generation in genStream {
                             if Task.isCancelled { break }
                             switch generation {
                             case .chunk(let text):
-                                tokensGenerated += 1
-                                currentText += text
+                                localTokens += 1
+                                localText += text
                                 buffer += text
 
                                 let now = Date()
@@ -436,13 +440,13 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                                     lastYieldTime = now
                                 }
 
-                                if tokensGenerated >= parameters.maxTokens {
-                                    hitMaxTokens = true
+                                if localTokens >= parameters.maxTokens {
+                                    localHit = true
                                     break
                                 }
                                 var stop = false
                                 for s in parameters.stopSequences {
-                                    if currentText.hasSuffix(s) {
+                                    if localText.hasSuffix(s) {
                                         stop = true
                                         break
                                     }
@@ -458,14 +462,20 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                         if !buffer.isEmpty {
                             continuation.yield(.token(buffer))
                         }
+
+                        return (localTokens, localText, localHit)
                     }
+
+                    tokensGenerated = fallbackResult.0
+                    currentText = fallbackResult.1
+                    hitMaxTokens = fallbackResult.2
                 }
 
-                self.sessionLock.lock()
-                self.activeTask = nil
-                self.activeGenerationID = nil
-                self.isGenerating = false
-                self.sessionLock.unlock()
+                self.sessionLock.withLock {
+                    self.activeTask = nil
+                    self.activeGenerationID = nil
+                    self.isGenerating = false
+                }
 
                 let durationMs = Int(Date().timeIntervalSince(start) * 1000)
                 let tps = durationMs > 0 ? (Double(tokensGenerated) / Double(durationMs)) * 1000.0 : 0.0
@@ -482,11 +492,11 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                 continuation.finish()
 
             } catch {
-                self.sessionLock.lock()
-                self.activeTask = nil
-                self.activeGenerationID = nil
-                self.isGenerating = false
-                self.sessionLock.unlock()
+                self.sessionLock.withLock {
+                    self.activeTask = nil
+                    self.activeGenerationID = nil
+                    self.isGenerating = false
+                }
                 self.log.error("MLX: Generation failed: \(error.localizedDescription, privacy: .public)")
                 continuation.finish(throwing: error)
             }
@@ -516,37 +526,10 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
 // MARK: - Diagnostic Helpers
 
 private extension Error {
-    /// Extracts a readable case name from Tokenizer or Hub errors.
+    /// Returns a readable description for diagnostic logging.
+    /// TokenizerError and HubClientError are internal to their modules so we
+    /// use String(describing:) which includes the type name and associated values.
     var mlxDescriptiveMessage: String {
-        // 1. Handle Tokenizers.TokenizerError (the source of "error 0")
-        if let tokError = self as? Tokenizers.TokenizerError {
-            return switch tokError {
-            case .missingConfig: "TokenizerError.missingConfig"
-            case .missingTokenizerClassInConfig: "TokenizerError.missingTokenizerClassInConfig"
-            case .unsupportedTokenizer(let msg): "TokenizerError.unsupportedTokenizer(\(msg))"
-            case .missingVocab: "TokenizerError.missingVocab"
-            case .malformedVocab: "TokenizerError.malformedVocab"
-            case .chatTemplate(let msg): "TokenizerError.chatTemplate(\(msg))"
-            case .missingChatTemplate: "TokenizerError.missingChatTemplate"
-            case .tooLong(let msg): "TokenizerError.tooLong(\(msg))"
-            case .mismatchedConfig(let msg): "TokenizerError.mismatchedConfig(\(msg))"
-            @unknown default: "TokenizerError.unknown(\(String(describing: tokError)))"
-            }
-        }
-        
-        // 2. Handle Hub.HubApiError
-        if let hubError = self as? Hub.HubApiError {
-            return switch hubError {
-            case .unauthorized: "HubApiError.unauthorized"
-            case .notFound: "HubApiError.notFound"
-            case .downloadError(let msg): "HubApiError.downloadError(\(msg))"
-            case .parseError: "HubApiError.parseError"
-            case .malformedUrl: "HubApiError.malformedUrl"
-            @unknown default: "HubApiError.unknown(\(String(describing: hubError)))"
-            }
-        }
-        
-        // 3. Standard fallback
-        return localizedDescription
+        String(describing: self)
     }
 }
