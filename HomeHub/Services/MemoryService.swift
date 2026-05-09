@@ -166,7 +166,11 @@ final class MemoryService: ObservableObject {
             }
         }
 
+        // Drop non-pinned facts that scored zero — they have no semantic or
+        // keyword overlap with the query and would only dilute the context.
+        // Pinned facts always score ≥ 1.0 (pinBonus) so they are never dropped.
         return scored
+            .filter { $0.1 > 0 }
             .sorted { $0.1 > $1.1 }
             .prefix(limit)
             .map(\.0)

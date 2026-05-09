@@ -243,10 +243,9 @@ final class PromptAssemblyService {
         // L0c. User profile (helpful for personalised follow-up)
         appendUserProfile(from: package, to: &chunks)
 
-        // L1. Durable facts (lightweight context)
-        appendFacts(from: package, to: &chunks)
-
-        // L2. Episodes
+        // L1/L2. Reduced fact and episode window for followup turns — the model
+        // only needs enough context to personalise the answer, not the full set.
+        appendFacts(from: package, to: &chunks, limit: 3)
         appendEpisodes(from: package, to: &chunks)
 
         // Short, direct tool reminder. Prevents the model from repeating 
@@ -344,18 +343,18 @@ final class PromptAssemblyService {
         }
     }
 
-    private func appendFacts(from package: PromptContextPackage, to chunks: inout [String]) {
+    private func appendFacts(from package: PromptContextPackage, to chunks: inout [String], limit: Int = 8) {
         guard !package.facts.isEmpty else { return }
-        let factLines = package.facts.prefix(8).map { "- \($0.content)" }
+        let factLines = package.facts.prefix(limit).map { "- \($0.content)" }
         chunks.append("""
         Remembered facts (user-controlled, may be incomplete):
         \(factLines.joined(separator: "\n"))
         """)
     }
 
-    private func appendEpisodes(from package: PromptContextPackage, to chunks: inout [String]) {
+    private func appendEpisodes(from package: PromptContextPackage, to chunks: inout [String], limit: Int = 3) {
         guard !package.episodes.isEmpty else { return }
-        let episodeLines = package.episodes.prefix(3).map { "- \($0.summary)" }
+        let episodeLines = package.episodes.prefix(limit).map { "- \($0.summary)" }
         chunks.append("""
         Recent context (episodic, may be outdated):
         \(episodeLines.joined(separator: "\n"))

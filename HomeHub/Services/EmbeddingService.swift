@@ -26,13 +26,19 @@ actor EmbeddingService {
 
     // MARK: - Init
 
-    /// Attempts to load the system contextual embedding for English.
-    /// Non-throwing: if the model isn't available, `isAvailable` is set
-    /// to false and all similarity calls fall back to nil.
+    /// Attempts to load the system contextual embedding.
+    /// Tries Latin-script model first (covers Czech, Slovak, German, French, etc.),
+    /// then falls back to English. If neither is available, all similarity
+    /// calls return nil and keyword scoring is used instead.
     func loadIfNeeded() async {
         guard isAvailable == nil else { return }
 
-        guard let model = NLContextualEmbedding(language: .english) else {
+        // Latin-script model covers all Latin-alphabet languages including Czech.
+        // English-only model is a fallback for devices without multilingual assets.
+        let model = NLContextualEmbedding(script: .latin)
+            ?? NLContextualEmbedding(language: .english)
+
+        guard let model else {
             isAvailable = false
             return
         }
@@ -41,8 +47,6 @@ actor EmbeddingService {
             embedding = model
             isAvailable = true
         } else {
-            // Request async download of embedding assets.
-            // Until they arrive, similarity calls return nil.
             isAvailable = false
             Task.detached(priority: .utility) {
                 try? await model.requestAssets()

@@ -492,7 +492,7 @@ final class ConversationService: ObservableObject {
         
         // Build prompt context with layered memory.
         let facts = await memory.relevantFacts(for: userInput, limit: 8)
-        let episodes = await memory.relevantEpisodes(for: userInput, limit: 4)
+        let episodes = await memory.relevantEpisodes(for: userInput, limit: 3)
         let historyWindow = Array(priorMessages.suffix(20))
         
         // Chunk and filter attachments using embeddings
