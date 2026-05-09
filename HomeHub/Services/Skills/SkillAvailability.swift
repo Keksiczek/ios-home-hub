@@ -17,18 +17,4 @@ enum SkillAvailability: Sendable, Equatable {
     /// caller should surface a "Grant permission" action that maps to
     /// the named prompt.
     case permission(prompt: String)
-
-    var label: String {
-        switch self {
-        case .enabled:                 return "Enabled"
-        case .unavailable(let reason): return "Unavailable — \(reason)"
-        case .permission(let prompt):  return "Needs permission — \(prompt)"
-        }
-    }
-
-    /// `true` when the skill can actually run.
-    var isReady: Bool {
-        if case .enabled = self { return true }
-        return false
-    }
 }

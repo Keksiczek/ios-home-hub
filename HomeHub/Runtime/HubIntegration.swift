@@ -39,6 +39,9 @@ struct HubApiDownloader: Downloader {
         useLatest: Bool,
         progressHandler: @Sendable @escaping (Progress) -> Void
     ) async throws -> URL {
+        // NOTE: revision and useLatest are intentionally not forwarded —
+        // HubApi.snapshot has no revision parameter in swift-transformers 0.1.14
+        // (upstream tracks this as a TODO). Models are always fetched at HEAD.
         return try await hub.snapshot(
             from: id,
             matching: patterns,
@@ -89,6 +92,9 @@ struct SwiftTransformersTokenizerLoader: TokenizerLoader {
 /// This is the same bridge that `MLXHuggingFace`'s `#adaptHuggingFaceTokenizer()`
 /// macro would generate, written out explicitly so we don't need to add the
 /// `MLXHuggingFace` product (which requires bringing in its own macro build target).
+// @unchecked Sendable: Tokenizers.Tokenizer is not declared Sendable in swift-transformers.
+// SwiftTransformersTokenizerBridge is safe because the underlying tokenizer is created once,
+// never mutated after init, and AutoTokenizer implementations are stateless for encode/decode.
 private struct SwiftTransformersTokenizerBridge: MLXLMCommon.Tokenizer, @unchecked Sendable {
     private let upstream: any Tokenizers.Tokenizer
     private let modelFamily: String?
@@ -103,7 +109,9 @@ private struct SwiftTransformersTokenizerBridge: MLXLMCommon.Tokenizer, @uncheck
     }
 
     func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String {
-        // swift-transformers uses `decode(tokens:)` — note the parameter label difference.
+        // swift-transformers `decode(tokens:)` has no skipSpecialTokens parameter,
+        // so the flag is intentionally ignored. Special tokens may appear in output
+        // if the model doesn't strip them via its chat template.
         upstream.decode(tokens: tokenIds)
     }
 

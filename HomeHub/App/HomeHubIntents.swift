@@ -20,11 +20,14 @@ struct AskAssistantIntent: AppIntent {
         }
         
         let conversationService = container.conversationService
-        
-        // Create a temporary conversation for the intent, or find the last active
-        // For simplicity, we just create a new one to avoid stream collisions in the app
+
         let tempConversation = await conversationService.createConversation(title: "Siri Dotaz")
-        
+        // Always clean up the ephemeral conversation — Siri intents shouldn't
+        // accumulate in the chat history.
+        defer {
+            Task { await conversationService.deleteConversation(tempConversation.id) }
+        }
+
         // Send the input and await completion natively (no polling)
         let result = await conversationService.sendAndWait(userInput: message, in: tempConversation.id)
 
