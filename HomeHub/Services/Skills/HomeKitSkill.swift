@@ -124,7 +124,12 @@ struct HomeKitSkill: Skill {
     }
 }
 
-actor HomeKitManagerDelegateProxy: NSObject, HMHomeManagerDelegate {
+/// Bridges `HMHomeManagerDelegate` (an ObjC protocol requiring NSObject)
+/// to Swift Concurrency. `@MainActor` gives implicit Sendable conformance
+/// and matches HomeKit's guarantee that delegate callbacks arrive on the
+/// main thread.
+@MainActor
+final class HomeKitManagerDelegateProxy: NSObject, HMHomeManagerDelegate {
     private var continuations: [CheckedContinuation<HMHomeManager, Never>] = []
     private var isReady = false
     private var cachedManager: HMHomeManager?
@@ -135,20 +140,17 @@ actor HomeKitManagerDelegateProxy: NSObject, HMHomeManagerDelegate {
             self.continuations.append(continuation)
         }
     }
-    
-    nonisolated func homeManagerDidUpdateHomes(_ manager: HMHomeManager) {
-        Task {
-            await self.didUpdateHomes(manager)
-        }
-    }
 
-    private func didUpdateHomes(_ manager: HMHomeManager) {
-        self.cachedManager = manager
-        self.isReady = true
-        let pending = continuations
-        continuations.removeAll()
-        for c in pending {
-            c.resume(returning: manager)
+    // nonisolated so HMHomeManagerDelegate (ObjC protocol without @MainActor
+    // annotation) conformance doesn't cross into @MainActor. HomeKit delivers
+    // this callback on the main thread, so the Task hop is effectively free.
+    nonisolated func homeManagerDidUpdateHomes(_ manager: HMHomeManager) {
+        Task { @MainActor [self] in
+            cachedManager = manager
+            isReady = true
+            let pending = continuations
+            continuations.removeAll()
+            for c in pending { c.resume(returning: manager) }
         }
     }
 }

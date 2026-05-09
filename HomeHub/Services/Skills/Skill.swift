@@ -13,7 +13,10 @@ protocol Skill: Sendable {
     /// Current runtime availability — ready, missing permission, or
     /// entirely unavailable on this device. Defaults to `.enabled` so
     /// skills that don't need OS permissions don't have to opt in.
-    var availability: SkillAvailability { get }
+    ///
+    /// `@MainActor` because OS authorization checks (EventKit, HomeKit)
+    /// are annotated @MainActor in SDK 26+.
+    @MainActor var availability: SkillAvailability { get }
 
     /// Executes the native action with the parsed string argument.
     func execute(input: String) async throws -> String
@@ -23,5 +26,5 @@ extension Skill {
     /// Default implementation — most skills don't need special OS
     /// permissions (Calculator, DeviceInfo, WebSearch). Skills that
     /// do (Calendar, HomeKit, Reminders) override this.
-    var availability: SkillAvailability { .enabled }
+    @MainActor var availability: SkillAvailability { .enabled }
 }
