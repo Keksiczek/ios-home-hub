@@ -191,10 +191,10 @@ final class VoiceService: ObservableObject {
     }
 }
 
-private class SpeechSynthesizerDelegate: NSObject, AVSpeechSynthesizerDelegate {
-    let onStateChange: (Bool) -> Void
-    
-    init(onStateChange: @escaping (Bool) -> Void) {
+private final class SpeechSynthesizerDelegate: NSObject, AVSpeechSynthesizerDelegate, Sendable {
+    let onStateChange: @Sendable (Bool) -> Void
+
+    init(onStateChange: @escaping @Sendable (Bool) -> Void) {
         self.onStateChange = onStateChange
     }
     
