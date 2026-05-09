@@ -40,14 +40,14 @@ enum WidgetBridge {
             forSecurityApplicationGroupIdentifier: appGroupID
         ) else { return }
 
-        let widgetfileURL = containerURL.appendingPathComponent(fileName)
+        let fileURL = containerURL.appendingPathComponent(fileName)
 
         var existingTotalFacts = 0
         var existingTotalConversations = 0
         var existingLastMessage: String? = nil
         var existingTopFacts: [WidgetMemoryFact] = []
 
-        if let data = try? Data(contentsOf: widgetfileURL),
+        if let data = try? Data(contentsOf: fileURL),
            let existing = try? JSONDecoder().decode(WidgetDaySummary.self, from: data) {
             existingTotalFacts = existing.totalFacts
             existingTotalConversations = existing.totalConversations
@@ -71,8 +71,8 @@ enum WidgetBridge {
         }
 
         let summary = WidgetDaySummary(
-            totalFacts: facts != nil ? facts!.filter { !$0.disabled }.count : existingTotalFacts,
-            totalConversations: conversations != nil ? conversations!.count : existingTotalConversations,
+            totalFacts: facts.map { $0.filter { !$0.disabled }.count } ?? existingTotalFacts,
+            totalConversations: conversations.map(\.count) ?? existingTotalConversations,
             lastAssistantMessage: keepLastMessage ? existingLastMessage : lastAssistantMessage,
             topFacts: newTopFacts,
             updatedAt: .now
@@ -81,7 +81,6 @@ enum WidgetBridge {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
 
-        let fileURL = containerURL.appendingPathComponent(fileName)
         if let data = try? encoder.encode(summary) {
             try? data.write(to: fileURL, options: .atomic)
         }

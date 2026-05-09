@@ -4,6 +4,21 @@ struct ChatListView: View {
     @EnvironmentObject private var conversations: ConversationService
     @EnvironmentObject private var runtime: RuntimeManager
     @EnvironmentObject private var settings: SettingsService
+    @State private var searchText = ""
+
+    /// Filters conversations by title and last-message preview, case
+    /// insensitively. Empty `searchText` returns the full list so the
+    /// search field doesn't change behaviour until the user actually
+    /// types something.
+    private var filteredConversations: [Conversation] {
+        let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return conversations.conversations }
+        let needle = trimmed.lowercased()
+        return conversations.conversations.filter { convo in
+            convo.title.lowercased().contains(needle)
+                || (convo.lastMessagePreview?.lowercased().contains(needle) ?? false)
+        }
+    }
 
     var body: some View {
         NavigationStack {
@@ -19,9 +34,15 @@ struct ChatListView: View {
                         }
                         .buttonStyle(HHPrimaryButtonStyle())
                     }
+                } else if filteredConversations.isEmpty {
+                    HHEmptyState(
+                        icon: "magnifyingglass",
+                        title: "No matches",
+                        subtitle: "No conversations match \"\(searchText)\"."
+                    )
                 } else {
                     List {
-                        ForEach(conversations.conversations) { convo in
+                        ForEach(filteredConversations) { convo in
                             NavigationLink {
                                 ChatDetailView(conversationID: convo.id)
                                     .navigationTitle(convo.title)
@@ -42,6 +63,7 @@ struct ChatListView: View {
                     .listStyle(.insetGrouped)
                 }
             }
+            .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Search chats")
             .navigationTitle("Chats")
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {

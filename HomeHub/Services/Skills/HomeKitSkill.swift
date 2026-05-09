@@ -52,7 +52,7 @@ struct HomeKitSkill: Skill {
     func execute(input: String) async throws -> String {
         let manager = await HomeKitManager.shared.ensureReady()
 
-        guard let primaryHome = manager.primaryHome ?? manager.homes.first else {
+        guard let primaryHome = manager.homes.first else {
             throw HomeKitSkillError.noHomeFound
         }
 

@@ -112,8 +112,20 @@ final class VoiceService: ObservableObject {
         }
         
         audioEngine.prepare()
-        try audioEngine.start()
-        
+        // If `audioEngine.start()` throws, the tap installed above stays
+        // attached and the audio session remains active — both leak the
+        // input buffer until the app is terminated. Catch + clean up
+        // before re-throwing so a failed start leaves the engine in the
+        // same state as before `startListening()`.
+        do {
+            try audioEngine.start()
+        } catch {
+            inputNode.removeTap(onBus: 0)
+            self.recognitionRequest = nil
+            try? AVAudioSession.sharedInstance().setActive(false)
+            throw error
+        }
+
         isListening = true
         transcription = ""
         
@@ -125,6 +137,8 @@ final class VoiceService: ObservableObject {
             audioEngine.stop()
             inputNode.removeTap(onBus: 0)
             self.recognitionRequest = nil
+            try? AVAudioSession.sharedInstance().setActive(false)
+            isListening = false
             throw VoiceServiceError.speechRecognizerUnavailable
         }
 

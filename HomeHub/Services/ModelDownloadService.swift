@@ -614,7 +614,11 @@ final class ModelDownloadService: ObservableObject {
 
         guard FileManager.default.fileExists(atPath: tempURL.path) else {
             log.error("Temp file missing after download for '\(modelID, privacy: .public)'")
-            catalog.setInstallState(.failed(reason: DownloadError.fileMissingAfterDownload.errorDescription!), for: modelID)
+            catalog.setInstallState(
+                .failed(reason: DownloadError.fileMissingAfterDownload.errorDescription
+                        ?? "Soubor modelu chybí po stažení."),
+                for: modelID
+            )
             active[modelID] = nil
             tasks[modelID] = nil
             return

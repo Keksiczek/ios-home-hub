@@ -105,7 +105,16 @@ final class AppContainer: ObservableObject {
         // of truth and lets the manager intercept the call (telemetry,
         // policy gating) before the runtime sees it.
         let extractor = MemoryExtractionService(runtime: runtimeManager)
-        let memory = MemoryService(store: store, settings: settings, extractor: extractor)
+        // Share a single EmbeddingService across MemoryService and
+        // ConversationService so they share the model load AND the LRU
+        // cache. Two separate instances meant two model loads and stale
+        // cache misses on every turn.
+        let memory = MemoryService(
+            store: store,
+            settings: settings,
+            extractor: extractor,
+            embeddings: embedding
+        )
         let promptBudgetReporter = PromptBudgetReporter()
         let prompts = PromptAssemblyService(reporter: promptBudgetReporter)
         let summarizer = SummarizationService(runtime: runtimeManager, prompts: prompts)

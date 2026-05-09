@@ -26,14 +26,22 @@ final class OnboardingService: ObservableObject {
     }
 
     func load() async {
-        if let loaded = try? await store.loadOnboardingState() {
-            state = loaded
+        do {
+            if let loaded = try await store.loadOnboardingState() {
+                state = loaded
+            }
+        } catch {
+            HHLog.settings.error("loadOnboardingState failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 
     func advance(to step: OnboardingState.Step) async {
         state.currentStep = step
-        try? await store.save(onboardingState: state)
+        do {
+            try await store.save(onboardingState: state)
+        } catch {
+            HHLog.settings.error("save onboardingState failed: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     func back(to step: OnboardingState.Step) async {
@@ -60,7 +68,11 @@ final class OnboardingService: ObservableObject {
 
         state.isCompleted = true
         state.currentStep = .finish
-        try? await store.save(onboardingState: state)
+        do {
+            try await store.save(onboardingState: state)
+        } catch {
+            HHLog.settings.error("save onboardingState (commit) failed: \(error.localizedDescription, privacy: .public)")
+        }
 
         appState.phase = .ready
     }
@@ -70,7 +82,11 @@ final class OnboardingService: ObservableObject {
     func reset() async {
         await personalization.reset()
         state = .initial
-        try? await store.save(onboardingState: state)
+        do {
+            try await store.save(onboardingState: state)
+        } catch {
+            HHLog.settings.error("save onboardingState (reset) failed: \(error.localizedDescription, privacy: .public)")
+        }
         appState.phase = .onboarding
     }
 }

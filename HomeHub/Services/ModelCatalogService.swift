@@ -211,14 +211,41 @@ enum ModelCatalog {
         // out of the curated list — they OOM on iPhone. Power users can add them via
         // a future `mlx://` Add-from-URL extension or by editing this list directly.
 
+        // Sizes are the actual `mlx-community` 4-bit weight files reported
+        // by Hugging Face (LFS pointer size), rounded *up* to the nearest
+        // 50 MB. The disk-space preflight in `ModelDownloadService` adds a
+        // 10 % safety margin on top, so a small over-estimate here means
+        // the user is never told mid-download "actually we need more room".
+        LocalModel(
+            id: "mlx-llama-3.2-1b-it",
+            displayName: "Llama 3.2 1B (MLX)",
+            family: "Llama",
+            parameterCount: "1B",
+            quantization: "4-bit",
+            sizeBytes: 750_000_000,                 // HF: 0.695 GB
+            // Base model supports 128 K tokens, but `LlamaContextHandle`
+            // pre-allocates `n_ctx` KV-cache slots at load time, which on
+            // iPhone OOM-kills the app at anything above ~16 K. 8 K is the
+            // safe iPhone default; users with iPad / desktop can override
+            // via `Add from URL`.
+            contextLength: 8192,
+            downloadURL: URL(static: "https://huggingface.co/mlx-community/Llama-3.2-1B-Instruct-4bit"),
+            sha256: nil,
+            installState: .notInstalled,
+            recommendedFor: [.iPhone, .iPadMSeries],
+            license: "Llama 3.2 Community License",
+            backend: .mlx,
+            format: .mlx
+        ),
+
         LocalModel(
             id: "mlx-llama-3.2-3b-it",
             displayName: "Llama 3.2 3B (MLX)",
             family: "Llama",
             parameterCount: "3B",
             quantization: "4-bit",
-            sizeBytes: 2_100_000_000,
-            contextLength: 8192,
+            sizeBytes: 1_900_000_000,               // HF: 1.81 GB
+            contextLength: 8192,                    // see Llama 1B note re: KV-cache
             downloadURL: URL(static: "https://huggingface.co/mlx-community/Llama-3.2-3B-Instruct-4bit"),
             sha256: nil,
             installState: .notInstalled,
@@ -234,8 +261,8 @@ enum ModelCatalog {
             family: "Phi",
             parameterCount: "3.8B",
             quantization: "4-bit",
-            sizeBytes: 2_400_000_000,
-            contextLength: 4096,
+            sizeBytes: 2_250_000_000,               // HF: 2.15 GB
+            contextLength: 4096,                    // see Llama 1B note re: KV-cache
             downloadURL: URL(static: "https://huggingface.co/mlx-community/Phi-3.5-mini-instruct-4bit"),
             sha256: nil,
             installState: .notInstalled,
@@ -251,13 +278,17 @@ enum ModelCatalog {
             family: "Qwen",
             parameterCount: "3B",
             quantization: "4-bit",
-            sizeBytes: 1_900_000_000,
-            contextLength: 8192,
+            sizeBytes: 1_800_000_000,               // HF: 1.74 GB
+            contextLength: 8192,                    // base 32 K, capped for iPhone
             downloadURL: URL(static: "https://huggingface.co/mlx-community/Qwen2.5-3B-Instruct-4bit"),
             sha256: nil,
             installState: .notInstalled,
             recommendedFor: [.iPhone, .iPadMSeries],
-            license: "Apache 2.0",
+            // Qwen 2.5 3B ships under the bespoke `qwen-research` licence,
+            // NOT Apache 2.0. The 7B+ siblings are Apache; the 3B and 1.5B
+            // are research-only — surfacing the correct name lets the user
+            // make an informed call before downloading.
+            license: "Qwen Research License",
             backend: .mlx,
             format: .mlx
         ),
@@ -268,8 +299,8 @@ enum ModelCatalog {
             family: "Gemma2",
             parameterCount: "2B",
             quantization: "4-bit",
-            sizeBytes: 1_500_000_000,
-            contextLength: 8192,
+            sizeBytes: 1_500_000_000,               // HF: 1.47 GB
+            contextLength: 8192,                    // base model: 8 K tokens
             downloadURL: URL(static: "https://huggingface.co/mlx-community/gemma-2-2b-it-4bit"),
             sha256: nil,
             installState: .notInstalled,

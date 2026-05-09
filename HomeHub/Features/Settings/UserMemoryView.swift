@@ -12,6 +12,7 @@ struct UserMemoryView: View {
     @State private var newNote: String = ""
     @State private var newPrefKey: String = ""
     @State private var newPrefValue: String = ""
+    @State private var showingClearConfirm: Bool = false
 
     var body: some View {
         Form {
@@ -22,6 +23,18 @@ struct UserMemoryView: View {
         }
         .navigationTitle("My memory")
         .navigationBarTitleDisplayMode(.inline)
+        .confirmationDialog(
+            "Clear all memory?",
+            isPresented: $showingClearConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Clear everything", role: .destructive) {
+                store.clear()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This permanently deletes the assistant name, all your notes, and every preference. This can't be undone.")
+        }
     }
 
     // MARK: - Sections
@@ -125,7 +138,7 @@ struct UserMemoryView: View {
     private var dangerZone: some View {
         Section {
             Button(role: .destructive) {
-                store.clear()
+                showingClearConfirm = true
             } label: {
                 Text("Clear all memory")
             }

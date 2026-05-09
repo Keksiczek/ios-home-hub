@@ -4,6 +4,7 @@ struct MemoryView: View {
     @EnvironmentObject private var memory: MemoryService
     @EnvironmentObject private var settings: SettingsService
     @State private var showingAdd = false
+    @State private var showingClearConfirm = false
 
     private var hapticsEnabled: Bool { settings.current.haptics }
 
@@ -74,8 +75,8 @@ struct MemoryView: View {
 
                         Section {
                             Button(role: .destructive) {
-                                HHHaptics.notification(.warning, enabled: hapticsEnabled)
-                                Task { await memory.clearAll() }
+                                HHHaptics.impact(.light, enabled: hapticsEnabled)
+                                showingClearConfirm = true
                             } label: {
                                 Label("Clear all memory", systemImage: "trash")
                             }
@@ -101,6 +102,19 @@ struct MemoryView: View {
                 AddFactSheet { fact in
                     Task { await memory.add(fact) }
                 }
+            }
+            .confirmationDialog(
+                "Clear all memory?",
+                isPresented: $showingClearConfirm,
+                titleVisibility: .visible
+            ) {
+                Button("Clear everything", role: .destructive) {
+                    HHHaptics.notification(.warning, enabled: hapticsEnabled)
+                    Task { await memory.clearAll() }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This permanently deletes all remembered facts and episodes. This can't be undone.")
             }
             .overlay(alignment: .top) {
                 if !settings.current.memoryEnabled {

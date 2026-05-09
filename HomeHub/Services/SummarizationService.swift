@@ -81,9 +81,15 @@ final class SummarizationService {
     }
 
     private func stopSequencesForCurrentModel() -> [String] {
+        // Mirrors `ConversationService.stopSequences(for:)`. Keeping these
+        // in sync matters: a summarization run on a Phi or Qwen model
+        // without the right stop tokens emits the chat-template tokens
+        // verbatim into the summary text.
         switch runtime.activeModel?.family.lowercased() {
         case "gemma3", "gemma2": return ["<end_of_turn>"]
-        case "llama":            return ["<|eot_id|>"]
+        case "llama":            return ["<|eot_id|>", "<|end_of_text|>"]
+        case "phi":              return ["<|end|>", "<|endoftext|>", "<|im_end|>"]
+        case "qwen":             return ["<|im_end|>", "<|endoftext|>"]
         default:                 return []
         }
     }

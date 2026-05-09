@@ -307,7 +307,11 @@ struct AddFromURLSheet: View {
             return
         }
 
-        let contextLength = Int(contextLengthText) ?? 4096
+        // Clamp to a sensible range. Below 512 tokens nothing useful fits;
+        // above 131_072 we're outside any context window the runtime can
+        // actually allocate on iOS hardware. Empty / non-numeric input
+        // falls back to the curated 4 096 default.
+        let contextLength = max(512, min(Int(contextLengthText) ?? 4096, 131_072))
         // Pass through the verified size when we have it so
         // `ModelDownloadService.start(_:)` can run its disk-space preflight
         // for user-added models too.

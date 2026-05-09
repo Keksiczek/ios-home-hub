@@ -36,15 +36,32 @@ final class MemoryService: ObservableObject {
     }
 
     func load() async {
-        if let loaded = try? await store.loadMemoryFacts() {
-            facts = loaded
+        do {
+            facts = try await store.loadMemoryFacts()
+        } catch {
+            HHLog.memory.error("loadMemoryFacts failed: \(error.localizedDescription, privacy: .public)")
         }
-        if let loaded = try? await store.loadMemoryEpisodes() {
-            episodes = loaded
+        do {
+            episodes = try await store.loadMemoryEpisodes()
+        } catch {
+            HHLog.memory.error("loadMemoryEpisodes failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 
     // MARK: - Fact mutation
+
+    /// Wraps an `async throws` persistence call so disk-write failures get
+    /// logged via `HHLog.memory` instead of being silently dropped by `try?`.
+    /// Mutations to the in-memory state still happen — the user sees the
+    /// change immediately — but a failed save now leaves a paper trail in
+    /// Console.app.
+    private func persist(_ description: @autoclosure () -> String, _ work: () async throws -> Void) async {
+        do {
+            try await work()
+        } catch {
+            HHLog.memory.error("\(description(), privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
 
     func add(_ fact: MemoryFact) async {
         if let idx = facts.firstIndex(where: { $0.id == fact.id }) {
@@ -53,7 +70,7 @@ final class MemoryService: ObservableObject {
         } else {
             facts.append(fact)
         }
-        try? await store.save(fact: fact)
+        await persist("save(fact:\(fact.id))") { try await self.store.save(fact: fact) }
         WidgetBridge.updateWidget(facts: facts, keepLastMessage: true)
     }
 
@@ -66,21 +83,23 @@ final class MemoryService: ObservableObject {
             await embeddings.invalidateCache(for: fact.content)
         }
         facts.removeAll { $0.id == id }
-        try? await store.deleteMemoryFact(id: id)
+        await persist("delete(fact:\(id))") { try await self.store.deleteMemoryFact(id: id) }
         WidgetBridge.updateWidget(facts: facts, keepLastMessage: true)
     }
 
     func setDisabled(_ disabled: Bool, for id: UUID) async {
         guard let idx = facts.firstIndex(where: { $0.id == id }) else { return }
         facts[idx].disabled = disabled
-        try? await store.save(fact: facts[idx])
+        let snapshot = facts[idx]
+        await persist("setDisabled(fact:\(id))") { try await self.store.save(fact: snapshot) }
         WidgetBridge.updateWidget(facts: facts, keepLastMessage: true)
     }
 
     func setPinned(_ pinned: Bool, for id: UUID) async {
         guard let idx = facts.firstIndex(where: { $0.id == id }) else { return }
         facts[idx].pinned = pinned
-        try? await store.save(fact: facts[idx])
+        let snapshot = facts[idx]
+        await persist("setPinned(fact:\(id))") { try await self.store.save(fact: snapshot) }
         WidgetBridge.updateWidget(facts: facts, keepLastMessage: true)
     }
 
@@ -92,28 +111,29 @@ final class MemoryService: ObservableObject {
         } else {
             episodes.append(episode)
         }
-        try? await store.save(episode: episode)
+        await persist("save(episode:\(episode.id))") { try await self.store.save(episode: episode) }
     }
 
     func deleteEpisode(_ id: UUID) async {
         episodes.removeAll { $0.id == id }
-        try? await store.deleteMemoryEpisode(id: id)
+        await persist("delete(episode:\(id))") { try await self.store.deleteMemoryEpisode(id: id) }
     }
 
     func setEpisodeDisabled(_ disabled: Bool, for id: UUID) async {
         guard let idx = episodes.firstIndex(where: { $0.id == id }) else { return }
         episodes[idx].disabled = disabled
-        try? await store.save(episode: episodes[idx])
+        let snapshot = episodes[idx]
+        await persist("setDisabled(episode:\(id))") { try await self.store.save(episode: snapshot) }
     }
 
     // MARK: - Clear all
 
     func clearAll() async {
         for fact in facts {
-            try? await store.deleteMemoryFact(id: fact.id)
+            await persist("clearAll/delete(fact:\(fact.id))") { try await self.store.deleteMemoryFact(id: fact.id) }
         }
         for episode in episodes {
-            try? await store.deleteMemoryEpisode(id: episode.id)
+            await persist("clearAll/delete(episode:\(episode.id))") { try await self.store.deleteMemoryEpisode(id: episode.id) }
         }
         facts.removeAll()
         episodes.removeAll()
