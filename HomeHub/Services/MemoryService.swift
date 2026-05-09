@@ -55,11 +55,19 @@ final class MemoryService: ObservableObject {
     /// Mutations to the in-memory state still happen — the user sees the
     /// change immediately — but a failed save now leaves a paper trail in
     /// Console.app.
-    private func persist(_ description: @autoclosure () -> String, _ work: () async throws -> Void) async {
+    ///
+    /// `description` is a plain `String` rather than an `@autoclosure`:
+    /// OSLog's underlying message machinery uses an escaping autoclosure
+    /// of its own, and after the `try await work()` suspension we'd be
+    /// capturing a non-escaping autoclosure across an actor boundary.
+    /// The strings the callers pass are tiny — eager evaluation costs
+    /// nothing and avoids the Swift 6 "escaping autoclosure captures
+    /// non-escaping parameter" error.
+    private func persist(_ description: String, _ work: () async throws -> Void) async {
         do {
             try await work()
         } catch {
-            HHLog.memory.error("\(description(), privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+            HHLog.memory.error("\(description, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 
