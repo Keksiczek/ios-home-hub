@@ -3,8 +3,8 @@ import SwiftUI
 
 @available(iOS 16.0, *)
 struct AskAssistantIntent: AppIntent {
-    static var title: LocalizedStringResource = "Zeptat se asistenta"
-    static var description = IntentDescription("Položí otázku lokálnímu LLM asistentovi a vrátí odpověď.")
+    static let title: LocalizedStringResource = "Zeptat se asistenta"
+    static let description = IntentDescription("Položí otázku lokálnímu LLM asistentovi a vrátí odpověď.")
     
     @Parameter(title: "Zpráva", description: "Zpráva nebo úkol pro asistenta")
     var message: String
