@@ -132,9 +132,8 @@ final class PromptAssemblyService {
             2. If you don't know something, say so plainly. Do NOT invent names, \
             dates, prices, URLs, or quotes. When uncertain, ask a clarifying \
             question or state the limit of your knowledge.
-            3. Match the user's language. If they wrote in Czech, answer in Czech \
-            with correct diacritics; if they wrote in English, answer in English. \
-            Never mix scripts inside a single reply unless quoting.
+            3. Follow the Language policy block exactly. Never mix scripts \
+            inside a single reply unless quoting code or a proper name.
             4. Write ONE coherent answer. Do not repeat the user's question, do \
             not roleplay both sides of the conversation, do not continue with a \
             new "User:" turn after your reply.
@@ -227,15 +226,19 @@ final class PromptAssemblyService {
         \(package.user.preferredResponseStyle.blurb)
         """)
 
-        // Context rail — keep date, language, style consistent across the
-        // tool-followup turn so the assistant doesn't "forget" that it
-        // should answer in Czech mid-loop.
-        chunks.append(PromptBuilder.contextRail(
-            .live(
-                settings: package.settings,
-                availableTools: package.availableTools
-            )
-        ))
+        // Context rail — stripped to date/language/style only. The full tool
+        // policy is omitted here: the model already called a tool, the
+        // observation is in history, and the short tool reminder below covers
+        // the "don't call again unless necessary" constraint. Repeating the
+        // full policy wastes tokens and can confuse small models into thinking
+        // they should issue another tool call.
+        let followupCtx = PromptBuilder.Context.live(
+            settings: package.settings,
+            availableTools: package.availableTools
+        )
+        chunks.append(PromptBuilder.contextBlock(followupCtx))
+        chunks.append(PromptBuilder.languageBlock(followupCtx))
+        chunks.append(PromptBuilder.styleBlock(followupCtx))
 
         // L0c. User profile (helpful for personalised follow-up)
         appendUserProfile(from: package, to: &chunks)

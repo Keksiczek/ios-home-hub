@@ -156,7 +156,7 @@ actor SkillManager {
                 reason: .unknownTool
             )
         }
-        if let enabled, !enabled.map({ $0.lowercased() }).contains(key) {
+        if let enabled, !enabled.contains(where: { $0.lowercased() == key }) {
             HHLog.tool.info("skill '\(command.skillName, privacy: .public)' disabled — refusing")
             return .error(
                 message: "Skill '\(command.skillName)' is disabled in Settings.",

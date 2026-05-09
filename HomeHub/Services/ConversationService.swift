@@ -617,6 +617,23 @@ final class ConversationService: ObservableObject {
                 break
             }
 
+            // Strip any trailing stop-sequence token from the completed response.
+            // These are structural wire-format tokens (<|eot_id|>, <end_of_turn>, etc.)
+            // that MLX may not strip on its own when we hit a custom stop sequence.
+            // They must never be visible to the user or passed to the tool parser.
+            if assistantMessage.status == .complete {
+                var content = assistantMessage.content
+                for stop in stops where content.hasSuffix(stop) {
+                    content = String(content.dropLast(stop.count))
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    break
+                }
+                if content != assistantMessage.content {
+                    assistantMessage.content = content
+                    messagesByConversation[conversationID]?[assistantIndex] = assistantMessage
+                }
+            }
+
             // Fallback for empty responses
             if assistantMessage.status == .complete && assistantMessage.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 assistantMessage.status = .failed
