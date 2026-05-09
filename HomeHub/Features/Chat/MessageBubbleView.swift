@@ -220,8 +220,13 @@ private struct TypingIndicator: View {
             }
         }
         .animation(.spring(response: 0.3, dampingFraction: 0.7), value: phase)
-        .onAppear {
-            Timer.scheduledTimer(withTimeInterval: 0.35, repeats: true) { _ in
+        // `.task` cancels the loop when the bubble leaves the hierarchy —
+        // unlike `Timer.scheduledTimer(...)` from .onAppear which would
+        // keep firing after the view dismissed.
+        .task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(350))
+                if Task.isCancelled { return }
                 phase = (phase + 1) % 3
             }
         }

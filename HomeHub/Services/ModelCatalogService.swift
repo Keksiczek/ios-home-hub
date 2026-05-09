@@ -212,6 +212,23 @@ enum ModelCatalog {
         // a future `mlx://` Add-from-URL extension or by editing this list directly.
 
         LocalModel(
+            id: "mlx-llama-3.2-1b-it",
+            displayName: "Llama 3.2 1B (MLX)",
+            family: "Llama",
+            parameterCount: "1B",
+            quantization: "4-bit",
+            sizeBytes: 770_000_000,
+            contextLength: 8192,
+            downloadURL: URL(static: "https://huggingface.co/mlx-community/Llama-3.2-1B-Instruct-4bit"),
+            sha256: nil,
+            installState: .notInstalled,
+            recommendedFor: [.iPhone, .iPadMSeries],
+            license: "Llama 3.2 Community License",
+            backend: .mlx,
+            format: .mlx
+        ),
+
+        LocalModel(
             id: "mlx-llama-3.2-3b-it",
             displayName: "Llama 3.2 3B (MLX)",
             family: "Llama",

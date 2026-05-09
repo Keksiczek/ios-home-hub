@@ -488,13 +488,27 @@ struct SettingsView: View {
 
     private var aboutSection: some View {
         Section {
-            LabeledContent("Version", value: "1.0 (skeleton)")
+            LabeledContent("Version", value: Self.appVersion)
             LabeledContent("Runtime", value: runtime.runtime.identifier)
             LabeledContent("Runtime state", value: runtimeStateLabel)
         } header: {
             Text("About")
         }
     }
+
+    /// `CFBundleShortVersionString (CFBundleVersion)` if both are present
+    /// (e.g. `"1.0 (12)"`), the marketing version alone if not. Reading
+    /// from Info.plist keeps the displayed version in lockstep with the
+    /// build settings — no more hardcoded "skeleton" string drifting away
+    /// from reality on every release.
+    private static let appVersion: String = {
+        let info = Bundle.main.infoDictionary
+        let short = info?["CFBundleShortVersionString"] as? String ?? "—"
+        if let build = info?["CFBundleVersion"] as? String, build != short {
+            return "\(short) (\(build))"
+        }
+        return short
+    }()
 
     private var runtimeStateLabel: String {
         switch runtime.state {

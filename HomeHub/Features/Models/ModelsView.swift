@@ -57,6 +57,19 @@ struct ModelsView: View {
         return base.filter { $0.displayName.localizedCaseInsensitiveContains(searchText) || $0.family.localizedCaseInsensitiveContains(searchText) }
     }
 
+    /// Human-readable footer for the "On this device" section combining
+    /// the storage taken by installed models with the device's free disk
+    /// space. The values come from the catalog (compressed quantisation
+    /// sizes) plus the live `availableBytes` capacity probe — accurate
+    /// enough for "do I have room for one more model?" decisions without
+    /// crawling the Hugging Face cache directory ourselves.
+    private var storageFooterText: String {
+        let usedBytes = localModels.reduce(Int64(0)) { $0 + $1.sizeBytes }
+        let used = ByteCountFormatter.string(fromByteCount: usedBytes, countStyle: .file)
+        let free = ByteCountFormatter.string(fromByteCount: max(availableBytes, 0), countStyle: .file)
+        return "\(used) used by installed models · \(free) free"
+    }
+
     private var availableModels: [LocalModel] {
         let base = catalog.models.filter {
             if case .notInstalled = $0.installState { return true }
@@ -99,6 +112,8 @@ struct ModelsView: View {
                         }
                     } header: {
                         Text("On this device")
+                    } footer: {
+                        Text(storageFooterText)
                     }
                 }
 
