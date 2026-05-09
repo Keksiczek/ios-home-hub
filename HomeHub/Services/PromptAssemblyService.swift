@@ -132,9 +132,8 @@ final class PromptAssemblyService {
             2. If you don't know something, say so plainly. Do NOT invent names, \
             dates, prices, URLs, or quotes. When uncertain, ask a clarifying \
             question or state the limit of your knowledge.
-            3. Match the user's language. If they wrote in Czech, answer in Czech \
-            with correct diacritics; if they wrote in English, answer in English. \
-            Never mix scripts inside a single reply unless quoting.
+            3. Follow the Language policy block exactly. Never mix scripts \
+            inside a single reply unless quoting code or a proper name.
             4. Write ONE coherent answer. Do not repeat the user's question, do \
             not roleplay both sides of the conversation, do not continue with a \
             new "User:" turn after your reply.
@@ -227,23 +226,26 @@ final class PromptAssemblyService {
         \(package.user.preferredResponseStyle.blurb)
         """)
 
-        // Context rail — keep date, language, style consistent across the
-        // tool-followup turn so the assistant doesn't "forget" that it
-        // should answer in Czech mid-loop.
-        chunks.append(PromptBuilder.contextRail(
-            .live(
-                settings: package.settings,
-                availableTools: package.availableTools
-            )
-        ))
+        // Context rail — stripped to date/language/style only. The full tool
+        // policy is omitted here: the model already called a tool, the
+        // observation is in history, and the short tool reminder below covers
+        // the "don't call again unless necessary" constraint. Repeating the
+        // full policy wastes tokens and can confuse small models into thinking
+        // they should issue another tool call.
+        let followupCtx = PromptBuilder.Context.live(
+            settings: package.settings,
+            availableTools: package.availableTools
+        )
+        chunks.append(PromptBuilder.contextBlock(followupCtx))
+        chunks.append(PromptBuilder.languageBlock(followupCtx))
+        chunks.append(PromptBuilder.styleBlock(followupCtx))
 
         // L0c. User profile (helpful for personalised follow-up)
         appendUserProfile(from: package, to: &chunks)
 
-        // L1. Durable facts (lightweight context)
-        appendFacts(from: package, to: &chunks)
-
-        // L2. Episodes
+        // L1/L2. Reduced fact and episode window for followup turns — the model
+        // only needs enough context to personalise the answer, not the full set.
+        appendFacts(from: package, to: &chunks, limit: 3)
         appendEpisodes(from: package, to: &chunks)
 
         // Short, direct tool reminder. Prevents the model from repeating 
@@ -341,18 +343,18 @@ final class PromptAssemblyService {
         }
     }
 
-    private func appendFacts(from package: PromptContextPackage, to chunks: inout [String]) {
+    private func appendFacts(from package: PromptContextPackage, to chunks: inout [String], limit: Int = 8) {
         guard !package.facts.isEmpty else { return }
-        let factLines = package.facts.prefix(8).map { "- \($0.content)" }
+        let factLines = package.facts.prefix(limit).map { "- \($0.content)" }
         chunks.append("""
         Remembered facts (user-controlled, may be incomplete):
         \(factLines.joined(separator: "\n"))
         """)
     }
 
-    private func appendEpisodes(from package: PromptContextPackage, to chunks: inout [String]) {
+    private func appendEpisodes(from package: PromptContextPackage, to chunks: inout [String], limit: Int = 3) {
         guard !package.episodes.isEmpty else { return }
-        let episodeLines = package.episodes.prefix(3).map { "- \($0.summary)" }
+        let episodeLines = package.episodes.prefix(limit).map { "- \($0.summary)" }
         chunks.append("""
         Recent context (episodic, may be outdated):
         \(episodeLines.joined(separator: "\n"))

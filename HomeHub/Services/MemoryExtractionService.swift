@@ -149,6 +149,7 @@ actor MemoryExtractionService {
     }
 
     private let triggers: [Trigger] = [
+        // English
         Trigger(phrase: "my name is",       category: .personal),
         Trigger(phrase: "i live in",        category: .personal),
         Trigger(phrase: "i'm from",         category: .personal),
@@ -163,7 +164,33 @@ actor MemoryExtractionService {
         Trigger(phrase: "i don't like",     category: .preferences),
         Trigger(phrase: "i hate",           category: .preferences),
         Trigger(phrase: "remember that",    category: .other),
-        Trigger(phrase: "please remember",  category: .other)
+        Trigger(phrase: "please remember",  category: .other),
+
+        // Czech
+        Trigger(phrase: "jmenuji se",       category: .personal),
+        Trigger(phrase: "jméno je",         category: .personal),
+        Trigger(phrase: "bydlím v",         category: .personal),
+        Trigger(phrase: "žiji v",           category: .personal),
+        Trigger(phrase: "jsem z",           category: .personal),
+        Trigger(phrase: "pocházím z",       category: .personal),
+        Trigger(phrase: "pracuji v",        category: .work),
+        Trigger(phrase: "pracuju v",        category: .work),
+        Trigger(phrase: "pracuji jako",     category: .work),
+        Trigger(phrase: "pracuju jako",     category: .work),
+        Trigger(phrase: "moje práce",       category: .work),
+        Trigger(phrase: "pracuji na",       category: .projects),
+        Trigger(phrase: "pracuju na",       category: .projects),
+        Trigger(phrase: "můj projekt",      category: .projects),
+        Trigger(phrase: "vytvářím",         category: .projects),
+        Trigger(phrase: "mám rád",          category: .preferences),
+        Trigger(phrase: "mám ráda",         category: .preferences),
+        Trigger(phrase: "líbí se mi",       category: .preferences),
+        Trigger(phrase: "nemám rád",        category: .preferences),
+        Trigger(phrase: "nemám ráda",       category: .preferences),
+        Trigger(phrase: "nesnáším",         category: .preferences),
+        Trigger(phrase: "zapamatuj si",     category: .other),
+        Trigger(phrase: "pamatuj si",       category: .other),
+        Trigger(phrase: "zapamatuj že",     category: .other),
     ]
 
     private func extractHeuristic(from message: Message) -> [MemoryCandidate] {

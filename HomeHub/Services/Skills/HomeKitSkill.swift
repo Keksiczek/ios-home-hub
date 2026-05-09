@@ -153,21 +153,22 @@ actor HomeKitManagerDelegateProxy: NSObject, HMHomeManagerDelegate {
     }
 }
 
-/// Helper singleton bridging HMHomeManager's async initialization to Concurrency
-class HomeKitManager {
+/// Helper singleton bridging HMHomeManager's async initialization to Concurrency.
+/// @MainActor ensures HMHomeManager is always created and accessed on the main thread,
+/// which HomeKit requires, and gives the class implicit Sendable conformance for Swift 6.
+@MainActor
+final class HomeKitManager {
     static let shared = HomeKitManager()
-    
-    private var manager: HMHomeManager!
+
+    private var manager: HMHomeManager
     private let proxy = HomeKitManagerDelegateProxy()
-    
+
     private init() {
-        DispatchQueue.main.async {
-            self.manager = HMHomeManager()
-            self.manager.delegate = self.proxy
-        }
+        manager = HMHomeManager()
+        manager.delegate = proxy
     }
-    
+
     func ensureReady() async -> HMHomeManager {
-        return await proxy.ensureReady(manager: self.manager)
+        return await proxy.ensureReady(manager: manager)
     }
 }

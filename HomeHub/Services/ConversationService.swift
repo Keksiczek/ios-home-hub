@@ -492,7 +492,7 @@ final class ConversationService: ObservableObject {
         
         // Build prompt context with layered memory.
         let facts = await memory.relevantFacts(for: userInput, limit: 8)
-        let episodes = await memory.relevantEpisodes(for: userInput, limit: 4)
+        let episodes = await memory.relevantEpisodes(for: userInput, limit: 3)
         let historyWindow = Array(priorMessages.suffix(20))
         
         // Chunk and filter attachments using embeddings
@@ -617,6 +617,23 @@ final class ConversationService: ObservableObject {
                 break
             }
 
+            // Strip any trailing stop-sequence token from the completed response.
+            // These are structural wire-format tokens (<|eot_id|>, <end_of_turn>, etc.)
+            // that MLX may not strip on its own when we hit a custom stop sequence.
+            // They must never be visible to the user or passed to the tool parser.
+            if assistantMessage.status == .complete {
+                var content = assistantMessage.content
+                for stop in stops where content.hasSuffix(stop) {
+                    content = String(content.dropLast(stop.count))
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    break
+                }
+                if content != assistantMessage.content {
+                    assistantMessage.content = content
+                    messagesByConversation[conversationID]?[assistantIndex] = assistantMessage
+                }
+            }
+
             // Fallback for empty responses
             if assistantMessage.status == .complete && assistantMessage.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 assistantMessage.status = .failed
@@ -708,14 +725,13 @@ final class ConversationService: ObservableObject {
 
             // Fire-and-forget memory consideration on the user turn.
             //
-            // Use a detached, background-priority Task so the memory-extraction
-            // LLM inference pass doesn't compete with the user-visible assistant
-            // stream. Without this decoupling, every user message triggers a
-            // second full inference run at the same priority as the hot path —
-            // doubling perceived latency and battery draw.
-                // DISABLED: Task.detached(priority: .background) { [memory] in
-                // DISABLED: await memory.consider(message: msg)
-                // DISABLED: }
+            // Background priority ensures extraction inference never competes
+            // with the user-visible assistant stream. MemoryService.consider()
+            // respects memoryEnabled + autoExtractMemory settings internally,
+            // so no guard is needed here.
+            Task.detached(priority: .background) { [memory] in
+                await memory.consider(message: msg)
+            }
         }
 
         // Update the home/lock screen widget with latest state.

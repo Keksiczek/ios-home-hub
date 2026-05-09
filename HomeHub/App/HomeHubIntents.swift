@@ -3,8 +3,8 @@ import SwiftUI
 
 @available(iOS 16.0, *)
 struct AskAssistantIntent: AppIntent {
-    static var title: LocalizedStringResource = "Zeptat se asistenta"
-    static var description = IntentDescription("Položí otázku lokálnímu LLM asistentovi a vrátí odpověď.")
+    static let title: LocalizedStringResource = "Zeptat se asistenta"
+    static let description = IntentDescription("Položí otázku lokálnímu LLM asistentovi a vrátí odpověď.")
     
     @Parameter(title: "Zpráva", description: "Zpráva nebo úkol pro asistenta")
     var message: String
@@ -20,11 +20,14 @@ struct AskAssistantIntent: AppIntent {
         }
         
         let conversationService = container.conversationService
-        
-        // Create a temporary conversation for the intent, or find the last active
-        // For simplicity, we just create a new one to avoid stream collisions in the app
+
         let tempConversation = await conversationService.createConversation(title: "Siri Dotaz")
-        
+        // Always clean up the ephemeral conversation — Siri intents shouldn't
+        // accumulate in the chat history.
+        defer {
+            Task { await conversationService.deleteConversation(tempConversation.id) }
+        }
+
         // Send the input and await completion natively (no polling)
         let result = await conversationService.sendAndWait(userInput: message, in: tempConversation.id)
 
