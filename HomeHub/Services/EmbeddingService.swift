@@ -22,7 +22,18 @@ actor EmbeddingService {
 
     private var embedding: NLContextualEmbedding?
     private var isAvailable: Bool?
+
+    /// Bound on the LRU cache. A typical fact / chat snippet vector is
+    /// ~512 doubles ≈ 4 KB, so 256 entries ≈ 1 MB peak. Plenty of head-
+    /// room for normal sessions, hard cap so a long-running app session
+    /// can't grow the cache without bound.
+    private static let cacheCapacity = 256
+
+    /// Cache values keyed by raw text. `cacheOrder` tracks the
+    /// most-recently-used order — the front is least-recent and the
+    /// first to be evicted when the cache hits `cacheCapacity`.
     private var cache: [String: [Double]] = [:]
+    private var cacheOrder: [String] = []
 
     // MARK: - Init
 
@@ -85,11 +96,35 @@ actor EmbeddingService {
     /// Clears the embedding cache. Call when facts/episodes are modified.
     func invalidateCache() {
         cache.removeAll()
+        cacheOrder.removeAll()
     }
 
     /// Clears a single entry from the cache.
     func invalidateCache(for content: String) {
         cache.removeValue(forKey: content)
+        cacheOrder.removeAll { $0 == content }
+    }
+
+    /// Inserts (or refreshes) a cache entry, evicting the least-recently-
+    /// used entry when the cache is at capacity. Centralised so every
+    /// cache write goes through the same LRU bookkeeping.
+    private func cacheStore(_ vector: [Double], for key: String) {
+        if cache[key] != nil {
+            cacheOrder.removeAll { $0 == key }
+        } else if cache.count >= Self.cacheCapacity, let evict = cacheOrder.first {
+            cache.removeValue(forKey: evict)
+            cacheOrder.removeFirst()
+        }
+        cache[key] = vector
+        cacheOrder.append(key)
+    }
+
+    /// Cache read that also bumps the entry to most-recently-used.
+    private func cacheLookup(_ key: String) -> [Double]? {
+        guard let value = cache[key] else { return nil }
+        cacheOrder.removeAll { $0 == key }
+        cacheOrder.append(key)
+        return value
     }
 
     // MARK: - Vector computation
@@ -97,7 +132,7 @@ actor EmbeddingService {
     /// Computes a sentence-level embedding by average-pooling token vectors.
     private func vector(for text: String) -> [Double]? {
         // Check cache first
-        if let cached = cache[text] { return cached }
+        if let cached = cacheLookup(text) { return cached }
 
         guard let embedding else { return nil }
 
@@ -141,8 +176,9 @@ actor EmbeddingService {
         // Average pool
         let averaged = sum.map { $0 / Double(tokenCount) }
 
-        // Cache the result
-        cache[text] = averaged
+        // Cache the result through the LRU helper so we don't grow
+        // unboundedly across long sessions.
+        cacheStore(averaged, for: text)
 
         return averaged
     }

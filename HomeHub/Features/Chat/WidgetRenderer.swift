@@ -185,16 +185,19 @@ struct WidgetRenderer: View {
         }
     }
     
+    /// Compiled once at type-load time. Previously the regex was rebuilt
+    /// on every body re-render — including every streamed token — which
+    /// shows up as measurable CPU during long assistant turns.
+    private static let widgetRegex: NSRegularExpression? = {
+        try? NSRegularExpression(pattern: "<Widget:([^:]+):([^:>]+)(?::([^>]*))?>")
+    }()
+
     private func parseWidgets(from text: String) -> (String, [WidgetData]) {
         var plainText = text
         var widgets: [WidgetData] = []
-        
-        // Regex to match <Widget:Type:Label[:Value]>
-        let pattern = "<Widget:([^:]+):([^:>]+)(?::([^>]*))?>"
-        guard let regex = try? NSRegularExpression(pattern: pattern) else {
-            return (text, [])
-        }
-        
+
+        guard let regex = Self.widgetRegex else { return (text, []) }
+
         let nsString = text as NSString
         let matches = regex.matches(in: text, range: NSRange(location: 0, length: nsString.length))
         

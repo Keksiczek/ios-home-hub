@@ -76,7 +76,15 @@ final class ConversationService: ObservableObject {
     // MARK: - Loading
 
     func load() async {
-        conversations = (try? await store.loadConversations()) ?? []
+        do {
+            conversations = try await store.loadConversations()
+        } catch {
+            // Disk corruption or migration failure — start fresh in memory
+            // but log so users who report "my chats vanished" can be
+            // diagnosed from Console.app instead of guessing.
+            HHLog.chat.error("loadConversations failed: \(error.localizedDescription, privacy: .public)")
+            conversations = []
+        }
         // Discard any Task handles left over from before launch (crash or
         // process restart).  The tasks themselves are gone; keeping the
         // dictionary entries would permanently block new sends.
