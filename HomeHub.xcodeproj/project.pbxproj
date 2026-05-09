@@ -332,7 +332,7 @@
 		FBAE7DE844F8AA59B0950B96 /* PromptBudgetReporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PromptBudgetReporter.swift; sourceTree = "<group>"; };
 		FDFE66596111A6FF50BB05B4 /* MemoryService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryService.swift; sourceTree = "<group>"; };
 		FF3B4090AFA2F0C3D244E359 /* RuntimeManagerLifecycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RuntimeManagerLifecycleTests.swift; sourceTree = "<group>"; };
-		"TEMP_B1C46CCA-89E3-4D68-ACA8-990C00C62853" /* LocalOverride.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = LocalOverride.xcconfig; sourceTree = "<group>"; };
+		"TEMP_50E26847-CBB7-4DAF-8444-BFF623D16B84" /* LocalOverride.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = LocalOverride.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -662,10 +662,10 @@
 			path = HomeHubTests;
 			sourceTree = "<group>";
 		};
-		"TEMP_A0FB8C1D-0123-4A93-8AA1-1D082250E21E" /* ios-home-hub */ = {
+		"TEMP_18423907-0B9F-449A-86CF-BEABDE910800" /* ios-home-hub */ = {
 			isa = PBXGroup;
 			children = (
-				"TEMP_B1C46CCA-89E3-4D68-ACA8-990C00C62853" /* LocalOverride.xcconfig */,
+				"TEMP_50E26847-CBB7-4DAF-8444-BFF623D16B84" /* LocalOverride.xcconfig */,
 			);
 			path = "ios-home-hub";
 			sourceTree = "<group>";
@@ -755,7 +755,6 @@
 						ProvisioningStyle = Automatic;
 					};
 				};
-
 			};
 			buildConfigurationList = 9D862A5311F596793B6A46AF /* Build configuration list for PBXProject "HomeHub" */;
 			developmentRegion = en;
@@ -981,7 +980,7 @@
 /* Begin XCBuildConfiguration section */
 		893D398F804D32CD25261F97 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_B1C46CCA-89E3-4D68-ACA8-990C00C62853" /* LocalOverride.xcconfig */;
+			baseConfigurationReference = "TEMP_50E26847-CBB7-4DAF-8444-BFF623D16B84" /* LocalOverride.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -1013,8 +1012,10 @@
 				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = 8Y755TXDN8;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
@@ -1040,7 +1041,7 @@
 		};
 		8C17F1B1F01460AA9A7FAEF3 /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_B1C46CCA-89E3-4D68-ACA8-990C00C62853" /* LocalOverride.xcconfig */;
+			baseConfigurationReference = "TEMP_50E26847-CBB7-4DAF-8444-BFF623D16B84" /* LocalOverride.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
@@ -1126,7 +1127,7 @@
 		};
 		E21EC51CB5176FD7B5797139 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_B1C46CCA-89E3-4D68-ACA8-990C00C62853" /* LocalOverride.xcconfig */;
+			baseConfigurationReference = "TEMP_50E26847-CBB7-4DAF-8444-BFF623D16B84" /* LocalOverride.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
@@ -1158,7 +1159,7 @@
 		};
 		E53644E0FEA3DB3617A95788 /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_B1C46CCA-89E3-4D68-ACA8-990C00C62853" /* LocalOverride.xcconfig */;
+			baseConfigurationReference = "TEMP_50E26847-CBB7-4DAF-8444-BFF623D16B84" /* LocalOverride.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -1190,8 +1191,10 @@
 				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = 8Y755TXDN8;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
