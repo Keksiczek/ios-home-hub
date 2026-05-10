@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import Combine
 import os
 
 /// The single dependency container for the app.
@@ -78,6 +79,16 @@ final class AppContainer: ObservableObject {
     let conversationService: ConversationService
     let onboardingService: OnboardingService
     let widgetActionHandler: WidgetActionHandler
+    let knowledgeBaseService: KnowledgeBaseService
+    /// Shared NLContextualEmbedding wrapper used by Memory,
+    /// Conversation and KnowledgeBase services. Held on the
+    /// container so the memory-pressure path can call `unload()`
+    /// without reaching through one of the consumers.
+    let embeddingService: EmbeddingService
+    /// Spotlight indexer. Background-isolated `actor`; views never
+    /// touch it directly — services call into it from their save
+    /// hooks so the index stays in sync without UI involvement.
+    let searchIndexingService: SearchIndexingService
 
     private init(
         appState: AppState,
@@ -151,16 +162,123 @@ final class AppContainer: ObservableObject {
         self.conversationService = conversations
         self.onboardingService = onboarding
         self.widgetActionHandler = WidgetActionHandler()
+        // Knowledge Base reuses the shared EmbeddingService so we
+        // don't double-load the NLContextualEmbedding assets — same
+        // reasoning that drives the single-instance pattern in
+        // MemoryService / ConversationService above.
+        self.knowledgeBaseService = KnowledgeBaseService(embedding: embedding)
+        self.embeddingService = embedding
+        self.searchIndexingService = SearchIndexingService()
+        // Spotlight subscriptions: re-fire on every published
+        // change to memory facts / conversations / KB documents.
+        // The diff against the previous snapshot is computed
+        // inside the closure so we only push updates / deletes
+        // for items that actually changed. `dropFirst(1)` skips
+        // the synchronous initial value (bootstrap covers that)
+        // so we don't double-index at launch.
+        wireSpotlightSubscriptions(
+            memory: memory,
+            conversations: conversations,
+            knowledgeBase: knowledgeBaseService
+        )
+    }
+
+    // MARK: - Spotlight subscriptions
+
+    private var spotlightCancellables: Set<AnyCancellable> = []
+    private var lastIndexedFactIDs: Set<UUID> = []
+    private var lastIndexedConversationIDs: Set<UUID> = []
+    private var lastIndexedDocumentIDs: Set<UUID> = []
+
+    private func wireSpotlightSubscriptions(
+        memory: MemoryService,
+        conversations: ConversationService,
+        knowledgeBase: KnowledgeBaseService
+    ) {
+        // MemoryFact diff. Adds/updates pushed wholesale (cheap;
+        // dozens of facts max), removed IDs (= last-known minus
+        // current) pushed as deletes.
+        memory.$facts
+            .dropFirst()
+            .sink { [weak self] facts in
+                guard let self else { return }
+                let currentIDs = Set(facts.map(\.id))
+                let removed = self.lastIndexedFactIDs.subtracting(currentIDs)
+                self.lastIndexedFactIDs = currentIDs
+                let snapshot = facts
+                Task { [weak self] in
+                    guard let self else { return }
+                    if !removed.isEmpty {
+                        await self.searchIndexingService.remove(memoryFactIDs: Array(removed))
+                    }
+                    await self.searchIndexingService.index(memoryFacts: snapshot)
+                }
+            }
+            .store(in: &spotlightCancellables)
+
+        // Conversation diff (titles + timestamps; message bodies
+        // are intentionally NOT indexed — see SearchIndexingService).
+        conversations.$conversations
+            .dropFirst()
+            .sink { [weak self] convs in
+                guard let self else { return }
+                let currentIDs = Set(convs.map(\.id))
+                let removed = self.lastIndexedConversationIDs.subtracting(currentIDs)
+                self.lastIndexedConversationIDs = currentIDs
+                let snapshot = convs
+                Task { [weak self] in
+                    guard let self else { return }
+                    if !removed.isEmpty {
+                        await self.searchIndexingService.remove(conversationIDs: Array(removed))
+                    }
+                    await self.searchIndexingService.index(conversations: snapshot)
+                }
+            }
+            .store(in: &spotlightCancellables)
+
+        // KB document diff. Same pattern — removed IDs flushed,
+        // current array reindexed (idempotent on uniqueIdentifier).
+        knowledgeBase.$documents
+            .dropFirst()
+            .sink { [weak self] docs in
+                guard let self else { return }
+                let currentIDs = Set(docs.map(\.id))
+                let removed = self.lastIndexedDocumentIDs.subtracting(currentIDs)
+                self.lastIndexedDocumentIDs = currentIDs
+                let snapshot = docs
+                Task { [weak self] in
+                    guard let self else { return }
+                    if !removed.isEmpty {
+                        await self.searchIndexingService.remove(documentIDs: Array(removed))
+                    }
+                    await self.searchIndexingService.index(documents: snapshot)
+                }
+            }
+            .store(in: &spotlightCancellables)
     }
 
     /// Loads persisted state, decides onboarding vs ready, and
     /// publishes the resulting phase. Called once from `RootView`.
+    ///
+    /// ## Parallelisation
+    /// The five service `.load()` calls each hit a separate JSON
+    /// file and don't observe each other's state — running them
+    /// sequentially with `await` was making cold start serial-IO
+    /// bound. `async let` fires them concurrently; the trailing
+    /// `_ = await (...)` waits for the slowest. Net cold-start
+    /// win on a fresh device with cold disk caches: roughly the
+    /// difference between sum-of-IO and max-of-IO.
+    ///
+    /// `registerWebSearchIfEnabled()` and the catalog reconcile
+    /// step both depend on settings being loaded, so they stay
+    /// after the await barrier.
     func bootstrap() async {
-        await settingsService.load()
-        await personalizationService.load()
-        await memoryService.load()
-        await onboardingService.load()
-        await conversationService.load()
+        async let settingsLoad: Void = settingsService.load()
+        async let personLoad:  Void = personalizationService.load()
+        async let memoryLoad:  Void = memoryService.load()
+        async let onboardLoad: Void = onboardingService.load()
+        async let convLoad:    Void = conversationService.load()
+        _ = await (settingsLoad, personLoad, memoryLoad, onboardLoad, convLoad)
 
         // WebSearch is the one tool that's NOT registered by default in
         // `SkillManager.init` — it needs explicit user consent, and the
@@ -198,6 +316,38 @@ final class AppContainer: ObservableObject {
             conversations: conversationService.conversations,
             lastAssistantMessage: nil
         )
+
+        // Drain any ingest jobs queued by the Share Extension since
+        // last launch, then publish the latest documents/jobs to the
+        // debug surface. Doesn't block onboarding — it's intentionally
+        // run after we've flipped `appState.phase` to keep first
+        // launch responsive even if the queue is large.
+        await knowledgeBaseService.bootstrap()
+
+        // Spotlight bootstrap. One-shot per install: full reindex
+        // from the loaded state. Subsequent runs go through
+        // incremental hooks (`indexAfterChange` calls on the
+        // services). Detached so this never blocks the main actor
+        // even on a freshly-imported corpus.
+        let docs = knowledgeBaseService.documents
+        let convs = conversationService.conversations
+        let facts = memoryService.facts
+        // Seed the diff sets so the first incremental publish
+        // doesn't see "everything is new". Without this the very
+        // first refresh after bootstrap would push a redundant
+        // full reindex (idempotent but wasteful) and an empty
+        // delete batch.
+        lastIndexedDocumentIDs = Set(docs.map(\.id))
+        lastIndexedConversationIDs = Set(convs.map(\.id))
+        lastIndexedFactIDs = Set(facts.map(\.id))
+        Task.detached(priority: .utility) { [weak self] in
+            guard let self else { return }
+            await self.searchIndexingService.bootstrap(
+                documents: docs,
+                conversations: convs,
+                memoryFacts: facts
+            )
+        }
     }
 
     /// Attempts to load the model the user last selected. Called on
@@ -303,6 +453,13 @@ final class AppContainer: ObservableObject {
     /// `activeModel` / `state` back to idle if an auto-unload occurred.
     func handleMemoryPressure() async {
         memoryWarningCount += 1
+        // Drop the embedding model + cache *first*. It's the second
+        // largest retained allocation after the LLM runtime, and
+        // unloading it is essentially free (assets stay on disk,
+        // re-load is cheap). Doing this *before* the runtime
+        // unload sometimes avoids the runtime unload entirely if
+        // the embedding alone was the difference under pressure.
+        await embeddingService.unload()
         if let unloaded = await runtimeManager.handleMemoryPressure() {
             let time = DateFormatter.localizedString(from: .now, dateStyle: .none, timeStyle: .medium)
             lastUnloadNotification = "\(time) – '\(unloaded.displayName)' unloaded (memory pressure #\(memoryWarningCount))"
@@ -343,6 +500,12 @@ final class AppContainer: ObservableObject {
 
     /// Forward scene-phase changes to the runtime via RuntimeManager.
     func handleScenePhaseChange(_ phase: ScenePhase) async {
+        // Knowledge Base ingest scheduler watches the same lifecycle
+        // events: schedule a BG processing task on `.background`,
+        // resume foreground drain on `.active`. Side-effect-only —
+        // safe to call alongside the runtime path below.
+        await knowledgeBaseService.handleScenePhase(phase)
+
         switch phase {
         case .background:
             if let unloaded = await runtimeManager.handleBackground() {

@@ -1,4 +1,5 @@
 import SwiftUI
+import CoreSpotlight
 
 @main
 struct HomeHubApp: App {
@@ -22,6 +23,7 @@ struct HomeHubApp: App {
                 .environmentObject(container.onboardingService)
                 .environmentObject(container.widgetActionHandler)
                 .environmentObject(container.promptBudgetReporter)
+                .environmentObject(container.knowledgeBaseService)
                 .tint(HHTheme.accent)
                 .preferredColorScheme(container.settingsService.current.theme.colorScheme)
                 .onReceive(NotificationCenter.default.publisher(
@@ -40,6 +42,26 @@ struct HomeHubApp: App {
                 }
                 .onChange(of: scenePhase) { _, newPhase in
                     Task { await container.handleScenePhaseChange(newPhase) }
+                }
+                // Spotlight tap → CSSearchableItemActionType activity.
+                // The activity's `userInfo[CSSearchableItemActivity
+                // Identifier]` is exactly the persistent identifier
+                // we wrote into `CSSearchableItem.uniqueIdentifier`,
+                // i.e. `homehub.<type>.<UUID>` — round-trips back
+                // into a typed `DeepLink`.
+                .onContinueUserActivity(CSSearchableItemActionType) { activity in
+                    if let id = activity.userInfo?[CSSearchableItemActivityIdentifier] as? String,
+                       let link = DeepLink(persistentIdentifier: id) {
+                        container.appState.handle(deepLink: link)
+                    }
+                }
+                // Custom-scheme entry point (`homehub://…`). Used by
+                // App Shortcuts / Shortcuts.app actions and by
+                // `App Intent`s that opt into "open the app" output.
+                .onOpenURL { url in
+                    if let link = DeepLink(url: url) {
+                        container.appState.handle(deepLink: link)
+                    }
                 }
         }
     }

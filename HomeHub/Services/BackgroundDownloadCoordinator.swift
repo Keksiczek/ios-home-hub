@@ -13,7 +13,7 @@ import os
 /// queue; `mapQueue` serialises all access to shared mutable dictionaries.
 /// All user-facing callbacks (`onProgress`, `onCompleted`, `onFailed`) are
 /// dispatched back to `@MainActor` before being called.
-final class BackgroundDownloadCoordinator: NSObject, @unchecked Sendable {
+final class BackgroundDownloadCoordinator: NSObject, BackgroundDownloadProgressing, @unchecked Sendable {
 
     static let shared = BackgroundDownloadCoordinator()
     static let sessionID = "com.homehub.app.modeldownload.v1"

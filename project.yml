@@ -132,6 +132,20 @@ targets:
           - group.cz.keksiczek.homehub.shared
     sources:
       - path: HomeHub
+        # `*.md` documentation files are sprinkled across feature
+        # folders (e.g. KnowledgeBase/README.md). xcodegen treats
+        # non-Swift files as resources by default; left unexcluded
+        # they collide on bundle copy with SharedKit/README.md
+        # ("Multiple commands produce …/HomeHub.app/README.md").
+        excludes:
+          - "**/*.md"
+      # SharedKit is the small set of files the Share Extension and
+      # the host app both compile (SharedStorage, SharePayload, the
+      # shared logger). Each target compiles its own copy — the only
+      # cross-target contract is the JSON-on-disk file format.
+      - path: SharedKit
+        excludes:
+          - "**/*.md"
     dependencies:
       # ── [llama.cpp opt-in] Binary framework + system frameworks ──────────────
       # Uncomment the next eight lines to re-enable llama.cpp. The framework is
@@ -161,6 +175,11 @@ targets:
       # WhisperKit for VoiceService.swift on-device STT.
       - package: WhisperKit
         product: WhisperKit
+      # Share Extension target — must be a dependency (with implicit
+      # embed) so Xcode copies the .appex into the host app's
+      # PlugIns folder at build time. Without this, the extension
+      # builds but iOS never registers it with the share sheet.
+      - target: HomeHubShareExtension
     configFiles:
       Debug: LocalOverride.xcconfig
       Release: LocalOverride.xcconfig
@@ -209,6 +228,29 @@ targets:
         # (e.g. adding non-exempt crypto), remove this key and answer the
         # encryption questionnaire in App Store Connect instead.
         INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
+        # ── Custom URL scheme — deferred ──────────────────────────────────
+        # `homehub://…` deep links work *internally* (Spotlight tap →
+        # `CSSearchableItemActivityIdentifier` → `DeepLink` → router)
+        # without any URL scheme registration. Registering the scheme
+        # via `CFBundleURLTypes` is only required for external launches
+        # (Shortcuts.app, other apps) and would require either:
+        #   1. A real Info.plist file (drops all the INFOPLIST_KEY_*
+        #      auto-injection above), or
+        #   2. xcodegen's `info.properties` block (same trade-off).
+        # Wire up when we ship App Intents that emit URL output.
+        # `INFOPLIST_KEY_CFBundleURLTypes` is NOT in Apple's auto-
+        # mapping registry (it's an array-of-dicts, the auto-mapping
+        # only handles strings + arrays-of-strings).
+        # ──────────────────────────────────────────────────────────────────
+        # BGTaskScheduler permitted identifiers. The host app registers a
+        # `BGProcessingTask` for the document Knowledge Base ingest
+        # pipeline (parsing → chunking → embedding → indexing of large
+        # documents). Apple recommends `BGProcessingTask` for this kind
+        # of long-running, deferrable ML/indexing work. Without this key
+        # `BGTaskScheduler.register(forTaskWithIdentifier:)` aborts at
+        # launch with `Error Domain=BGTaskSchedulerErrorDomain Code=1`.
+        # The string MUST match `IngestScheduler.backgroundTaskIdentifier`.
+        INFOPLIST_KEY_BGTaskSchedulerPermittedIdentifiers: cz.keksiczek.homehub.ingest
         # The bridging header is intentionally kept even when llama.cpp is OFF:
         # it sits behind `#ifdef HOMEHUB_LLAMA_RUNTIME` so the C preprocessor
         # produces an empty translation unit by default. Removing the path
@@ -261,4 +303,46 @@ targets:
         INFOPLIST_KEY_CFBundleDisplayName: HomeHub
         INFOPLIST_KEY_NSExtension_NSExtensionPointIdentifier: com.apple.widgetkit-extension
         GENERATE_INFOPLIST_FILE: YES
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited)"
+
+  # ── Share Extension target (Epic 2) ─────────────────────────────────────────
+  # Adds HomeHub to the iOS system share sheet. The extension persists
+  # the shared payload + a `ShareRequest` to the App Group, then ends —
+  # all heavy lifting (parsing, chunking, embedding) happens in the host
+  # app's `IngestPipeline`. See `SharedKit/SharePayload.swift` and
+  # `ShareExtension/ShareViewController.swift` for the contract.
+  HomeHubShareExtension:
+    type: app-extension
+    platform: iOS
+    entitlements:
+      path: ShareExtension/ShareExtension.entitlements
+      properties:
+        # Same App Group identifier as the host app + widget. Without
+        # it `FileManager.containerURL(forSecurityApplicationGroupIdentifier:)`
+        # returns nil and the extension can't write the payload
+        # anywhere the host app can read it.
+        com.apple.security.application-groups:
+          - group.cz.keksiczek.homehub.shared
+    sources:
+      - path: ShareExtension
+        excludes:
+          - "**/*.md"
+      - path: SharedKit
+        excludes:
+          - "**/*.md"
+    # No `dependencies:` — the extension is intentionally
+    # standalone. Both targets compile their own copy of SharedKit;
+    # the only cross-target contract is the JSON-on-disk file format
+    # in the App Group container. A `- target: HomeHub` dependency
+    # would create a cycle (HomeHub embeds the extension) AND defeat
+    # the point of keeping the extension binary tiny.
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: cz.keksiczek.homehub.shareextension
+        # Real Info.plist (not GENERATE_INFOPLIST_FILE) because the
+        # extension declares a custom NSExtensionActivationRule and a
+        # principal class, which Apple's auto-generated plist can't
+        # express.
+        INFOPLIST_FILE: ShareExtension/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
         SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited)"

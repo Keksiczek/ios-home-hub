@@ -3,13 +3,18 @@ import SwiftUI
 struct MemoryView: View {
     @EnvironmentObject private var memory: MemoryService
     @EnvironmentObject private var settings: SettingsService
+    @EnvironmentObject private var appState: AppState
     @State private var showingAdd = false
     @State private var showingClearConfirm = false
+    /// Currently flashing fact (deep-link landing target). Cleared
+    /// after ~1.5 s so the row returns to its normal background.
+    @State private var highlightedFactID: UUID?
 
     private var hapticsEnabled: Bool { settings.current.haptics }
 
     var body: some View {
         NavigationStack {
+            ScrollViewReader { proxy in
             Group {
                 if memory.facts.isEmpty && memory.episodes.isEmpty && memory.candidates.isEmpty {
                     HHEmptyState(
@@ -46,6 +51,14 @@ struct MemoryView: View {
                                             onToggleDisabled: {
                                                 Task { await memory.setDisabled(!fact.disabled, for: fact.id) }
                                             })
+                                    // Tag for deep-link scrolling +
+                                    // flash background on hit.
+                                    .id(fact.id)
+                                    .listRowBackground(
+                                        highlightedFactID == fact.id
+                                            ? Color.yellow.opacity(0.25)
+                                            : Color(.secondarySystemGroupedBackground)
+                                    )
                                 }
                                 .onDelete { offsets in
                                     let targets = offsets.map { memory.facts[$0] }
@@ -121,7 +134,31 @@ struct MemoryView: View {
                     MemoryDisabledBanner()
                 }
             }
+            .onChange(of: appState.pendingDeepLink) { _, _ in
+                consumePendingDeepLinkIfMatching(proxy: proxy)
+            }
+            .task {
+                consumePendingDeepLinkIfMatching(proxy: proxy)
+            }
+            } // ScrollViewReader
         }
+    }
+
+    /// Pulls a `.memoryFact(id)` deep link off `AppState`, scrolls
+    /// the matching row into view, flashes its background, and
+    /// clears the pending link. Falls through silently for any
+    /// other deep-link type.
+    private func consumePendingDeepLinkIfMatching(proxy: ScrollViewProxy) {
+        guard case .memoryFact(let id) = appState.pendingDeepLink else { return }
+        DispatchQueue.main.async {
+            withAnimation { proxy.scrollTo(id, anchor: .top) }
+            highlightedFactID = id
+        }
+        Task {
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            await MainActor.run { highlightedFactID = nil }
+        }
+        appState.clearPendingDeepLink()
     }
 }
 

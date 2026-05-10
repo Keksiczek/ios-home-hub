@@ -18,6 +18,7 @@ import os
 /// - `chat`      — conversation send/receive, cancellation, regeneration.
 /// - `tool`      — skill registration, parsing, execution, timeouts.
 /// - `memory`    — fact/episode extraction and injection.
+/// - `kb`        — Knowledge Base ingest pipeline + retrieval.
 /// - `settings`  — persisted-state read/write.
 /// - `ui`        — view-layer notable events (rare; prefer behavioural logs).
 enum HHLog {
@@ -27,6 +28,10 @@ enum HHLog {
     static let chat     = Logger(subsystem: subsystem, category: "chat")
     static let tool     = Logger(subsystem: subsystem, category: "tool")
     static let memory   = Logger(subsystem: subsystem, category: "memory")
+    /// KB pipeline (ingest, parsing, chunking, embedding, indexing,
+    /// retrieval, BG schedule). Split off from `memory` so Console
+    /// filtering doesn't mix RAG progress with fact-extraction.
+    static let kb       = Logger(subsystem: subsystem, category: "kb")
     static let settings = Logger(subsystem: subsystem, category: "settings")
     static let ui       = Logger(subsystem: subsystem, category: "ui")
 }

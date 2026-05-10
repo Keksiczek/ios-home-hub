@@ -4,7 +4,14 @@ struct ChatListView: View {
     @EnvironmentObject private var conversations: ConversationService
     @EnvironmentObject private var runtime: RuntimeManager
     @EnvironmentObject private var settings: SettingsService
+    @EnvironmentObject private var appState: AppState
     @State private var searchText = ""
+    /// Path-based navigation. Storing conversation IDs (rather than
+    /// the whole `Conversation`) means a deep link from Spotlight
+    /// can push a chat by ID even before the conversations array
+    /// has finished loading — ChatDetailView already takes the ID,
+    /// so the destination resolves itself.
+    @State private var path: [UUID] = []
 
     /// Filters conversations by title and last-message preview, case
     /// insensitively. Empty `searchText` returns the full list so the
@@ -21,7 +28,7 @@ struct ChatListView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             Group {
                 if conversations.conversations.isEmpty {
                     HHEmptyState(
@@ -43,11 +50,11 @@ struct ChatListView: View {
                 } else {
                     List {
                         ForEach(filteredConversations) { convo in
-                            NavigationLink {
-                                ChatDetailView(conversationID: convo.id)
-                                    .navigationTitle(convo.title)
-                                    .navigationBarTitleDisplayMode(.inline)
-                            } label: {
+                            // Value-based NavigationLink so the
+                            // destination is keyed by `UUID` and
+                            // can be pushed from outside the view
+                            // (Spotlight deep link → `path` mutation).
+                            NavigationLink(value: convo.id) {
                                 ChatRowView(conversation: convo)
                             }
                             .swipeActions(edge: .trailing, allowsFullSwipe: true) {
@@ -61,10 +68,35 @@ struct ChatListView: View {
                         }
                     }
                     .listStyle(.insetGrouped)
+                    .navigationDestination(for: UUID.self) { conversationID in
+                        ChatDetailView(conversationID: conversationID)
+                            .navigationTitle(
+                                conversations.conversations
+                                    .first(where: { $0.id == conversationID })?
+                                    .title ?? "Chat"
+                            )
+                            .navigationBarTitleDisplayMode(.inline)
+                    }
                 }
             }
             .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Search chats")
             .navigationTitle("Chats")
+            // Deep-link consumer: Spotlight tap or
+            // `homehub://conversation/<UUID>` URL pushes the matching
+            // detail view onto the stack. Clearing the pending link
+            // afterwards prevents a re-fire on the next state change.
+            .onChange(of: appState.pendingDeepLink) { _, newValue in
+                consumeDeepLinkIfMatching(newValue)
+            }
+            .task {
+                // Same handler for the case where the deep link was
+                // already set when the view first appears (cold-launch
+                // path: HomeHubApp processes the activity before the
+                // chat tab is even on screen).
+                if appState.selectedTab == .chat {
+                    consumeDeepLinkIfMatching(appState.pendingDeepLink)
+                }
+            }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     SidebarMenuButton()
@@ -86,6 +118,42 @@ struct ChatListView: View {
     private func startNewChat() async {
         HHHaptics.impact(.medium, enabled: settings.current.haptics)
         _ = await conversations.createConversation()
+    }
+
+    /// Single chokepoint for `pendingDeepLink` consumption inside
+    /// the chat tab.
+    /// - `.conversation(id)` → push that conversation onto the path.
+    /// - `.query(text)` → spawn a fresh conversation, send the
+    ///   query as the first user message, and push the new chat
+    ///   onto the path. Used by the "Ask Home Hub" App Intent
+    ///   when `openAppWhenRun` brings the user back to the app.
+    /// Other cases pass through (handled by other tabs).
+    private func consumeDeepLinkIfMatching(_ link: DeepLink?) {
+        switch link {
+        case .conversation(let id):
+            if path.last != id { path.append(id) }
+            appState.clearPendingDeepLink()
+        case .query(let text):
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else {
+                appState.clearPendingDeepLink()
+                return
+            }
+            // Spawn → send → push. Done in a `Task` so the
+            // sync deep-link path doesn't await on conversation
+            // creation while the view body is rendering.
+            Task {
+                let convo = await conversations.createConversation(title: "Ask")
+                _ = await conversations.sendAndWait(userInput: trimmed, in: convo.id)
+                await MainActor.run {
+                    if path.last != convo.id { path.append(convo.id) }
+                    appState.clearPendingDeepLink()
+                }
+            }
+        case .document, .memoryFact, .none:
+            // Handled by the other tabs' consumers (or no link at all).
+            break
+        }
     }
 
     private func delete(at offsets: IndexSet) {

@@ -589,6 +589,22 @@ final class ConversationService: ObservableObject {
             do {
                 let stream = runtime.generate(prompt: runtimePrompt, parameters: parameters)
                 for try await event in stream {
+                    // Cooperative cancellation. The user can pull
+                    // the cancel button mid-stream OR start a fresh
+                    // turn that supersedes this one; in both cases
+                    // the surrounding `Task` gets cancelled and we
+                    // need to bail before the next token lands so
+                    // the UI doesn't keep painting orphan text.
+                    // The runtime ALSO checks cancellation, but
+                    // races are real — checking here on every event
+                    // closes the window between "cancel arrives"
+                    // and "runtime emits .finished(.cancelled)".
+                    if Task.isCancelled {
+                        assistantMessage.status = .cancelled
+                        messagesByConversation[conversationID]?[assistantIndex] = assistantMessage
+                        try? await store.save(message: assistantMessage)
+                        break
+                    }
                     switch event {
                     case .token(let piece):
                         assistantMessage.content += piece

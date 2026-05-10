@@ -499,7 +499,11 @@ struct DeveloperDiagnosticsView: View {
         case .loading(let id):            runtimeState = "loading: \(id)"
         case .ready(let id):              runtimeState = "ready: \(id)"
         case .failed(let id, let reason):
-            runtimeState = "failed: \(id)"
+            // `id` is `String?` — `failed` is reachable both for an
+            // explicit model load (id present) and for a cold-start
+            // self-test that has no model yet. Spell out the missing
+            // case so the interpolation isn't `Optional("…")`.
+            runtimeState = "failed: \(id ?? "<no model>")"
             failureReason = reason
         }
 

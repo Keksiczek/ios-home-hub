@@ -354,7 +354,12 @@ final class ModelDownloadService: ObservableObject {
         let modelID = "user-\(safeSanitized)-\(Int(Date().timeIntervalSince1970) % 100_000)"
 
         let isMLX = url.scheme?.lowercased() == "mlx"
-        let repoId = isMLX ? url.absoluteString.replacingOccurrences(of: "mlx://", with: "") : nil
+        // The pre-stripped repo identifier was previously threaded
+        // through `LocalModel`, but the MLX path now resolves it
+        // directly from `url` downstream. Keeping the computation
+        // would make this look like a Chesterton's-fence bug, so
+        // it's deleted; reintroduce if a future caller needs it
+        // upfront.
 
         let model = LocalModel(
             id: modelID,
