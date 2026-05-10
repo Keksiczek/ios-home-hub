@@ -514,8 +514,12 @@ private struct ModelRow: View {
                     .foregroundStyle(HHTheme.warning)
                     .lineLimit(3)
                 HStack(spacing: HHTheme.spaceS) {
-                    Button(hasResumeData ? "Resume" : "Retry", action: onDownload)
-                        .buttonStyle(HHSecondaryButtonStyle())
+                    // MLX models download via the Hub during load — retrying
+                    // must call onLoad(), not onDownload() (GGUF pipeline).
+                    Button(model.format == .mlx ? "Retry" : (hasResumeData ? "Resume" : "Retry")) {
+                        model.format == .mlx ? onLoad() : onDownload()
+                    }
+                    .buttonStyle(HHSecondaryButtonStyle())
                     Button(role: .destructive, action: onDelete) {
                         Image(systemName: "trash")
                             .foregroundStyle(HHTheme.danger)

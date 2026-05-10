@@ -107,12 +107,16 @@ struct SettingsView: View {
                 }
             )) {
                 ForEach(AssistantTone.allCases) { tone in
+                    // .tag must be on the direct ForEach child (VStack), not
+                    // on a nested Text — otherwise SwiftUI Picker can't match
+                    // the selection and logs "selection X is invalid".
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(tone.label).tag(tone)
+                        Text(tone.label)
                         Text(tone.blurb)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+                    .tag(tone)
                 }
             }
             NavigationLink("System prompts") {

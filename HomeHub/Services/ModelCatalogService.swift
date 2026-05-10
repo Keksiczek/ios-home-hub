@@ -272,26 +272,10 @@ enum ModelCatalog {
             format: .mlx
         ),
 
-        LocalModel(
-            id: "mlx-qwen-2.5-3b-it",
-            displayName: "Qwen 2.5 3B Instruct (MLX)",
-            family: "Qwen",
-            parameterCount: "3B",
-            quantization: "4-bit",
-            sizeBytes: 1_800_000_000,               // HF: 1.74 GB
-            contextLength: 8192,                    // base 32 K, capped for iPhone
-            downloadURL: URL(static: "https://huggingface.co/mlx-community/Qwen2.5-3B-Instruct-4bit"),
-            sha256: nil,
-            installState: .notInstalled,
-            recommendedFor: [.iPhone, .iPadMSeries],
-            // Qwen 2.5 3B ships under the bespoke `qwen-research` licence,
-            // NOT Apache 2.0. The 7B+ siblings are Apache; the 3B and 1.5B
-            // are research-only — surfacing the correct name lets the user
-            // make an informed call before downloading.
-            license: "Qwen Research License",
-            backend: .mlx,
-            format: .mlx
-        ),
+        // Qwen 2.5 3B removed: swift-transformers 0.1.14 does not support
+        // Qwen2Tokenizer — runtime throws unsupportedTokenizer on every load,
+        // which deletes the cache and re-triggers the broken GGUF download
+        // loop. Re-add once swift-transformers gains Qwen2Tokenizer support.
 
         LocalModel(
             id: "mlx-gemma-2-2b-it",

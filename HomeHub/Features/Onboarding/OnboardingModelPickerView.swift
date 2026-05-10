@@ -190,9 +190,21 @@ private struct ModelPickerRow: View {
                     .font(HHTheme.caption)
                     .foregroundStyle(HHTheme.textSecondary)
                 Spacer()
-                Button("Download", action: onDownload)
-                    .font(HHTheme.subheadline)
-                    .tint(HHTheme.accent)
+                // MLX models download automatically on first load via the
+                // Hugging Face Hub — never via the GGUF URLSession pipeline.
+                // Showing a GGUF "Download" button here would call
+                // downloads.start() → GGUF magic check failure on every
+                // MLX model, leaving them all in the .failed state before
+                // the user even leaves onboarding.
+                if model.format != .mlx {
+                    Button("Download", action: onDownload)
+                        .font(HHTheme.subheadline)
+                        .tint(HHTheme.accent)
+                } else {
+                    Text("Downloads on first use")
+                        .font(HHTheme.caption)
+                        .foregroundStyle(HHTheme.textSecondary.opacity(0.7))
+                }
             }
         case .downloading(let progress):
             VStack(alignment: .leading, spacing: 6) {
