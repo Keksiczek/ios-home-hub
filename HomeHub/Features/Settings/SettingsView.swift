@@ -7,6 +7,7 @@ struct SettingsView: View {
     @EnvironmentObject private var memory: MemoryService
     @EnvironmentObject private var onboarding: OnboardingService
     @EnvironmentObject private var runtime: RuntimeManager
+    @EnvironmentObject private var appState: AppState
 
     /// Cached snapshot of `SkillManager.availabilitySnapshot()` so the
     /// row UI can render synchronously while the Settings screen is on
@@ -14,8 +15,16 @@ struct SettingsView: View {
     /// the iOS Settings app.
     @State private var toolAvailability: [String: SkillAvailability] = [:]
 
+    /// Route enum for path-based navigation. Lets a deep link push
+    /// the right destination from outside without the user having
+    /// to tap through Settings → Developer → Knowledge Base.
+    private enum Route: Hashable {
+        case knowledgeBase
+    }
+    @State private var path: [Route] = []
+
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             Form {
                 DisclosureGroup {
                     profileSection
@@ -70,6 +79,30 @@ struct SettingsView: View {
                 for: UIApplication.didBecomeActiveNotification
             )) { _ in
                 Task { await refreshToolAvailability() }
+            }
+            .navigationDestination(for: Route.self) { route in
+                switch route {
+                case .knowledgeBase:
+                    KnowledgeBaseDebugView()
+                }
+            }
+            // Document deep link: push KB Debug view onto the
+            // Settings stack. KnowledgeBaseDebugView itself then
+            // consumes `appState.pendingDeepLink` to scroll to the
+            // matching row. We DON'T clear the link here — the KB
+            // view is the authoritative consumer for documents.
+            .onChange(of: appState.pendingDeepLink) { _, newValue in
+                guard case .document = newValue else { return }
+                if path.last != .knowledgeBase {
+                    path.append(.knowledgeBase)
+                }
+            }
+            .task {
+                if case .document = appState.pendingDeepLink,
+                   appState.selectedTab == .settings,
+                   path.last != .knowledgeBase {
+                    path.append(.knowledgeBase)
+                }
             }
         }
     }
@@ -530,6 +563,10 @@ struct SettingsView: View {
             NavigationLink("Runtime Diagnostics") {
                 DeveloperDiagnosticsView()
             }
+            // Value-based link routes through the Route enum so a
+            // deep-link append onto `path` from outside ends up in
+            // the same destination as a manual tap.
+            NavigationLink("Knowledge Base", value: Route.knowledgeBase)
         } header: {
             Text("Developer")
         } footer: {
@@ -609,9 +646,16 @@ private struct ToolRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
+                // Wrap in a trailing closure so SwiftUI's
+                // `@Sendable @MainActor` setter signature doesn't
+                // bind directly to our non-Sendable property —
+                // the wrapper inherits MainActor isolation from
+                // the surrounding View body and stops the warning.
+                // (Marking the property `@MainActor @Sendable`
+                // tickled a swift-frontend IRGen crash on 6.2.3.)
                 Toggle(isOn: Binding(
                     get: { isEnabled },
-                    set: onToggle
+                    set: { value in onToggle(value) }
                 )) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(toolName)

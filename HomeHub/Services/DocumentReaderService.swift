@@ -3,12 +3,22 @@ import PDFKit
 
 /// Service responsible for extracting text from local files (PDFs, TXT, MD, etc.)
 enum DocumentReaderService {
-    
+
+    /// One page of extracted text. `pageNumber` is 1-indexed for
+    /// human-friendly citations; `nil` when the source format
+    /// doesn't have pages (plain text, markdown). The chunker
+    /// stamps this onto every produced `ChunkRecord` so the chat
+    /// UI can render "see page 4" without re-running the parser.
+    struct PageText: Sendable {
+        let pageNumber: Int?
+        let text: String
+    }
+
     enum DocumentError: Error, LocalizedError {
         case fileNotReadable
         case unknownFormat
         case extractionFailed
-        
+
         var errorDescription: String? {
             switch self {
             case .fileNotReadable: return "Soubor nelze přečíst nebo k němu není přístup."
@@ -62,6 +72,57 @@ enum DocumentReaderService {
         }
     }
     
+    /// Per-page text extraction. Streams pages without ever holding
+    /// the entire document in memory as a single concatenated
+    /// string — important for large PDFs (>50 MB) where the
+    /// `extractText` flat-string output would spike RAM by an
+    /// order of magnitude on weak iPhones.
+    ///
+    /// For non-paginated formats (`txt` / `md` / `csv` / `json`)
+    /// this returns a single `PageText` with `pageNumber == nil`.
+    /// PDFs return one entry per page in document order.
+    ///
+    /// Throws the same errors as `extractText`. Empty pages are
+    /// dropped (PDF pages with images or zero glyphs); a doc that
+    /// produces zero non-empty pages throws `extractionFailed`.
+    static func extractPages(from url: URL) throws -> [PageText] {
+        let isSecured = url.startAccessingSecurityScopedResource()
+        defer { if isSecured { url.stopAccessingSecurityScopedResource() } }
+
+        let fileExtension = url.pathExtension.lowercased()
+        switch fileExtension {
+        case "txt", "md", "csv", "json":
+            let text: String
+            do {
+                text = try String(contentsOf: url, encoding: .utf8)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            } catch {
+                throw DocumentError.fileNotReadable
+            }
+            guard !text.isEmpty else { throw DocumentError.extractionFailed }
+            return [PageText(pageNumber: nil, text: text)]
+
+        case "pdf":
+            guard let pdf = PDFDocument(url: url) else {
+                throw DocumentError.fileNotReadable
+            }
+            var pages: [PageText] = []
+            pages.reserveCapacity(pdf.pageCount)
+            for i in 0..<pdf.pageCount {
+                guard let page = pdf.page(at: i),
+                      let raw = page.string else { continue }
+                let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { continue }
+                pages.append(PageText(pageNumber: i + 1, text: trimmed))
+            }
+            guard !pages.isEmpty else { throw DocumentError.extractionFailed }
+            return pages
+
+        default:
+            throw DocumentError.unknownFormat
+        }
+    }
+
     /// Chunks large text into ~1000 character overlapping blocks.
     static func chunk(text: String, chunkSize: Int = 1000, overlap: Int = 200) -> [String] {
         let words = text.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }

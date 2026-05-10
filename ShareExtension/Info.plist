@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+    Share Extension Info.plist.
+
+    The extension activates for URLs, plain text, PDFs and generic
+    files. We deliberately scope `NSExtensionActivationRule` rather
+    than using `TRUEPREDICATE`:
+    - URL: 1
+    - PlainText: 1
+    - SupportsPDFs (binds to PDFs): 1
+    - FileURL: 1
+    - everything else: 0
+    so the share sheet doesn't show HomeHub for content we can't do
+    anything with (e.g. camera images, contacts).
+
+    `NSExtensionPrincipalClass` matches the bundle's principal name +
+    the Swift class. xcodegen sets `INFOPLIST_FILE` to point here.
+-->
+<plist version="1.0">
+<dict>
+    <key>CFBundleDisplayName</key>
+    <string>HomeHub</string>
+    <key>CFBundleIdentifier</key>
+    <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+    <key>CFBundleName</key>
+    <string>$(PRODUCT_NAME)</string>
+    <key>CFBundlePackageType</key>
+    <string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
+    <key>CFBundleExecutable</key>
+    <string>$(EXECUTABLE_NAME)</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>NSExtension</key>
+    <dict>
+        <key>NSExtensionPointIdentifier</key>
+        <string>com.apple.share-services</string>
+        <key>NSExtensionPrincipalClass</key>
+        <string>$(PRODUCT_MODULE_NAME).ShareViewController</string>
+        <key>NSExtensionAttributes</key>
+        <dict>
+            <key>NSExtensionActivationRule</key>
+            <dict>
+                <key>NSExtensionActivationSupportsWebURLWithMaxCount</key>
+                <integer>1</integer>
+                <key>NSExtensionActivationSupportsWebPageWithMaxCount</key>
+                <integer>1</integer>
+                <key>NSExtensionActivationSupportsText</key>
+                <true/>
+                <key>NSExtensionActivationSupportsAttachmentsWithMaxCount</key>
+                <integer>10</integer>
+            </dict>
+        </dict>
+    </dict>
+</dict>
+</plist>

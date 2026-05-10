@@ -76,6 +76,18 @@ actor EmbeddingService {
         return cosineSimilarity(vecA, vecB)
     }
 
+    /// Returns the raw averaged-pooled embedding as Float32 for a
+    /// piece of text, or `nil` when the embedding model isn't loaded.
+    /// Used by the document Knowledge Base where we persist vectors
+    /// to disk and run cosine similarity in bulk; storing as Float
+    /// halves the on-disk size compared to Double with no measurable
+    /// quality loss for cosine.
+    func embeddingVector(for text: String) async -> [Float]? {
+        await loadIfNeeded()
+        guard let v = vector(for: text) else { return nil }
+        return v.map(Float.init)
+    }
+
     /// Batch-scores an array of texts against a query. Returns parallel
     /// array of similarity scores, or nil if embeddings are unavailable.
     func batchSimilarity(
@@ -95,6 +107,21 @@ actor EmbeddingService {
 
     /// Clears the embedding cache. Call when facts/episodes are modified.
     func invalidateCache() {
+        cache.removeAll()
+        cacheOrder.removeAll()
+    }
+
+    /// Releases the embedding model AND clears the LRU cache. Called
+    /// from the memory-warning path so we shed the heaviest piece of
+    /// retained state (the contextual embedding model + ~1 MB of
+    /// pooled vectors) before iOS reaches for the LLM runtime.
+    ///
+    /// Idempotent — safe to call repeatedly. The next `loadIfNeeded`
+    /// will re-fetch the model assets (which are already on disk
+    /// from the first load, so it's cheap).
+    func unload() {
+        embedding = nil
+        isAvailable = nil
         cache.removeAll()
         cacheOrder.removeAll()
     }

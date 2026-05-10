@@ -54,7 +54,37 @@ private struct MLXFileTask: Codable, Sendable {
 /// URLSession queue) synchronise through `serialQueue.sync`.
 /// The `@Published` properties and callbacks are always updated on
 /// `@MainActor`.
-final class MLXBackgroundDownloader: NSObject, ObservableObject, @unchecked Sendable {
+///
+/// ## Concurrency contract — read this before adding sync calls
+///
+/// The class has 20+ `serialQueue.sync` call sites, which is a deadlock
+/// risk pattern when the locked queue is reentered. The invariants:
+///
+/// 1. **Never call URLSession APIs from inside `serialQueue.sync`.**
+///    URLSession dispatches its own delegate callbacks back through
+///    `serialQueue.sync`; touching it inside our critical section
+///    creates a `serialQueue → URLSession-queue → serialQueue` cycle.
+///    The `cancelDownload` site is the canonical example: we drain
+///    the maps under `sync`, then issue cancels via
+///    `getTasksWithCompletionHandler` *outside* the block.
+///
+/// 2. **Never await inside `serialQueue.sync`.**
+///    The closure runs synchronously on whichever caller thread we're
+///    on. An await would suspend with the queue held; the resuming
+///    thread would block forever waiting for the queue.
+///
+/// 3. **Never re-enter from the same thread.**
+///    `DispatchQueue.sync` reentrancy is fatal on serial queues.
+///    Splitting a `sync { … sync { … } }` into two separate blocks
+///    is the fix.
+///
+/// 4. **Critical sections are short.**
+///    Mutate the maps and return. Side effects (file IO, persistence,
+///    `@Published` updates, callback fires) happen *after* the block.
+///
+/// Helpers `serialRead(_:)` / `serialMutate(_:)` exist to make these
+/// invariants visible at the call site instead of a bare `sync`.
+final class MLXBackgroundDownloader: NSObject, ObservableObject, BackgroundDownloadProgressing, @unchecked Sendable {
 
     static let shared = MLXBackgroundDownloader()
     static let sessionID = "com.homehub.app.mlxfiles.v1"
@@ -88,6 +118,30 @@ final class MLXBackgroundDownloader: NSObject, ObservableObject, @unchecked Send
     private let serialQueue = DispatchQueue(
         label: "com.homehub.mlxdownloader.serial", qos: .utility
     )
+
+    /// Read-style critical section. Returns a `Sendable` snapshot of
+    /// internal state for use *outside* the queue. Use this when
+    /// the only thing inside the closure is reading + projecting.
+    /// In debug builds asserts the queue is not already held by the
+    /// current thread (a re-entrant `sync` is fatal on serial queues).
+    private func serialRead<T>(_ body: () -> T) -> T {
+        #if DEBUG
+        dispatchPrecondition(condition: .notOnQueue(serialQueue))
+        #endif
+        return serialQueue.sync(execute: body)
+    }
+
+    /// Mutation critical section. Same contract as `serialRead`,
+    /// but the closure name documents intent at the call site.
+    /// `@discardableResult` because most mutations don't need to
+    /// publish a return value.
+    @discardableResult
+    private func serialMutate<T>(_ body: () -> T) -> T {
+        #if DEBUG
+        dispatchPrecondition(condition: .notOnQueue(serialQueue))
+        #endif
+        return serialQueue.sync(execute: body)
+    }
     /// URLSession taskIdentifier → which file it is downloading.
     private var taskMap: [Int: MLXFileTask] = [:]
     /// modelID → aggregate download job.
@@ -198,16 +252,18 @@ final class MLXBackgroundDownloader: NSObject, ObservableObject, @unchecked Send
 
     /// Cancels all in-flight file downloads for `modelID`.
     func cancelDownload(modelID: String) {
-        let tasksToCancel: [URLSessionTask] = serialQueue.sync {
+        // Run map cleanup under the serial queue. We don't actually
+        // need the URLSessionTask handles here — the next block fetches
+        // them via `getTasksWithCompletionHandler` (calling URLSession
+        // from inside the serial queue would risk a deadlock).
+        serialQueue.sync {
             var ids: [Int] = []
             for (tid, ft) in taskMap where ft.modelID == modelID {
                 ids.append(tid)
             }
             for id in ids { taskMap.removeValue(forKey: id) }
             jobMap.removeValue(forKey: modelID)
-            return []
         }
-        // URLSession is not accessible inside serialQueue (risk of deadlock).
         session.getTasksWithCompletionHandler { [weak self] _, _, downloadTasks in
             guard let self else { return }
             for task in downloadTasks {
@@ -379,7 +435,10 @@ extension MLXBackgroundDownloader: URLSessionDownloadDelegate {
             self.onProgress?(modelID, fraction)
 
             if jobComplete {
-                self.serialQueue.sync { self.jobMap.removeValue(forKey: modelID) }
+                // `removeValue` returns the evicted value, which we don't
+                // need — explicit `_ =` keeps Swift 6 strict-concurrency
+                // unused-result warnings quiet.
+                _ = self.serialQueue.sync { self.jobMap.removeValue(forKey: modelID) }
                 self.persistState()
                 self.activeDownloads.remove(modelID)
                 self.downloadProgress.removeValue(forKey: modelID)

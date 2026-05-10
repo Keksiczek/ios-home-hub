@@ -29,6 +29,15 @@ enum WidgetBridge {
     }
 
     /// Writes the current app state summary so the widget can display it.
+    ///
+    /// ## Concurrency
+    /// Public API stays `@MainActor` because callers pass
+    /// `MemoryFact` / `Conversation` arrays observed from main-actor
+    /// state. The actual disk read + write + encode is moved into a
+    /// `Task.detached(priority: .utility)` so a high-frequency caller
+    /// (e.g. every conversation turn) doesn't block the main thread
+    /// on container IO. `WidgetCenter.reloadAllTimelines()` stays on
+    /// main — it's a fast notification call, not the IO.
     @MainActor
     static func updateWidget(
         facts: [MemoryFact]? = nil,
@@ -36,17 +45,61 @@ enum WidgetBridge {
         lastAssistantMessage: String? = nil,
         keepLastMessage: Bool = false
     ) {
+        // Pre-compute the top-facts projection on the main actor
+        // (cheap, in-memory). The disk read + encode + write run
+        // off main below.
+        let topFactsProjection: [WidgetMemoryFact]? = facts.map { facts in
+            facts
+                .filter { !$0.disabled }
+                .sorted { a, b in
+                    if a.pinned != b.pinned { return a.pinned }
+                    return a.createdAt > b.createdAt
+                }
+                .prefix(5)
+                .map { WidgetMemoryFact(
+                    content: $0.content,
+                    category: $0.category.rawValue,
+                    pinned: $0.pinned
+                ) }
+        }
+        let totalFacts = facts.map { $0.filter { !$0.disabled }.count }
+        let totalConversations = conversations?.count
+
+        Task.detached(priority: .utility) {
+            persistSummary(
+                topFactsProjection: topFactsProjection,
+                totalFacts: totalFacts,
+                totalConversations: totalConversations,
+                lastAssistantMessage: lastAssistantMessage,
+                keepLastMessage: keepLastMessage
+            )
+            // Hop back to main for the WidgetKit notification —
+            // `reloadAllTimelines` is documented main-thread-safe
+            // but staying explicit keeps the call site obvious.
+            await MainActor.run {
+                WidgetCenter.shared.reloadAllTimelines()
+            }
+        }
+    }
+
+    /// Disk read + merge + write. Pure value-type input, runs off
+    /// main. Failures are swallowed (best-effort widget refresh).
+    private static func persistSummary(
+        topFactsProjection: [WidgetMemoryFact]?,
+        totalFacts: Int?,
+        totalConversations: Int?,
+        lastAssistantMessage: String?,
+        keepLastMessage: Bool
+    ) {
         guard let containerURL = FileManager.default.containerURL(
             forSecurityApplicationGroupIdentifier: appGroupID
         ) else { return }
-
         let fileURL = containerURL.appendingPathComponent(fileName)
 
         var existingTotalFacts = 0
         var existingTotalConversations = 0
         var existingLastMessage: String? = nil
         var existingTopFacts: [WidgetMemoryFact] = []
-
         if let data = try? Data(contentsOf: fileURL),
            let existing = try? JSONDecoder().decode(WidgetDaySummary.self, from: data) {
             existingTotalFacts = existing.totalFacts
@@ -55,37 +108,18 @@ enum WidgetBridge {
             existingTopFacts = existing.topFacts
         }
 
-        let newTopFacts: [WidgetMemoryFact]
-        if let facts = facts {
-            let top = facts
-                .filter { !$0.disabled }
-                .sorted { a, b in
-                    if a.pinned != b.pinned { return a.pinned }
-                    return a.createdAt > b.createdAt
-                }
-                .prefix(5)
-                .map { WidgetMemoryFact(content: $0.content, category: $0.category.rawValue, pinned: $0.pinned) }
-            newTopFacts = Array(top)
-        } else {
-            newTopFacts = existingTopFacts
-        }
-
         let summary = WidgetDaySummary(
-            totalFacts: facts.map { $0.filter { !$0.disabled }.count } ?? existingTotalFacts,
-            totalConversations: conversations.map(\.count) ?? existingTotalConversations,
+            totalFacts: totalFacts ?? existingTotalFacts,
+            totalConversations: totalConversations ?? existingTotalConversations,
             lastAssistantMessage: keepLastMessage ? existingLastMessage : lastAssistantMessage,
-            topFacts: newTopFacts,
+            topFacts: topFactsProjection ?? existingTopFacts,
             updatedAt: .now
         )
 
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
-
         if let data = try? encoder.encode(summary) {
             try? data.write(to: fileURL, options: .atomic)
         }
-
-        // Tell WidgetKit to reload timelines
-        WidgetCenter.shared.reloadAllTimelines()
     }
 }
