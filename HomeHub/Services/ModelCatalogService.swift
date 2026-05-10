@@ -293,5 +293,77 @@ enum ModelCatalog {
             backend: .mlx,
             format: .mlx
         ),
+
+        // MARK: Ultra-small models (fast testing / low-RAM devices)
+
+        LocalModel(
+            id: "mlx-smollm2-360m-it",
+            displayName: "SmolLM2 360M (MLX)",
+            family: "SmolLM2",
+            parameterCount: "360M",
+            quantization: "4-bit",
+            sizeBytes: 220_000_000,             // HF: ~210 MB
+            contextLength: 8192,
+            downloadURL: URL(static: "https://huggingface.co/mlx-community/SmolLM2-360M-Instruct-4bit"),
+            sha256: nil,
+            installState: .notInstalled,
+            recommendedFor: [.iPhone, .iPadMSeries],
+            license: "Apache 2.0",
+            backend: .mlx,
+            format: .mlx
+        ),
+
+        LocalModel(
+            id: "mlx-smollm2-1.7b-it",
+            displayName: "SmolLM2 1.7B (MLX)",
+            family: "SmolLM2",
+            parameterCount: "1.7B",
+            quantization: "4-bit",
+            sizeBytes: 1_050_000_000,           // HF: ~1.0 GB
+            contextLength: 8192,
+            downloadURL: URL(static: "https://huggingface.co/mlx-community/SmolLM2-1.7B-Instruct-4bit"),
+            sha256: nil,
+            installState: .notInstalled,
+            recommendedFor: [.iPhone, .iPadMSeries],
+            license: "Apache 2.0",
+            backend: .mlx,
+            format: .mlx
+        ),
+
+        // MARK: iPad M-series only (>3 GB — exceeds iPhone RAM)
+
+        LocalModel(
+            id: "mlx-mistral-7b-v0.3",
+            displayName: "Mistral 7B v0.3 (MLX)",
+            family: "Mistral",
+            parameterCount: "7B",
+            quantization: "4-bit",
+            sizeBytes: 4_100_000_000,           // HF: ~3.9 GB
+            contextLength: 8192,
+            downloadURL: URL(static: "https://huggingface.co/mlx-community/Mistral-7B-Instruct-v0.3-4bit"),
+            sha256: nil,
+            installState: .notInstalled,
+            recommendedFor: [.iPadMSeries],
+            license: "Apache 2.0",
+            backend: .mlx,
+            format: .mlx
+        ),
+
+        LocalModel(
+            id: "mlx-llama-3.1-8b-it",
+            displayName: "Llama 3.1 8B (MLX)",
+            family: "Llama",
+            parameterCount: "8B",
+            quantization: "4-bit",
+            sizeBytes: 4_500_000_000,           // HF: ~4.3 GB
+            contextLength: 8192,
+            downloadURL: URL(static: "https://huggingface.co/mlx-community/Meta-Llama-3.1-8B-Instruct-4bit"),
+            sha256: nil,
+            installState: .notInstalled,
+            recommendedFor: [.iPadMSeries],
+            license: "Llama 3.1 Community License",
+            backend: .mlx,
+            format: .mlx
+        ),
     ]
 }

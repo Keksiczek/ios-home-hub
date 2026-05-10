@@ -64,16 +64,24 @@ final class ModelDownloadService: ObservableObject {
     private let catalog: ModelCatalogService
     private var tasks: [String: Task<Void, Never>] = [:]
 
+    /// Background multi-file downloader for MLX weight repos.
+    let mlxDownloader: MLXBackgroundDownloader
+
     private let log = Logger(subsystem: "com.homehub.app", category: "ModelDownloadService")
 
-    init(localModels: LocalModelService, catalog: ModelCatalogService) {
+    init(
+        localModels: LocalModelService,
+        catalog: ModelCatalogService,
+        mlxDownloader: MLXBackgroundDownloader = .shared
+    ) {
         self.localModels = localModels
         self.catalog = catalog
+        self.mlxDownloader = mlxDownloader
         setupCoordinatorCallbacks()
     }
 
     func isDownloading(_ modelID: String) -> Bool {
-        active[modelID] != nil
+        active[modelID] != nil || mlxDownloader.activeDownloads.contains(modelID)
     }
 
     /// Returns `true` when a previous download was interrupted and resume
@@ -129,10 +137,10 @@ final class ModelDownloadService: ObservableObject {
         tasks[modelID]?.cancel()
         tasks[modelID] = nil
         active[modelID] = nil
-        // Cancel the URLSession task; coordinator will attempt to save resume data
-        // asynchronously. We intentionally do NOT clear resume data here so the
-        // user can resume. Call clearResumeData() only when starting fresh.
+        // Cancel GGUF coordinator (stores resume data for later resumption)
         BackgroundDownloadCoordinator.shared.cancelDownload(modelID: modelID)
+        // Cancel MLX coordinator (multi-file background download)
+        mlxDownloader.cancelDownload(modelID: modelID)
         catalog.setInstallState(.notInstalled, for: modelID)
         log.info("Cancelled download for '\(modelID, privacy: .public)'")
     }
@@ -555,7 +563,57 @@ final class ModelDownloadService: ObservableObject {
         }
     }
 
+    // MARK: - MLX background download
+
+    /// Starts a background multi-file download for an MLX model.
+    ///
+    /// Unlike GGUF downloads (single URLSessionDownloadTask), MLX repos
+    /// contain many files (config, tokenizer, weight shards). This method:
+    ///   1. Fetches the file manifest from the HuggingFace API.
+    ///   2. Hands every file to `MLXBackgroundDownloader`, which uses a
+    ///      dedicated background URLSession — downloads survive screen-off.
+    ///   3. On completion the catalog transitions to `.installed` and
+    ///      `onModelInstalled` fires for auto-activation.
+    func startMLXDownload(_ model: LocalModel) async {
+        guard let repoId = model.repoId else {
+            log.error("MLX: Cannot download '\(model.id, privacy: .public)' — no repoId")
+            catalog.setInstallState(.failed(reason: "Invalid model URL (no HF repo ID)."), for: model.id)
+            return
+        }
+        guard !mlxDownloader.activeDownloads.contains(model.id) else { return }
+
+        // Disk-space preflight
+        if model.sizeBytes > 0,
+           let free = Self.availableDiskSpaceBytes(),
+           free < model.sizeBytes {
+            let err = DownloadError.insufficientDiskSpace(required: model.sizeBytes, available: free)
+            catalog.setInstallState(.failed(reason: err.errorDescription ?? "Insufficient disk space"), for: model.id)
+            return
+        }
+
+        catalog.setInstallState(.downloading(progress: 0), for: model.id)
+        log.info("MLX: Fetching file manifest for '\(repoId, privacy: .public)'")
+
+        do {
+            let files = try await HuggingFaceAPIClient.fetchModelFiles(repoId: repoId)
+            guard !files.isEmpty else {
+                catalog.setInstallState(.failed(reason: "No inference files found for this model."), for: model.id)
+                return
+            }
+            let cacheDir = await localModels.resolvedMLXCacheURL(for: repoId)
+            try FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
+            mlxDownloader.startDownload(modelID: model.id, repoId: repoId, cacheDir: cacheDir, files: files)
+            log.info("MLX: Started background download of \(files.count) files for '\(model.id, privacy: .public)'")
+        } catch {
+            log.error("MLX: Manifest fetch failed for '\(repoId, privacy: .public)': \(error.localizedDescription, privacy: .public)")
+            catalog.setInstallState(.failed(reason: "Could not fetch model file list: \(error.localizedDescription)"), for: model.id)
+        }
+    }
+
+    // MARK: - Coordinator callbacks
+
     private func setupCoordinatorCallbacks() {
+        // ── GGUF single-file session ──────────────────────────────────────
         let coordinator = BackgroundDownloadCoordinator.shared
         coordinator.onProgress = { [weak self] id, fraction in
             guard let self else { return }
@@ -571,10 +629,32 @@ final class ModelDownloadService: ObservableObject {
             guard let self else { return }
             self.handleDownloadError(modelID: id, error: error, resumeData: resumeData)
         }
-        // Now that callbacks are wired, reconnect to any in-flight background
-        // session from a previous app run so queued events are delivered here
-        // (rather than being dropped before we were ready to handle them).
         coordinator.reconnect()
+
+        // ── MLX multi-file session ────────────────────────────────────────
+        mlxDownloader.onProgress = { [weak self] id, fraction in
+            self?.catalog.setInstallState(.downloading(progress: fraction), for: id)
+        }
+        mlxDownloader.onCompleted = { [weak self] id in
+            guard let self else { return }
+            guard let model = self.catalog.model(withID: id),
+                  let repoId = model.repoId else { return }
+            Task {
+                let cacheDir = await self.localModels.resolvedMLXCacheURL(for: repoId)
+                self.catalog.setInstallState(.installed(localURL: cacheDir), for: id)
+                self.log.info("MLX: Model '\(id, privacy: .public)' installed at \(cacheDir.path, privacy: .public)")
+                if let model = self.catalog.model(withID: id) {
+                    await self.onModelInstalled?(model)
+                }
+            }
+        }
+        mlxDownloader.onFailed = { [weak self] id, error in
+            guard let self else { return }
+            let reason = error.localizedDescription
+            self.log.error("MLX: Download failed for '\(id, privacy: .public)': \(reason, privacy: .public)")
+            self.catalog.setInstallState(.failed(reason: reason), for: id)
+        }
+        mlxDownloader.reconnect()
     }
 
     private func realDownload(model: LocalModel) async {

@@ -3,7 +3,11 @@ import UIKit
 /// Minimal UIApplicationDelegate added solely to receive
 /// `handleEventsForBackgroundURLSession`. This is required even in
 /// SwiftUI lifecycle apps to forward the system-provided completion
-/// handler to `BackgroundDownloadCoordinator`.
+/// handler to the appropriate download coordinator.
+///
+/// Two background sessions are in use:
+/// - `BackgroundDownloadCoordinator` — single-file GGUF downloads
+/// - `MLXBackgroundDownloader`       — multi-file MLX weight downloads
 ///
 /// Wired into the app via `@UIApplicationDelegateAdaptor` in `HomeHubApp`.
 final class AppDelegate: NSObject, UIApplicationDelegate {
@@ -13,13 +17,14 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         handleEventsForBackgroundURLSession identifier: String,
         completionHandler: @escaping () -> Void
     ) {
-        guard identifier == BackgroundDownloadCoordinator.sessionID else {
+        switch identifier {
+        case BackgroundDownloadCoordinator.sessionID:
+            BackgroundDownloadCoordinator.shared.storeSystemCompletionHandler(completionHandler)
+        case MLXBackgroundDownloader.sessionID:
+            MLXBackgroundDownloader.shared.storeSystemCompletionHandler(completionHandler)
+        default:
             // Unknown session — call immediately to avoid watchdog timeouts.
             completionHandler()
-            return
         }
-        // Forward to the coordinator; it will call the handler after
-        // urlSessionDidFinishEvents(forBackgroundURLSession:) fires.
-        BackgroundDownloadCoordinator.shared.storeSystemCompletionHandler(completionHandler)
     }
 }

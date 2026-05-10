@@ -24,6 +24,7 @@
 		16A47601CAC86406ED514264 /* AppSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4A1A02E95EBC929BFA1E294 /* AppSettings.swift */; };
 		176A80528E29A02F7A1171C2 /* ModelsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 150D6725C49C164B4D42BED7 /* ModelsView.swift */; };
 		1B35255E82D496F3A71B5B89 /* NLExtractionPassTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B75DA155D098AD01135C68EA /* NLExtractionPassTests.swift */; };
+		1F3878B63C9D53DCC1B1E604 /* HuggingFaceAPIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F7D5D95702A27B02BC796CB /* HuggingFaceAPIClient.swift */; };
 		21E67AD07DFC289149CAD4A6 /* ModelCapabilityProfileTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6C56EBE1665161CD6E39B67 /* ModelCapabilityProfileTests.swift */; };
 		23824D3C77BD1EE3B00EACEC /* HomeHubApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4AAE2261333524691AF73ED5 /* HomeHubApp.swift */; };
 		23B9D807E46F4516DA5D20DA /* ChatListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2157F5F058E2F589FB2AE3C3 /* ChatListView.swift */; };
@@ -78,6 +79,7 @@
 		788064224F0340D1E4C2CE46 /* MemoryService.swift in Sources */ = {isa = PBXBuildFile; fileRef = FDFE66596111A6FF50BB05B4 /* MemoryService.swift */; };
 		7A0D9656B6282E84CC87FBCC /* Transformers in Frameworks */ = {isa = PBXBuildFile; productRef = 0F5310EB2527D7F060DB0CA1 /* Transformers */; };
 		7AF2D364C0144AB77338FB86 /* MLXRuntimeManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADD4E25F5DFF5967F1506916 /* MLXRuntimeManagerTests.swift */; };
+		7B28BF89BAA20C52DCB4E605 /* MLXBackgroundDownloader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C9111D3F76F3926E5BCA409 /* MLXBackgroundDownloader.swift */; };
 		7D1F78BC3FD5FC0D863804BB /* RuntimeManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12BA3113EE77914F7D7C60B7 /* RuntimeManager.swift */; };
 		7D21F8106E95A1C868B6E19C /* ModelCatalogService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 65C9735C08DB1DCBC12EBC3A /* ModelCatalogService.swift */; };
 		7D53293B070C9C2EC64D0594 /* ExtractionPayload.swift in Sources */ = {isa = PBXBuildFile; fileRef = 09DAA76051EEFF6D2E8215DC /* ExtractionPayload.swift */; };
@@ -242,12 +244,14 @@
 		69F8C7A4201CA906B88E721E /* MemoryExtractionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryExtractionTests.swift; sourceTree = "<group>"; };
 		6AB838E7C6BD87C2B41AC8AA /* HHScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HHScreen.swift; sourceTree = "<group>"; };
 		6C3AA6DBB6CF31EE0886CEBC /* HomeHubIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeHubIntents.swift; sourceTree = "<group>"; };
+		6F7D5D95702A27B02BC796CB /* HuggingFaceAPIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HuggingFaceAPIClient.swift; sourceTree = "<group>"; };
 		71E59AFA3D1ABAFB10F4588D /* DeveloperDiagnosticsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeveloperDiagnosticsView.swift; sourceTree = "<group>"; };
 		731BC1094B49DE338DB7AABA /* PromptAssemblyService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PromptAssemblyService.swift; sourceTree = "<group>"; };
 		769B31D437F880BF85AF05C0 /* MLXRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MLXRuntime.swift; sourceTree = "<group>"; };
 		77913079CEDF0E03BBE121C5 /* SkillManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillManager.swift; sourceTree = "<group>"; };
 		779985FABD01F582CB76B2E2 /* AssistantProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssistantProfile.swift; sourceTree = "<group>"; };
 		7BA9952322F2A84FE434D9CC /* GuardrailsConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GuardrailsConfig.swift; sourceTree = "<group>"; };
+		7C9111D3F76F3926E5BCA409 /* MLXBackgroundDownloader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MLXBackgroundDownloader.swift; sourceTree = "<group>"; };
 		7CA6AB5D6827FFD2196C8356 /* MLXCacheTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MLXCacheTests.swift; sourceTree = "<group>"; };
 		7CE7ACCAEAA5FA7A738615B8 /* MockLocalRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockLocalRuntime.swift; sourceTree = "<group>"; };
 		7DA90D3CD0DAC38466D0F263 /* NLExtractionPass.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NLExtractionPass.swift; sourceTree = "<group>"; };
@@ -332,7 +336,7 @@
 		FBAE7DE844F8AA59B0950B96 /* PromptBudgetReporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PromptBudgetReporter.swift; sourceTree = "<group>"; };
 		FDFE66596111A6FF50BB05B4 /* MemoryService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryService.swift; sourceTree = "<group>"; };
 		FF3B4090AFA2F0C3D244E359 /* RuntimeManagerLifecycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RuntimeManagerLifecycleTests.swift; sourceTree = "<group>"; };
-		"TEMP_50E26847-CBB7-4DAF-8444-BFF623D16B84" /* LocalOverride.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = LocalOverride.xcconfig; sourceTree = "<group>"; };
+		"TEMP_0F036005-613E-44FA-942C-D863BDCF7973" /* LocalOverride.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = LocalOverride.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -599,11 +603,13 @@
 				0849DBA3B58F500B866BAEF3 /* EmbeddingService.swift */,
 				09312790940AEED7D967E37C /* ExtractionPromptBuilder.swift */,
 				BF97DC7E6219D59675C938A3 /* HHLogger.swift */,
+				6F7D5D95702A27B02BC796CB /* HuggingFaceAPIClient.swift */,
 				906349A642C3A9C878D567F5 /* ChatTextSanitizer.swift */,
 				52883734A26E98454CA86B73 /* ImageVisionService.swift */,
 				8936EBEB9DCAC133B99EF26C /* LocalModelService.swift */,
 				AB02333A6ACB51E101601913 /* MemoryExtractionService.swift */,
 				FDFE66596111A6FF50BB05B4 /* MemoryService.swift */,
+				7C9111D3F76F3926E5BCA409 /* MLXBackgroundDownloader.swift */,
 				65C9735C08DB1DCBC12EBC3A /* ModelCatalogService.swift */,
 				635733D15E400F41BD0C3AA4 /* ModelDownloadService.swift */,
 				7DA90D3CD0DAC38466D0F263 /* NLExtractionPass.swift */,
@@ -662,10 +668,10 @@
 			path = HomeHubTests;
 			sourceTree = "<group>";
 		};
-		"TEMP_18423907-0B9F-449A-86CF-BEABDE910800" /* ios-home-hub */ = {
+		"TEMP_033615B4-7B6A-4A0B-88BE-5868B370FD6E" /* ios-home-hub */ = {
 			isa = PBXGroup;
 			children = (
-				"TEMP_50E26847-CBB7-4DAF-8444-BFF623D16B84" /* LocalOverride.xcconfig */,
+				"TEMP_0F036005-613E-44FA-942C-D863BDCF7973" /* LocalOverride.xcconfig */,
 			);
 			path = "ios-home-hub";
 			sourceTree = "<group>";
@@ -838,6 +844,7 @@
 				36F15C224FDEA83DD1F2C5DB /* HomeHubIntents.swift in Sources */,
 				DF8C2F81A5E589755F3F453F /* HomeKitSkill.swift in Sources */,
 				5B34252B85E861167B587F48 /* HubIntegration.swift in Sources */,
+				1F3878B63C9D53DCC1B1E604 /* HuggingFaceAPIClient.swift in Sources */,
 				FC359A6E300FD361BE3BB54F /* ImageVisionService.swift in Sources */,
 				56620134892EE17725CF37D2 /* InMemoryStore.swift in Sources */,
 				8D21D0D254C799A969BC0154 /* LlamaContextHandle.swift in Sources */,
@@ -846,6 +853,7 @@
 				B665C36F37BA5D0CE839A6EE /* LocalLLMRuntime.swift in Sources */,
 				AA02FFCEB9073E6ADD82A94B /* LocalModel.swift in Sources */,
 				A46CD504E28D18CFE739DAA9 /* LocalModelService.swift in Sources */,
+				7B28BF89BAA20C52DCB4E605 /* MLXBackgroundDownloader.swift in Sources */,
 				7D97B22CD92260C99CC9BF45 /* MLXLoadProgress.swift in Sources */,
 				459235F0B7FA21EA42CB75B7 /* MLXLoader.swift in Sources */,
 				998D67B6B6B8A3C182D84A93 /* MLXRuntime.swift in Sources */,
@@ -980,7 +988,7 @@
 /* Begin XCBuildConfiguration section */
 		893D398F804D32CD25261F97 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_50E26847-CBB7-4DAF-8444-BFF623D16B84" /* LocalOverride.xcconfig */;
+			baseConfigurationReference = "TEMP_0F036005-613E-44FA-942C-D863BDCF7973" /* LocalOverride.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -1041,7 +1049,7 @@
 		};
 		8C17F1B1F01460AA9A7FAEF3 /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_50E26847-CBB7-4DAF-8444-BFF623D16B84" /* LocalOverride.xcconfig */;
+			baseConfigurationReference = "TEMP_0F036005-613E-44FA-942C-D863BDCF7973" /* LocalOverride.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
@@ -1127,7 +1135,7 @@
 		};
 		E21EC51CB5176FD7B5797139 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_50E26847-CBB7-4DAF-8444-BFF623D16B84" /* LocalOverride.xcconfig */;
+			baseConfigurationReference = "TEMP_0F036005-613E-44FA-942C-D863BDCF7973" /* LocalOverride.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
@@ -1159,7 +1167,7 @@
 		};
 		E53644E0FEA3DB3617A95788 /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_50E26847-CBB7-4DAF-8444-BFF623D16B84" /* LocalOverride.xcconfig */;
+			baseConfigurationReference = "TEMP_0F036005-613E-44FA-942C-D863BDCF7973" /* LocalOverride.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;

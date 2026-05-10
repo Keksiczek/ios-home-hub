@@ -220,7 +220,13 @@ struct ModelsView: View {
                     if hasSufficientSpace(for: model) {
                         let label = model.sizeBytes > 0 ? "Download \(model.sizeFormatted)" : "Download"
                         Button(label) {
-                            downloads.start(model)
+                            // MLX models: background multi-file download via Hub manifest.
+                            // GGUF models: single-file URLSession download.
+                            if model.format == .mlx {
+                                Task { await downloads.startMLXDownload(model) }
+                            } else {
+                                downloads.start(model)
+                            }
                             downloadTarget = nil
                         }
                     }
@@ -229,10 +235,13 @@ struct ModelsView: View {
             } message: {
                 if let model = downloadTarget {
                     if hasSufficientSpace(for: model) {
+                        let suffix = model.format == .mlx
+                            ? " Downloads continue in the background when the screen is off."
+                            : ""
                         if model.sizeBytes > 0 {
-                            Text("\(model.sizeFormatted) will be downloaded and stored on this device.")
+                            Text("\(model.sizeFormatted) will be downloaded and stored on this device.\(suffix)")
                         } else {
-                            Text("The file will be downloaded and stored on this device.")
+                            Text("The model will be downloaded and stored on this device.\(suffix)")
                         }
                     } else {
                         let needed = ByteCountFormatter.string(fromByteCount: model.sizeBytes, countStyle: .file)
@@ -417,17 +426,17 @@ private struct ModelRow: View {
                     // MLX is actively loading — show honest two-phase progress
                     mlxProgressView(progress: progress)
                 } else if model.format == .mlx {
-                    // MLX idle — show the first-load disclaimer + Load button
-                    HStack(spacing: HHTheme.spaceS) {
-                        Button(isLoaded ? "Unload" : "Download & Load") {
-                            isLoaded ? onUnload() : onLoad()
-                        }
-                        .buttonStyle(HHSecondaryButtonStyle())
-                        .accessibilityIdentifier(isLoaded ? "mlx_unload_button" : "mlx_load_button")
+                    // MLX idle — download weights first via background URLSession,
+                    // then load from local cache. Two separate steps so the download
+                    // survives screen-off and the user can start multiple downloads.
+                    VStack(alignment: .leading, spacing: 4) {
+                        Button("Download") { onDownload() }
+                            .buttonStyle(HHSecondaryButtonStyle())
+                            .accessibilityIdentifier("mlx_download_button")
+                        Text("Background transfer · \(model.sizeFormatted) · tap Load after")
+                            .font(HHTheme.caption)
+                            .foregroundStyle(HHTheme.textSecondary)
                     }
-                    Text("First load downloads weights directly from Hugging Face and may take several minutes.")
-                        .font(HHTheme.caption)
-                        .foregroundStyle(HHTheme.textSecondary)
                 } else {
                     // GGUF — unchanged
                     HStack(spacing: HHTheme.spaceS) {
