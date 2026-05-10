@@ -35,9 +35,16 @@ struct LocalModel: Identifiable, Codable, Equatable, Hashable {
     /// Safely extracts the Hugging Face repository ID (e.g. "mlx-community/Llama-3.2-3B-Instruct-4bit")
     /// from the model's `downloadURL`. Returns nil if the URL is not a standard HF repo format.
     var repoId: String? {
-        guard format == .mlx, let host = downloadURL.host, host.contains("huggingface.co") else {
-            return nil
+        guard format == .mlx else { return nil }
+        // mlx://mlx-community/Llama-3.2-1B-Instruct-4bit  →  host=mlx-community, path=/Llama-3.2-1B-Instruct-4bit
+        if downloadURL.scheme?.lowercased() == "mlx" {
+            guard let host = downloadURL.host, !host.isEmpty else { return nil }
+            let path = downloadURL.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            guard !path.isEmpty else { return nil }
+            return "\(host)/\(path)"
         }
+        // https://huggingface.co/mlx-community/Llama-3.2-1B-Instruct-4bit
+        guard let host = downloadURL.host, host.contains("huggingface.co") else { return nil }
         let pathComponents = downloadURL.pathComponents.filter { $0 != "/" }
         guard pathComponents.count >= 2 else { return nil }
         return "\(pathComponents[0])/\(pathComponents[1])"
