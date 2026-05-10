@@ -33,7 +33,12 @@ struct MainTabView: View {
         .overlay(alignment: .bottom) {
             loadingOverlay
         }
-        .environment(\.showSidebarMenu) { showingSidebar = true }
+        // EnvironmentKey is `@Sendable () -> Void`. Hop to MainActor
+        // before mutating the @State so the closure stays Sendable
+        // and Swift 6 strict concurrency is happy.
+        .environment(\.showSidebarMenu, {
+            Task { @MainActor in showingSidebar = true }
+        })
         .sheet(isPresented: $showingSidebar) {
             SidebarMenuView { tab in
                 appState.selectedTab = tab

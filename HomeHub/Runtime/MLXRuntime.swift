@@ -454,6 +454,13 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                                 if stop { break }
                             case .info:
                                 break
+                            case .toolCall:
+                                // Tool calls are surfaced through the
+                                // higher-level routing runtime; the raw
+                                // streaming path here ignores them so the
+                                // model's own JSON tool-call wrapper can
+                                // be re-parsed by `ToolCallEnvelope`.
+                                break
                             @unknown default:
                                 break
                             }
