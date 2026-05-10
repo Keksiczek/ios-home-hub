@@ -275,6 +275,10 @@ struct AddFromURLSheet: View {
         // `probing` are still allowed so the user isn't blocked when the
         // probe is slow or skipped (e.g. behind a captive portal).
         if case .failed = probe { return false }
+        // MLX repos use mlx:// scheme — no GGUF header probe applies.
+        if URL(string: urlString.trimmingCharacters(in: .whitespaces))?.scheme?.lowercased() == "mlx" {
+            return true
+        }
         if case .ok(let p) = probe, p.isGGUF == false, p.statusCode != 0 { return false }
         return true
     }
