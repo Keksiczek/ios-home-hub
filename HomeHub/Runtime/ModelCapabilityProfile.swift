@@ -60,7 +60,7 @@ struct ModelCapabilityProfile: Sendable, Equatable {
     ///   ─────────────────────────────────
     ///   available        ≈ 3000 tokens
     ///   safe history     ≤ this value (headroom for tool instructions etc.)
-    let safeHistoryTokenBudget: Int
+    var safeHistoryTokenBudget: Int
 
     /// Tokens reserved for the model's generation output.
     ///
