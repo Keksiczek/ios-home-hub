@@ -43,9 +43,10 @@ struct ModelCapabilityProfile: Sendable, Equatable {
 
     /// Micro-batch size for token-by-token generation (`n_ubatch`).
     ///
-    /// 64 is the sweet spot on Apple Neural Engine for most families.
-    /// Keep at 512 only for prompt evaluation (`n_batch`), which always
-    /// benefits from larger batches.
+    /// Base value; actual runtime value is overridden by DeviceMemoryProvider.
+    /// This field is deprecated in favor of dynamic allocation per device tier.
+    /// Kept for backward compatibility only.
+    @available(*, deprecated, message: "Use DeviceMemoryProvider.shared.profile.microBatchSizeTokens")
     let nUBatch: Int
 
     // MARK: - Prompt budget (consumed by PromptTokenBudgeter)
@@ -140,12 +141,25 @@ extension ModelCapabilityProfile {
         prefersDeferredMemoryExtraction: false
     )
 
-    /// Gemma 1, 2, 3 — verbose turn tokens consume extra context budget.
+    /// Gemma 1, 2 — verbose turn tokens consume extra context budget.
     static let gemma = ModelCapabilityProfile(
         family: "gemma",
         supportsFlashAttention: true,
         nUBatch: 64,
         safeHistoryTokenBudget: 1200,
+        generationReserveTokens: 512,
+        messageTokenOverhead: 6,
+        supportsStructuredToolCalling: false,
+        prefersDeferredMemoryExtraction: false
+    )
+
+    /// Gemma 3n — MatFormer architecture, 8B params but ~4B active during inference.
+    /// Revolutionary efficiency: larger model quality with small model VRAM footprint.
+    static let gemma3n = ModelCapabilityProfile(
+        family: "gemma",
+        supportsFlashAttention: true,
+        nUBatch: 64,
+        safeHistoryTokenBudget: 1800,              // More generous: effective 4B active params
         generationReserveTokens: 512,
         messageTokenOverhead: 6,
         supportsStructuredToolCalling: false,
@@ -192,12 +206,49 @@ extension ModelCapabilityProfile {
     ///
     /// - Parameter family: `LocalModel.family` as stored in the catalog.
     static func resolve(family: String) -> ModelCapabilityProfile {
+        var profile = Self.baseProfile(for: family)
+        // Dynamically adjust history budget based on device memory tier.
+        profile.safeHistoryTokenBudget = Self.dynamicHistoryBudget(
+            baseProfile: profile
+        )
+        return profile
+    }
+
+    /// Returns the static (base) profile for the given family.
+    /// Used internally by resolve() before dynamic adjustment.
+    private static func baseProfile(for family: String) -> ModelCapabilityProfile {
         let f = family.lowercased()
         if f.contains("llama")   { return .llama }
         if f.contains("qwen")    { return .qwen }
         if f.contains("mistral") { return .mistral }
+        if f.contains("gemma-3n") || f.contains("gemma3n") { return .gemma3n }  // MatFormer: check before generic gemma
         if f.contains("gemma")   { return .gemma }
         if f.contains("phi")     { return .phi }
         return .default
+    }
+
+    /// Dynamically adjust safeHistoryTokenBudget based on device memory tier.
+    ///
+    /// Scales the base profile's budget to match available device memory:
+    /// - tight (iPhone SE): 50% of base
+    /// - moderate (iPhone 13–15): 100% of base (unmodified)
+    /// - generous (iPhone 16 Pro): 200% of base (maximize conversation length)
+    private static func dynamicHistoryBudget(
+        baseProfile: ModelCapabilityProfile
+    ) -> Int {
+        let memoryProfile = DeviceMemoryProvider.shared.profile
+        let base = baseProfile.safeHistoryTokenBudget
+
+        switch memoryProfile.tier {
+        case .tight:
+            // Conservative: trim history more aggressively
+            return max(400, Int(Double(base) * 0.5))
+        case .moderate:
+            // Keep base budget unchanged
+            return base
+        case .generous:
+            // Generous: allow longer conversation history
+            return Int(Double(base) * 2.0)
+        }
     }
 }

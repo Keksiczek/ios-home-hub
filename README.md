@@ -61,6 +61,7 @@ HomeHub agents can perform actions using the following tools:
 
 ## 📖 Documentation
 
+- [Performance Optimization Guide](OPTIMIZATION_GUIDE.md) — Comprehensive iOS LLM optimization strategy (Jetsam, KV cache, dynamic memory profiling).
 - [Developer Walkthrough](walkthrough.md) — Detailed technical breakdown of recent changes.
 - [Model Catalog Guide](HomeHub/Services/ModelCatalogService.swift) — How models are curated and managed.
 - [Agent Protocol](HomeHub/Services/Skills/Skill.swift) — How to implement new native skills.

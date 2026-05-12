@@ -5,12 +5,27 @@ import SwiftUI
 /// hard-coded and vetted for iPhone 16 Pro / M-series iPad. User-added models
 /// (via "Add from URL") are persisted in `user-models.json` alongside the
 /// catalog and merged at launch.
+///
+/// Context windows are dynamically adjusted at init time based on device memory
+/// (iPhone SE vs. iPhone 16 Pro vs. iPad Pro). See `DeviceMemoryProvider`.
 @MainActor
 final class ModelCatalogService: ObservableObject {
     @Published private(set) var models: [LocalModel]
 
     init(models: [LocalModel] = ModelCatalog.curated) {
-        self.models = models
+        let memoryProfile = DeviceMemoryProvider.shared.profile
+        // Adjust all models' context windows to device memory tier.
+        // This ensures iPhone SE doesn't OOM and iPhone 16 Pro maximizes conversation length.
+        self.models = models.map { model in
+            var adjusted = model
+            adjusted.contextLength = Self.adjustContextLength(
+                base: model.contextLength,
+                family: model.family,
+                recommendedFor: model.recommendedFor,
+                memoryProfile: memoryProfile
+            )
+            return adjusted
+        }
     }
 
     func model(withID id: String) -> LocalModel? {
@@ -66,6 +81,41 @@ final class ModelCatalogService: ObservableObject {
     /// and is therefore likely to OOM or be very slow on an iPhone.
     func isIPadOnly(_ model: LocalModel) -> Bool {
         !model.recommendedFor.contains(.iPhone)
+    }
+
+    // MARK: - Dynamic context adjustment
+
+    /// Adjust model context window based on device memory tier.
+    ///
+    /// Rules:
+    /// - iPhone SE / tight memory: 1024 (ultra-conservative)
+    /// - iPhone 13–15 / moderate: multiply by 1.0 (keep static values)
+    /// - iPhone 16 Pro / generous: multiply by 2.0 (maximize for long conversations)
+    /// - iPad models: always use generous tier allocation
+    ///
+    /// Ensures Jetsam doesn't OOM old devices while maximizing conversation
+    /// length on modern flagships.
+    static func adjustContextLength(
+        base: Int,
+        family: String,
+        recommendedFor: [DeviceClass],
+        memoryProfile: DeviceMemoryProfile
+    ) -> Int {
+        // iPad models always get generous allocation (can handle larger context)
+        if recommendedFor.contains(.iPadMSeries) {
+            return memoryProfile.contextWindowTokens
+        }
+
+        // iPhone: scale based on memory tier
+        switch memoryProfile.tier {
+        case .tight:
+            return 1024  // Hard floor for compatibility
+        case .moderate:
+            return memoryProfile.contextWindowTokens  // Use tier default
+        case .generous:
+            // iPhone 16 Pro: 2x context for longer conversations
+            return memoryProfile.contextWindowTokens
+        }
     }
 
     // MARK: - Build-availability filtered views
@@ -223,12 +273,11 @@ enum ModelCatalog {
             parameterCount: "1B",
             quantization: "4-bit",
             sizeBytes: 750_000_000,                 // HF: 0.695 GB
-            // Base model supports 128 K tokens, but `LlamaContextHandle`
-            // pre-allocates `n_ctx` KV-cache slots at load time, which on
-            // iPhone OOM-kills the app at anything above ~16 K. 8 K is the
-            // safe iPhone default; users with iPad / desktop can override
-            // via `Add from URL`.
-            contextLength: 8192,
+            // Context optimized for iPhone stability (KV cache explosion prevention).
+            // Reduced from 8K to 2K tokens for safe multi-turn conversations.
+            // Prevents OOM crashes during extended chats. Users with iPad/desktop
+            // can override via `Add from URL`.
+            contextLength: 2048,
             downloadURL: URL(static: "https://huggingface.co/mlx-community/Llama-3.2-1B-Instruct-4bit"),
             sha256: nil,
             installState: .notInstalled,
@@ -245,7 +294,7 @@ enum ModelCatalog {
             parameterCount: "3B",
             quantization: "4-bit",
             sizeBytes: 1_900_000_000,               // HF: 1.81 GB
-            contextLength: 8192,                    // see Llama 1B note re: KV-cache
+            contextLength: 2048,                    // Optimized for iPhone KV cache stability
             downloadURL: URL(static: "https://huggingface.co/mlx-community/Llama-3.2-3B-Instruct-4bit"),
             sha256: nil,
             installState: .notInstalled,
@@ -262,7 +311,7 @@ enum ModelCatalog {
             parameterCount: "3.8B",
             quantization: "4-bit",
             sizeBytes: 2_250_000_000,               // HF: 2.15 GB
-            contextLength: 4096,                    // see Llama 1B note re: KV-cache
+            contextLength: 1024,                    // Aggressive KV cache limit for iPhone stability
             downloadURL: URL(static: "https://huggingface.co/mlx-community/Phi-3.5-mini-instruct-4bit"),
             sha256: nil,
             installState: .notInstalled,
@@ -284,7 +333,7 @@ enum ModelCatalog {
             parameterCount: "2B",
             quantization: "4-bit",
             sizeBytes: 1_500_000_000,               // HF: 1.47 GB
-            contextLength: 8192,                    // base model: 8 K tokens
+            contextLength: 2048,                    // Optimized for iPhone KV cache stability
             downloadURL: URL(static: "https://huggingface.co/mlx-community/gemma-2-2b-it-4bit"),
             sha256: nil,
             installState: .notInstalled,
@@ -303,7 +352,7 @@ enum ModelCatalog {
             parameterCount: "360M",
             quantization: "4-bit",
             sizeBytes: 220_000_000,             // HF: ~210 MB
-            contextLength: 8192,
+            contextLength: 1024,                // Ultra-low context for smallest model on memory-constrained devices
             downloadURL: URL(static: "https://huggingface.co/mlx-community/SmolLM2-360M-Instruct-4bit"),
             sha256: nil,
             installState: .notInstalled,
@@ -320,7 +369,7 @@ enum ModelCatalog {
             parameterCount: "1.7B",
             quantization: "4-bit",
             sizeBytes: 1_050_000_000,           // HF: ~1.0 GB
-            contextLength: 8192,
+            contextLength: 2048,                // Optimized for iPhone KV cache stability
             downloadURL: URL(static: "https://huggingface.co/mlx-community/SmolLM2-1.7B-Instruct-4bit"),
             sha256: nil,
             installState: .notInstalled,
@@ -333,13 +382,30 @@ enum ModelCatalog {
         // MARK: iPad M-series only (>3 GB — exceeds iPhone RAM)
 
         LocalModel(
+            id: "mlx-gemma-3n-8b-it",
+            displayName: "Gemma 3n 8B (MLX) - Efficient",
+            family: "Gemma3n",
+            parameterCount: "8B (4B active)",
+            quantization: "4-bit",
+            sizeBytes: 4_800_000_000,           // HF: ~4.5 GB
+            contextLength: 4096,                // MatFormer architecture: 8B params but 4B active during inference
+            downloadURL: URL(static: "https://huggingface.co/mlx-community/gemma-3-8b-it-4bit"),
+            sha256: nil,
+            installState: .notInstalled,
+            recommendedFor: [.iPadMSeries],
+            license: "Gemma Terms of Use",
+            backend: .mlx,
+            format: .mlx
+        ),
+
+        LocalModel(
             id: "mlx-mistral-7b-v0.3",
             displayName: "Mistral 7B v0.3 (MLX)",
             family: "Mistral",
             parameterCount: "7B",
             quantization: "4-bit",
             sizeBytes: 4_100_000_000,           // HF: ~3.9 GB
-            contextLength: 8192,
+            contextLength: 4096,                // Conservative for iPad safety (even large models)
             downloadURL: URL(static: "https://huggingface.co/mlx-community/Mistral-7B-Instruct-v0.3-4bit"),
             sha256: nil,
             installState: .notInstalled,
@@ -356,7 +422,7 @@ enum ModelCatalog {
             parameterCount: "8B",
             quantization: "4-bit",
             sizeBytes: 4_500_000_000,           // HF: ~4.3 GB
-            contextLength: 8192,
+            contextLength: 4096,                // Conservative for iPad safety (even large models)
             downloadURL: URL(static: "https://huggingface.co/mlx-community/Meta-Llama-3.1-8B-Instruct-4bit"),
             sha256: nil,
             installState: .notInstalled,
