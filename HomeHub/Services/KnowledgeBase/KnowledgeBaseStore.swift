@@ -146,7 +146,7 @@ actor KnowledgeBaseStore {
             let start = 16 + i * dim * MemoryLayout<Float>.size
             var v = [Float](repeating: 0, count: dim)
             v.withUnsafeMutableBufferPointer { buf in
-                _ = data.copyBytes(
+                data.copyBytes(
                     to: buf,
                     from: start..<(start + dim * MemoryLayout<Float>.size)
                 )
