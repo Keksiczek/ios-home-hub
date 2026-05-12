@@ -45,6 +45,10 @@ public struct DeviceMemoryProfile: Sendable {
     /// Larger on high-memory devices, reduces scratch-pad overflow risk.
     public let batchSizeTokens: Int
 
+    /// Recommended micro-batch size for token-by-token generation (n_ubatch).
+    /// Larger = better GPU utilization during decoding, but higher latency variance.
+    public let microBatchSizeTokens: Int
+
     /// Recommended MLX GPU cache limit (bytes).
     /// Aggressive on constrained devices, generous on iPad Pro.
     public let mlxGPUCacheLimitBytes: UInt64
@@ -87,6 +91,7 @@ public final class DeviceMemoryProvider: Sendable {
           tier: \(tier.label)
           context: \(self.profile.contextWindowTokens) tokens
           batch: \(self.profile.batchSizeTokens) tokens
+          ubatch: \(self.profile.microBatchSizeTokens) tokens
           mlx cache: \(Int(self.profile.mlxGPUCacheLimitBytes / 1024 / 1024))MB
         """)
     }
@@ -136,6 +141,7 @@ public final class DeviceMemoryProvider: Sendable {
                 usableRAMBytes: usableRAM,
                 contextWindowTokens: 1024,           // Ultra-conservative
                 batchSizeTokens: 128,                // Very small to avoid spikes
+                microBatchSizeTokens: 32,            // Tiny for generation to minimize latency variance
                 mlxGPUCacheLimitBytes: 25 * 1024 * 1024,  // 25 MB (strict)
                 maxGPULayers: 20,                    // Mixed CPU/GPU offload
                 safeHistoryTokenBudget: 600
@@ -148,6 +154,7 @@ public final class DeviceMemoryProvider: Sendable {
                 usableRAMBytes: usableRAM,
                 contextWindowTokens: 2048,           // Balanced
                 batchSizeTokens: 256,                // Standard (original)
+                microBatchSizeTokens: 64,            // Sweet spot on Apple Neural Engine
                 mlxGPUCacheLimitBytes: 50 * 1024 * 1024,   // 50 MB (baseline)
                 maxGPULayers: 99,                    // Full GPU offload
                 safeHistoryTokenBudget: 1400
@@ -160,6 +167,7 @@ public final class DeviceMemoryProvider: Sendable {
                 usableRAMBytes: usableRAM,
                 contextWindowTokens: 4096,           // Generous for long conversations
                 batchSizeTokens: 512,                // Large for throughput
+                microBatchSizeTokens: 128,           // Maximize GPU parallelism during decoding
                 mlxGPUCacheLimitBytes: 128 * 1024 * 1024,  // 128 MB (aggressive)
                 maxGPULayers: 99,                    // Full GPU offload
                 safeHistoryTokenBudget: 2800

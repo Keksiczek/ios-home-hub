@@ -43,9 +43,10 @@ struct ModelCapabilityProfile: Sendable, Equatable {
 
     /// Micro-batch size for token-by-token generation (`n_ubatch`).
     ///
-    /// 64 is the sweet spot on Apple Neural Engine for most families.
-    /// Keep at 512 only for prompt evaluation (`n_batch`), which always
-    /// benefits from larger batches.
+    /// Base value; actual runtime value is overridden by DeviceMemoryProvider.
+    /// This field is deprecated in favor of dynamic allocation per device tier.
+    /// Kept for backward compatibility only.
+    @available(*, deprecated, message: "Use DeviceMemoryProvider.shared.profile.microBatchSizeTokens")
     let nUBatch: Int
 
     // MARK: - Prompt budget (consumed by PromptTokenBudgeter)
