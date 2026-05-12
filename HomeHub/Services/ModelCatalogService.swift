@@ -5,12 +5,27 @@ import SwiftUI
 /// hard-coded and vetted for iPhone 16 Pro / M-series iPad. User-added models
 /// (via "Add from URL") are persisted in `user-models.json` alongside the
 /// catalog and merged at launch.
+///
+/// Context windows are dynamically adjusted at init time based on device memory
+/// (iPhone SE vs. iPhone 16 Pro vs. iPad Pro). See `DeviceMemoryProvider`.
 @MainActor
 final class ModelCatalogService: ObservableObject {
     @Published private(set) var models: [LocalModel]
 
     init(models: [LocalModel] = ModelCatalog.curated) {
-        self.models = models
+        let memoryProfile = DeviceMemoryProvider.shared.profile
+        // Adjust all models' context windows to device memory tier.
+        // This ensures iPhone SE doesn't OOM and iPhone 16 Pro maximizes conversation length.
+        self.models = models.map { model in
+            var adjusted = model
+            adjusted.contextLength = Self.adjustContextLength(
+                base: model.contextLength,
+                family: model.family,
+                recommendedFor: model.recommendedFor,
+                memoryProfile: memoryProfile
+            )
+            return adjusted
+        }
     }
 
     func model(withID id: String) -> LocalModel? {
@@ -66,6 +81,41 @@ final class ModelCatalogService: ObservableObject {
     /// and is therefore likely to OOM or be very slow on an iPhone.
     func isIPadOnly(_ model: LocalModel) -> Bool {
         !model.recommendedFor.contains(.iPhone)
+    }
+
+    // MARK: - Dynamic context adjustment
+
+    /// Adjust model context window based on device memory tier.
+    ///
+    /// Rules:
+    /// - iPhone SE / tight memory: 1024 (ultra-conservative)
+    /// - iPhone 13–15 / moderate: multiply by 1.0 (keep static values)
+    /// - iPhone 16 Pro / generous: multiply by 2.0 (maximize for long conversations)
+    /// - iPad models: always use generous tier allocation
+    ///
+    /// Ensures Jetsam doesn't OOM old devices while maximizing conversation
+    /// length on modern flagships.
+    static func adjustContextLength(
+        base: Int,
+        family: String,
+        recommendedFor: [DeviceClass],
+        memoryProfile: DeviceMemoryProfile
+    ) -> Int {
+        // iPad models always get generous allocation (can handle larger context)
+        if recommendedFor.contains(.iPadMSeries) {
+            return memoryProfile.contextWindowTokens
+        }
+
+        // iPhone: scale based on memory tier
+        switch memoryProfile.tier {
+        case .tight:
+            return 1024  // Hard floor for compatibility
+        case .moderate:
+            return memoryProfile.contextWindowTokens  // Use tier default
+        case .generous:
+            // iPhone 16 Pro: 2x context for longer conversations
+            return memoryProfile.contextWindowTokens
+        }
     }
 
     // MARK: - Build-availability filtered views

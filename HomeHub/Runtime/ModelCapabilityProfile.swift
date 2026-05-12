@@ -192,6 +192,17 @@ extension ModelCapabilityProfile {
     ///
     /// - Parameter family: `LocalModel.family` as stored in the catalog.
     static func resolve(family: String) -> ModelCapabilityProfile {
+        var profile = Self.baseProfile(for: family)
+        // Dynamically adjust history budget based on device memory tier.
+        profile.safeHistoryTokenBudget = Self.dynamicHistoryBudget(
+            baseProfile: profile
+        )
+        return profile
+    }
+
+    /// Returns the static (base) profile for the given family.
+    /// Used internally by resolve() before dynamic adjustment.
+    private static func baseProfile(for family: String) -> ModelCapabilityProfile {
         let f = family.lowercased()
         if f.contains("llama")   { return .llama }
         if f.contains("qwen")    { return .qwen }
@@ -199,5 +210,30 @@ extension ModelCapabilityProfile {
         if f.contains("gemma")   { return .gemma }
         if f.contains("phi")     { return .phi }
         return .default
+    }
+
+    /// Dynamically adjust safeHistoryTokenBudget based on device memory tier.
+    ///
+    /// Scales the base profile's budget to match available device memory:
+    /// - tight (iPhone SE): 50% of base
+    /// - moderate (iPhone 13–15): 100% of base (unmodified)
+    /// - generous (iPhone 16 Pro): 200% of base (maximize conversation length)
+    private static func dynamicHistoryBudget(
+        baseProfile: ModelCapabilityProfile
+    ) -> Int {
+        let memoryProfile = DeviceMemoryProvider.shared.profile
+        let base = baseProfile.safeHistoryTokenBudget
+
+        switch memoryProfile.tier {
+        case .tight:
+            // Conservative: trim history more aggressively
+            return max(400, Int(Double(base) * 0.5))
+        case .moderate:
+            // Keep base budget unchanged
+            return base
+        case .generous:
+            // Generous: allow longer conversation history
+            return Int(Double(base) * 2.0)
+        }
     }
 }

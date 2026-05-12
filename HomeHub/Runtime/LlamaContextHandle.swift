@@ -83,9 +83,10 @@ struct LlamaContextHandle: @unchecked Sendable {
 
         // All model-specific parameters come from the resolved capability profile
         // rather than ad-hoc conditionals. See ModelCapabilityProfile.swift.
+        let memoryProfile = DeviceMemoryProvider.shared.profile
         var ctxParams = llama_context_default_params()
         ctxParams.n_ctx      = UInt32(contextLength)
-        ctxParams.n_batch    = 256                             // Reduced from 512 for iPhone stability (prevents OOM spikes during prefill)
+        ctxParams.n_batch    = UInt32(memoryProfile.batchSizeTokens)  // Dynamic: 128 (tight) → 256 (moderate) → 512 (generous)
         ctxParams.n_ubatch   = UInt32(capabilities.nUBatch)   // smaller for generation TTFT
         //ctxParams.flash_attn = capabilities.supportsFlashAttention
 
