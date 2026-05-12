@@ -11,17 +11,23 @@
   real HomeKit control, add `<key>com.apple.developer.homekit</key>
   <true/>` below in your local fork and ensure your provisioning
   profile includes the HomeKit capability.
+
+  iOS LLM Optimization: Kernel Entitlements
+  ────────────────────────────────────────
+  The following entitlements significantly improve LLM performance on
+  memory-constrained devices and are STRONGLY RECOMMENDED for production builds:
+    - com.apple.developer.kernel.increased-memory-limit
+    - com.apple.developer.kernel.extended-virtual-addressing
+
+  ⚠️  These require a PAID Apple Developer account.
+  Personal/free developer teams cannot use these entitlements.
+
+  See KERNEL_ENTITLEMENTS.md for setup instructions.
 -->
 <dict>
 	<key>com.apple.security.application-groups</key>
 	<array>
 		<string>group.cz.keksiczek.homehub.shared</string>
 	</array>
-	<!-- iOS LLM Optimization: Apple Silicon Memory Management -->
-	<!-- See: Architektonická analýza iOS LLM aplikace -->
-	<key>com.apple.developer.kernel.increased-memory-limit</key>
-	<true/>
-	<key>com.apple.developer.kernel.extended-virtual-addressing</key>
-	<true/>
 </dict>
 </plist>
