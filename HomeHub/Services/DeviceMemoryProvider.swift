@@ -13,6 +13,10 @@ public enum MemoryTier: Sendable {
     /// Standard iPhone: iPhone 13–15 base, some iPad Air. ~4–6 GB usable.
     case moderate
     /// Modern flagship: iPhone 16 Pro, iPad Pro M2+. ~8 GB+ usable.
+    /// Only reached when `HOMEHUB_HAS_KERNEL_ENTITLEMENTS=YES` is set — without
+    /// the `extended-virtual-addressing` entitlement, iOS sandboxes mmap to
+    /// ≤ 2 GB contiguous blocks regardless of physical RAM, making >2 GB models
+    /// fail at load time and rendering the generous profile dangerous to use.
     case generous
 
     /// Human-readable label for diagnostics.
@@ -54,13 +58,22 @@ public struct DeviceMemoryProfile: Sendable {
     public let mlxGPUCacheLimitBytes: UInt64
 
     /// Recommended maximum GPU layers for llama.cpp offload.
-    /// `99` = all layers to GPU (maximum throughput).
-    /// Lower on memory-constrained devices.
+    /// Always 99 (full Metal GPU) for stability — keeping layers on CPU increases
+    /// memory bandwidth pressure and paradoxically raises OOM risk on tight devices.
     public let maxGPULayers: Int
 
     /// Safe history token budget for multi-turn conversations.
     /// Consumed by `PromptTokenBudgeter.trimHistory()`.
     public let safeHistoryTokenBudget: Int
+
+    /// Maximum image token budget for multimodal models.
+    /// Without `increased-memory-limit`, image tensors easily exhaust the sandbox.
+    /// 70 tokens ≈ 336×336 px — enough for visual grounding, low memory cost.
+    public let imageTokenBudget: Int
+
+    /// Whether the app was built with kernel entitlements active.
+    /// Surfaced here for diagnostics / UI warnings about model size limits.
+    public let hasKernelEntitlements: Bool
 }
 
 /// Singleton provider for device memory detection and LLM parameter tuning.
@@ -68,6 +81,23 @@ public struct DeviceMemoryProfile: Sendable {
 /// Reads physical RAM at app startup via `ProcessInfo.physicalMemory`,
 /// classifies into memory tiers, and returns calibrated profiles for the
 /// running device. Profiles are immutable and safe to read from any thread.
+///
+/// ## Kernel entitlement awareness
+///
+/// Without `com.apple.developer.kernel.extended-virtual-addressing`, iOS limits
+/// contiguous mmap allocations to ~2 GB. Any model file larger than that will
+/// crash at load time. This provider detects the entitlement state at compile
+/// time via the `HOMEHUB_HAS_KERNEL_ENTITLEMENTS` build flag:
+///
+/// - **Flag absent / NO** (default, free developer account): tier is capped at
+///   `moderate`, n_ctx ≤ 2048, MLX cache ≤ 50 MB, image budget = 70 tokens.
+///   Models ≤ 2 GB load safely; larger models show a size warning in the UI.
+///
+/// - **Flag set to YES** (paid developer + entitlements in provisioning profile):
+///   full tier detection applies, generous profile unlocked on flagship devices.
+///
+/// To enable: add `HOMEHUB_HAS_KERNEL_ENTITLEMENTS = YES` to `LocalOverride.xcconfig`
+/// after adding the capabilities in Xcode (see KERNEL_ENTITLEMENTS.md).
 public final class DeviceMemoryProvider: Sendable {
     private static let log = Logger(subsystem: "HomeHub", category: "DeviceMemoryProvider")
 
@@ -84,6 +114,10 @@ public final class DeviceMemoryProvider: Sendable {
 
         self.profile = Self.buildProfile(tier: tier, usableRAM: usableRAM)
 
+        let entitlementNote = self.profile.hasKernelEntitlements
+            ? "kernel entitlements ACTIVE (generous tier unlocked)"
+            : "no kernel entitlements — sandboxed mode (tier capped at moderate)"
+
         Self.log.info("""
         Device memory profile:
           physical: \(Int(physicalRAM / 1_000_000_000))GB
@@ -93,84 +127,115 @@ public final class DeviceMemoryProvider: Sendable {
           batch: \(self.profile.batchSizeTokens) tokens
           ubatch: \(self.profile.microBatchSizeTokens) tokens
           mlx cache: \(Int(self.profile.mlxGPUCacheLimitBytes / 1024 / 1024))MB
+          image budget: \(self.profile.imageTokenBudget) tokens
+          \(entitlementNote)
         """)
     }
+
+    // MARK: - Kernel entitlement detection
+
+    /// True when this binary was compiled with `HOMEHUB_HAS_KERNEL_ENTITLEMENTS=YES`.
+    ///
+    /// A compile-time constant mirrors what is actually embedded in the provisioning
+    /// profile — runtime mmap probes are unreliable because iOS may succeed on small
+    /// reservations but still crash on model-sized (3–8 GB) allocations.
+    static let kernelEntitlementsEnabled: Bool = {
+        #if HOMEHUB_HAS_KERNEL_ENTITLEMENTS
+        return true
+        #else
+        return false
+        #endif
+    }()
 
     // MARK: - Memory estimation
 
     /// Estimate usable RAM for user-space processes.
     ///
     /// iOS reserves ~20–30% for kernel, buffers, and system processes.
-    /// This heuristic assumes the device is not under extreme memory pressure
-    /// (e.g., running other background apps). If the user has many background
-    /// apps, real available RAM will be lower; the profile adapts automatically
-    /// on next app launch.
     private static func estimateUsableRAM(physicalRAM: UInt64) -> UInt64 {
-        let reservationFraction = 0.25 // 25% reserved for OS
-        return UInt64(Double(physicalRAM) * (1.0 - reservationFraction))
+        return UInt64(Double(physicalRAM) * 0.75) // 25% reserved for OS
     }
 
     // MARK: - Memory tier classification
 
     /// Classify device into memory tier based on usable RAM.
     ///
-    /// Boundaries:
-    /// - tight: ≤ 3.5 GB (iPhone SE, older iPhones)
-    /// - moderate: 3.5–7 GB (iPhone 13–15, iPad Air 5)
-    /// - generous: > 7 GB (iPhone 16 Pro, iPad Pro M2+)
+    /// Without kernel entitlements the generous tier is suppressed: even if
+    /// physical RAM would qualify, mmap constraints make it unsafe to use the
+    /// larger context / batch parameters associated with that tier.
     private static func classifyMemoryTier(usableRAM: UInt64) -> MemoryTier {
         let gb = Double(usableRAM) / 1_000_000_000.0
+        let raw: MemoryTier
         if gb <= 3.5 {
-            return .tight
+            raw = .tight
         } else if gb <= 7.0 {
-            return .moderate
+            raw = .moderate
         } else {
-            return .generous
+            raw = .generous
         }
+
+        // Cap at moderate when entitlements are absent.
+        // Without extended-virtual-addressing, contiguous mmap allocations are
+        // limited to ~2 GB. A model that physically fits in RAM can still fail
+        // to load if its weight file exceeds that threshold.
+        if !kernelEntitlementsEnabled, raw == .generous {
+            return .moderate
+        }
+        return raw
     }
 
     // MARK: - Profile builder
 
     /// Construct a calibrated profile for the detected memory tier.
     private static func buildProfile(tier: MemoryTier, usableRAM: UInt64) -> DeviceMemoryProfile {
+        let entitlements = kernelEntitlementsEnabled
         switch tier {
         case .tight:
-            // iPhone SE, iPhone 11: ~3–4 GB usable
+            // iPhone SE, iPhone 11: ~3–4 GB usable.
+            // Gemini recommendation: n_ctx 600–1024, n_batch 256, image_tokens 70.
             return DeviceMemoryProfile(
                 tier: tier,
                 usableRAMBytes: usableRAM,
-                contextWindowTokens: 1024,           // Ultra-conservative
-                batchSizeTokens: 128,                // Very small to avoid spikes
-                microBatchSizeTokens: 32,            // Tiny for generation to minimize latency variance
+                contextWindowTokens: 1024,
+                batchSizeTokens: 256,           // Gemini: 256 for all sandboxed devices
+                microBatchSizeTokens: 32,        // Tiny: minimizes latency variance on constrained RAM
                 mlxGPUCacheLimitBytes: 25 * 1024 * 1024,  // 25 MB (strict)
-                maxGPULayers: 20,                    // Mixed CPU/GPU offload
-                safeHistoryTokenBudget: 600
+                maxGPULayers: 99,                // Always full GPU — CPU layers raise memory bandwidth
+                safeHistoryTokenBudget: 600,
+                imageTokenBudget: 70,            // Gemini: 70 tokens prevents multimodal OOM
+                hasKernelEntitlements: entitlements
             )
 
         case .moderate:
-            // iPhone 13–15 base, iPad Air: ~4–6 GB usable
+            // iPhone 13–15 base, iPad Air, *or* iPhone 16 Pro without entitlements.
+            // Gemini: n_ctx 2048, n_batch 256, image_tokens 70.
             return DeviceMemoryProfile(
                 tier: tier,
                 usableRAMBytes: usableRAM,
-                contextWindowTokens: 2048,           // Balanced
-                batchSizeTokens: 256,                // Standard (original)
-                microBatchSizeTokens: 64,            // Sweet spot on Apple Neural Engine
-                mlxGPUCacheLimitBytes: 50 * 1024 * 1024,   // 50 MB (baseline)
-                maxGPULayers: 99,                    // Full GPU offload
-                safeHistoryTokenBudget: 1400
+                contextWindowTokens: 2048,
+                batchSizeTokens: 256,
+                microBatchSizeTokens: 64,        // Sweet spot on Apple Neural Engine
+                mlxGPUCacheLimitBytes: 50 * 1024 * 1024,   // 50 MB (Gemini baseline)
+                maxGPULayers: 99,                // Full GPU offload
+                safeHistoryTokenBudget: 1400,
+                imageTokenBudget: 70,            // Gemini: conservative even on moderate
+                hasKernelEntitlements: entitlements
             )
 
         case .generous:
-            // iPhone 16 Pro, iPad Pro M2+: ~8+ GB usable
+            // iPhone 16 Pro / iPad Pro M2+ WITH kernel entitlements only.
+            // Tier is never reached without HOMEHUB_HAS_KERNEL_ENTITLEMENTS.
             return DeviceMemoryProfile(
                 tier: tier,
                 usableRAMBytes: usableRAM,
-                contextWindowTokens: 4096,           // Generous for long conversations
-                batchSizeTokens: 512,                // Large for throughput
-                microBatchSizeTokens: 128,           // Maximize GPU parallelism during decoding
+                contextWindowTokens: 4096,
+                batchSizeTokens: 512,
+                microBatchSizeTokens: 128,       // Maximize GPU parallelism during decoding
                 mlxGPUCacheLimitBytes: 128 * 1024 * 1024,  // 128 MB (aggressive)
-                maxGPULayers: 99,                    // Full GPU offload
-                safeHistoryTokenBudget: 2800
+                maxGPULayers: 99,                // Full GPU offload
+                safeHistoryTokenBudget: 2800,
+                imageTokenBudget: 256,           // Entitlements present: full image quality
+                hasKernelEntitlements: true
             )
         }
     }

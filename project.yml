@@ -256,6 +256,17 @@ targets:
         # produces an empty translation unit by default. Removing the path
         # entirely would require a project regen on every flag flip.
         SWIFT_OBJC_BRIDGING_HEADER: "HomeHub/Runtime/Bridge/HomeHub-Bridging-Header.h"
+        # ── [Kernel entitlements opt-in] ────────────────────────────────────────
+        # Requires a PAID Apple Developer account + both capabilities added in
+        # Xcode → Signing & Capabilities (see KERNEL_ENTITLEMENTS.md).
+        # Unlocks generous memory tier: 4096-token context, 128 MB MLX cache,
+        # full image budget, and safe loading of models > 2 GB.
+        # Without this flag, DeviceMemoryProvider caps at the moderate tier.
+        # Add to LocalOverride.xcconfig instead of uncommenting here so it
+        # stays out of version control (personal account-specific).
+        #
+        # SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) HOMEHUB_HAS_KERNEL_ENTITLEMENTS"
+        #
         # ── [llama.cpp opt-in] Compile flag ────────────────────────────────────
         # Uncomment BOTH lines to enable llama.cpp. The flag must be visible to
         # the Swift sources (SWIFT_ACTIVE_COMPILATION_CONDITIONS) AND to the

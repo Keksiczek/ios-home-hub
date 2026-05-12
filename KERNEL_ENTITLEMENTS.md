@@ -53,9 +53,9 @@ If you see "Personal Team" or no enrollment, you have a free account. **These en
 - You have a free developer account (see below)
 - These entitlements cannot be used
 
-### Step 3: Update Entitlements File
+### Step 3: Update the entitlements file
 
-Edit `HomeHub/HomeHub.entitlements`:
+Edit `HomeHub/HomeHub.entitlements` and add the two kernel keys:
 
 ```xml
 <dict>
@@ -63,7 +63,6 @@ Edit `HomeHub/HomeHub.entitlements`:
 	<array>
 		<string>group.cz.keksiczek.homehub.shared</string>
 	</array>
-	<!-- iOS LLM Optimization: Apple Silicon Memory Management -->
 	<key>com.apple.developer.kernel.increased-memory-limit</key>
 	<true/>
 	<key>com.apple.developer.kernel.extended-virtual-addressing</key>
@@ -71,7 +70,26 @@ Edit `HomeHub/HomeHub.entitlements`:
 </dict>
 ```
 
-### Step 4: Rebuild & Test
+### Step 4: Enable the Swift compiler flag
+
+Edit (or create) `LocalOverride.xcconfig` and add:
+
+```xcconfig
+DEVELOPMENT_TEAM = YOUR_TEAM_ID
+
+// Kernel entitlements are active — unlock generous memory tier
+SWIFT_ACTIVE_COMPILATION_CONDITIONS = $(inherited) HOMEHUB_HAS_KERNEL_ENTITLEMENTS
+```
+
+This activates `DeviceMemoryProvider.kernelEntitlementsEnabled = true` at compile
+time, which unlocks the `generous` memory tier (4096-token context, 128 MB MLX cache,
+256-token image budget) on flagship devices.
+
+> **Why a compile-time flag?** Runtime mmap probes are unreliable — iOS may succeed
+> on small test allocations but still crash on model-sized (3–8 GB) allocations.
+> Compile-time mirrors what's actually embedded in the provisioning profile.
+
+### Step 5: Rebuild & Test
 
 ```bash
 make clean
