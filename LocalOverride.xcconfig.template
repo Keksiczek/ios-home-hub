@@ -13,3 +13,30 @@
 // developer on the team gets the setup instructions on a fresh clone.
 
 DEVELOPMENT_TEAM = YOUR_TEAM_ID
+
+// ── Kernel entitlements (optional, requires paid Apple Developer account) ──────
+//
+// Uncomment the line below ONLY after:
+//   1. Upgrading to a paid Apple Developer Program account ($99/year)
+//   2. Adding "Increased Memory Limit" and "Extended Virtual Addressing"
+//      capabilities in Xcode → Signing & Capabilities
+//   3. Confirming the provisioning profile includes both entitlements
+//
+// This unlocks the generous memory tier on iPhone 16 Pro / iPad Pro:
+//   - n_ctx up to 4096 tokens (vs 2048 without)
+//   - MLX GPU cache up to 128 MB (vs 50 MB without)
+//   - Full image token budget (256 vs 70 tokens)
+//   - Models > 2 GB load safely (mmap limit lifted)
+//
+// Without a paid account, leave this commented out (sandboxed mode).
+// The app runs correctly with conservative memory limits.
+// See KERNEL_ENTITLEMENTS.md for full setup instructions.
+//
+// SWIFT_ACTIVE_COMPILATION_CONDITIONS = $(inherited) HOMEHUB_HAS_KERNEL_ENTITLEMENTS
+
+// ── Optional: llama.cpp GGUF runtime ─────────────────────────────────────────
+// Uncomment BOTH lines when llama.xcframework is placed alongside the repo root.
+// See README.md → "Optional: llama.cpp opt-in"
+//
+// SWIFT_ACTIVE_COMPILATION_CONDITIONS = $(inherited) HOMEHUB_LLAMA_RUNTIME
+// GCC_PREPROCESSOR_DEFINITIONS = $(inherited) HOMEHUB_LLAMA_RUNTIME=1
