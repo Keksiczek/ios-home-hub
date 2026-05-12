@@ -382,6 +382,23 @@ enum ModelCatalog {
         // MARK: iPad M-series only (>3 GB — exceeds iPhone RAM)
 
         LocalModel(
+            id: "mlx-gemma-3n-8b-it",
+            displayName: "Gemma 3n 8B (MLX) - Efficient",
+            family: "Gemma3n",
+            parameterCount: "8B (4B active)",
+            quantization: "4-bit",
+            sizeBytes: 4_800_000_000,           // HF: ~4.5 GB
+            contextLength: 4096,                // MatFormer architecture: 8B params but 4B active during inference
+            downloadURL: URL(static: "https://huggingface.co/mlx-community/gemma-3-8b-it-4bit"),
+            sha256: nil,
+            installState: .notInstalled,
+            recommendedFor: [.iPadMSeries],
+            license: "Gemma Terms of Use",
+            backend: .mlx,
+            format: .mlx
+        ),
+
+        LocalModel(
             id: "mlx-mistral-7b-v0.3",
             displayName: "Mistral 7B v0.3 (MLX)",
             family: "Mistral",

@@ -88,7 +88,7 @@ struct LlamaContextHandle: @unchecked Sendable {
         ctxParams.n_ctx      = UInt32(contextLength)
         ctxParams.n_batch    = UInt32(memoryProfile.batchSizeTokens)  // Dynamic: 128 (tight) → 256 (moderate) → 512 (generous)
         ctxParams.n_ubatch   = UInt32(capabilities.nUBatch)   // smaller for generation TTFT
-        //ctxParams.flash_attn = capabilities.supportsFlashAttention
+        ctxParams.flash_attn = capabilities.supportsFlashAttention  // Enable flash attention where safe (10-20% speedup)
 
         guard let ctx = llama_init_from_model(model, ctxParams) else {
             llama_model_free(model)

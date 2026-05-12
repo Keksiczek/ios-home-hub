@@ -140,12 +140,25 @@ extension ModelCapabilityProfile {
         prefersDeferredMemoryExtraction: false
     )
 
-    /// Gemma 1, 2, 3 — verbose turn tokens consume extra context budget.
+    /// Gemma 1, 2 — verbose turn tokens consume extra context budget.
     static let gemma = ModelCapabilityProfile(
         family: "gemma",
         supportsFlashAttention: true,
         nUBatch: 64,
         safeHistoryTokenBudget: 1200,
+        generationReserveTokens: 512,
+        messageTokenOverhead: 6,
+        supportsStructuredToolCalling: false,
+        prefersDeferredMemoryExtraction: false
+    )
+
+    /// Gemma 3n — MatFormer architecture, 8B params but ~4B active during inference.
+    /// Revolutionary efficiency: larger model quality with small model VRAM footprint.
+    static let gemma3n = ModelCapabilityProfile(
+        family: "gemma",
+        supportsFlashAttention: true,
+        nUBatch: 64,
+        safeHistoryTokenBudget: 1800,              // More generous: effective 4B active params
         generationReserveTokens: 512,
         messageTokenOverhead: 6,
         supportsStructuredToolCalling: false,
@@ -207,6 +220,7 @@ extension ModelCapabilityProfile {
         if f.contains("llama")   { return .llama }
         if f.contains("qwen")    { return .qwen }
         if f.contains("mistral") { return .mistral }
+        if f.contains("gemma-3n") || f.contains("gemma3n") { return .gemma3n }  // MatFormer: check before generic gemma
         if f.contains("gemma")   { return .gemma }
         if f.contains("phi")     { return .phi }
         return .default
