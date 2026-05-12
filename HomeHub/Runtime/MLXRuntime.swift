@@ -94,6 +94,11 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
 
     init(loader: any MLXLoader = DefaultMLXLoader()) {
         self.loader = loader
+        // Configure MLX GPU memory cache limit for iOS stability.
+        // Prevents unbounded GPU buffer accumulation during multi-turn conversations,
+        // which causes OOM crashes on memory-constrained devices.
+        // 50 MB is conservative for iPhone; provides caching benefits while preventing leaks.
+        MLX.GPU.set(cacheLimit: 50 * 1024 * 1024)
     }
 
     // MARK: - LocalLLMRuntime

@@ -85,7 +85,7 @@ struct LlamaContextHandle: @unchecked Sendable {
         // rather than ad-hoc conditionals. See ModelCapabilityProfile.swift.
         var ctxParams = llama_context_default_params()
         ctxParams.n_ctx      = UInt32(contextLength)
-        ctxParams.n_batch    = 512                             // keep large for prompt eval
+        ctxParams.n_batch    = 256                             // Reduced from 512 for iPhone stability (prevents OOM spikes during prefill)
         ctxParams.n_ubatch   = UInt32(capabilities.nUBatch)   // smaller for generation TTFT
         //ctxParams.flash_attn = capabilities.supportsFlashAttention
 

@@ -17,5 +17,11 @@
 	<array>
 		<string>group.cz.keksiczek.homehub.shared</string>
 	</array>
+	<!-- iOS LLM Optimization: Apple Silicon Memory Management -->
+	<!-- See: Architektonická analýza iOS LLM aplikace -->
+	<key>com.apple.developer.kernel.increased-memory-limit</key>
+	<true/>
+	<key>com.apple.developer.kernel.extended-virtual-addressing</key>
+	<true/>
 </dict>
 </plist>
