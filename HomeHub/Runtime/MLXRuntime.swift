@@ -100,7 +100,7 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
         // Moderate devices (iPhone 13–15): 50 MB — balance caching + safety.
         // Generous devices (iPhone 16 Pro, iPad): 128 MB — maximize cache benefit.
         let cacheLimitBytes = DeviceMemoryProvider.shared.profile.mlxGPUCacheLimitBytes
-        MLX.GPU.set(cacheLimit: Int(cacheLimitBytes))
+        MLX.Memory.cacheLimit = Int(cacheLimitBytes)
     }
 
     // MARK: - LocalLLMRuntime
