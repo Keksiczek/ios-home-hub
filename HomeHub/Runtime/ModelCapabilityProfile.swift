@@ -206,12 +206,20 @@ extension ModelCapabilityProfile {
     ///
     /// - Parameter family: `LocalModel.family` as stored in the catalog.
     static func resolve(family: String) -> ModelCapabilityProfile {
-        var profile = Self.baseProfile(for: family)
-        // Dynamically adjust history budget based on device memory tier.
-        profile.safeHistoryTokenBudget = Self.dynamicHistoryBudget(
-            baseProfile: profile
+        let baseProfile = Self.baseProfile(for: family)
+        let adjustedBudget = Self.dynamicHistoryBudget(baseProfile: baseProfile)
+
+        // Return a new profile with the dynamically adjusted budget
+        return ModelCapabilityProfile(
+            family: baseProfile.family,
+            supportsFlashAttention: baseProfile.supportsFlashAttention,
+            nUBatch: baseProfile.nUBatch,
+            safeHistoryTokenBudget: adjustedBudget,
+            generationReserveTokens: baseProfile.generationReserveTokens,
+            messageTokenOverhead: baseProfile.messageTokenOverhead,
+            supportsStructuredToolCalling: baseProfile.supportsStructuredToolCalling,
+            prefersDeferredMemoryExtraction: baseProfile.prefersDeferredMemoryExtraction
         )
-        return profile
     }
 
     /// Returns the static (base) profile for the given family.
