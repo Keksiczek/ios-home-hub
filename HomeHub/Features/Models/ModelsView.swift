@@ -2,10 +2,14 @@ import SwiftUI
 import UIKit
 
 struct ModelsView: View {
-    @EnvironmentObject private var catalog: ModelCatalogService
+    @EnvironmentObject private var catalog:   ModelCatalogService
     @EnvironmentObject private var downloads: ModelDownloadService
-    @EnvironmentObject private var runtime: RuntimeManager
-    @EnvironmentObject private var settings: SettingsService
+    @EnvironmentObject private var runtime:   RuntimeManager
+    @EnvironmentObject private var settings:  SettingsService
+
+    /// Collapses multi-source state into per-row `ModelBrowserStatus` values
+    /// and debounces at 50 ms so 10 Hz progress ticks don't rebuild the list.
+    @StateObject private var vm = ModelBrowserViewModel()
 
     private var isRunningOnPhone: Bool {
         #if targetEnvironment(simulator)
@@ -16,153 +20,89 @@ struct ModelsView: View {
     }
 
     @State private var downloadTarget: LocalModel?
-    @State private var infoTarget: LocalModel?
-    @State private var deleteTarget: LocalModel?
-    @State private var showAddFromURL = false
+    @State private var infoTarget:     LocalModel?
+    @State private var deleteTarget:   LocalModel?
+    @State private var showAddFromURL  = false
     @State private var availableBytes: Int64 = 0
-    @State private var searchText = ""
+    @State private var searchText      = ""
+
+    // MARK: - Disk stats
 
     private func refreshAvailableBytes() {
         let url = URL(fileURLWithPath: NSHomeDirectory())
-        let v = try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
-        self.availableBytes = v?.volumeAvailableCapacityForImportantUsage.map { Int64($0) } ?? 0
+        let v   = try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+        availableBytes = v?.volumeAvailableCapacityForImportantUsage.map { Int64($0) } ?? 0
     }
 
     private func hasSufficientSpace(for model: LocalModel) -> Bool {
-        guard model.sizeBytes > 0 else { return true }   // unknown size → assume ok
+        guard model.sizeBytes > 0 else { return true }
         return availableBytes >= Int64(Double(model.sizeBytes) * 1.1)
     }
 
-    /// Returns a user-visible runtime load-failure reason for `model`, if the
-    /// last `runtime.load(...)` attempt was for this model and failed. The UI
-    /// uses this to show a short error label + Retry button underneath the
-    /// Load button so load failures are never silent.
-    private func loadFailureReason(for model: LocalModel) -> String? {
-        if case .failed(let failedID, let reason) = runtime.state, failedID == model.id {
-            return reason
-        }
-        return nil
-    }
+    // MARK: - Section helpers
 
-    // MARK: - Section splits
-
-    private var localModels: [LocalModel] {
-        let base = catalog.models.filter {
-            switch $0.installState {
-            case .installed, .loaded, .downloading, .failed: return true
-            case .notInstalled: return false
+    /// Filters `vm.sections` by the current search text (no re-sort; stable order).
+    private var filteredSections: [ModelBrowserSection] {
+        guard !searchText.isEmpty else { return vm.sections }
+        return vm.sections.compactMap { section in
+            let filtered = section.items.filter {
+                $0.model.displayName.localizedCaseInsensitiveContains(searchText) ||
+                $0.model.family.localizedCaseInsensitiveContains(searchText)
             }
+            guard !filtered.isEmpty else { return nil }
+            return ModelBrowserSection(kind: section.kind, items: filtered)
         }
-        if searchText.isEmpty { return base }
-        return base.filter { $0.displayName.localizedCaseInsensitiveContains(searchText) || $0.family.localizedCaseInsensitiveContains(searchText) }
     }
 
-    /// Human-readable footer for the "On this device" section combining
-    /// the storage taken by installed models with the device's free disk
-    /// space. The values come from the catalog (compressed quantisation
-    /// sizes) plus the live `availableBytes` capacity probe — accurate
-    /// enough for "do I have room for one more model?" decisions without
-    /// crawling the Hugging Face cache directory ourselves.
+    private var onDeviceItems: [ModelBrowserItem] {
+        vm.sections.first(where: { $0.kind == .onDevice })?.items ?? []
+    }
+
     private var storageFooterText: String {
-        let usedBytes = localModels.reduce(Int64(0)) { $0 + $1.sizeBytes }
+        let usedBytes = onDeviceItems.reduce(Int64(0)) { $0 + $1.model.sizeBytes }
         let used = ByteCountFormatter.string(fromByteCount: usedBytes, countStyle: .file)
         let free = ByteCountFormatter.string(fromByteCount: max(availableBytes, 0), countStyle: .file)
         return "\(used) used by installed models · \(free) free"
     }
 
-    private var availableModels: [LocalModel] {
-        let base = catalog.models.filter {
-            if case .notInstalled = $0.installState { return true }
-            return false
-        }
-        if searchText.isEmpty { return base }
-        return base.filter { $0.displayName.localizedCaseInsensitiveContains(searchText) || $0.family.localizedCaseInsensitiveContains(searchText) }
-    }
+    // MARK: - Body
 
     var body: some View {
         NavigationStack {
             List {
-                // ── LOCAL MODELS ────────────────────────────────────────────
-                if !localModels.isEmpty {
+                ForEach(filteredSections) { section in
                     Section {
-                        ForEach(localModels) { model in
-                            ModelRow(
-                                model: model,
-                                downloadPhase: downloads.active[model.id]?.phase,
-                                mlxLoadProgress: runtime.mlxLoadProgress?.modelID == model.id
-                                    ? runtime.mlxLoadProgress : nil,
-                                isLoaded: runtime.activeModel?.id == model.id,
-                                isLoading: runtime.state == .loading(modelID: model.id),
-                                loadFailureReason: loadFailureReason(for: model),
-                                hasResumeData: downloads.hasResumeData(for: model.id),
-                                showIPadOnlyWarning: catalog.isIPadOnly(model) && isRunningOnPhone,
-                                onDownload: { downloadTarget = model },
-                                onCancelDownload: { downloads.cancel(model.id) },
+                        ForEach(section.items) { item in
+                            ModelBrowserRow(
+                                item:              item,
+                                isRunningOnPhone:  isRunningOnPhone,
+                                onDownload:        { downloadTarget = item.model },
+                                onCancel:          { downloads.cancel(item.model.id) },
                                 onLoad: {
                                     Task {
-                                        await runtime.load(model)
-                                        await settings.set(\.selectedModelID, to: model.id)
+                                        await runtime.load(item.model)
+                                        await settings.set(\.selectedModelID, to: item.model.id)
                                     }
                                 },
-                                onUnload: { Task { await runtime.unload() } },
-                                onCancelMLXLoad: { runtime.cancelMLXLoad() },
-                                onDelete: { deleteTarget = model },
-                                onInfo: { infoTarget = model }
+                                onUnload:          { Task { await runtime.unload() } },
+                                onCancelMLXLoad:   { runtime.cancelMLXLoad() },
+                                onDelete:          { deleteTarget = item.model },
+                                onInfo:            { infoTarget   = item.model }
                             )
                         }
                     } header: {
-                        Text("On this device")
+                        Text(section.headerText)
                     } footer: {
-                        Text(storageFooterText)
-                    }
-                }
-
-                // ── AVAILABLE TO DOWNLOAD ───────────────────────────────────
-                // Note for MLX models:
-                // MLX models transition out of this section once `LocalModelService` confirms
-                // their files exist in the `~/.cache/huggingface/hub/` directory.
-                if !availableModels.isEmpty {
-                    Section {
-                        ForEach(availableModels) { model in
-                            ModelRow(
-                                model: model,
-                                downloadPhase: nil,
-                                mlxLoadProgress: runtime.mlxLoadProgress?.modelID == model.id
-                                    ? runtime.mlxLoadProgress : nil,
-                                isLoaded: false,
-                                isLoading: runtime.state == .loading(modelID: model.id),
-                                loadFailureReason: loadFailureReason(for: model),
-                                hasResumeData: downloads.hasResumeData(for: model.id),
-                                showIPadOnlyWarning: catalog.isIPadOnly(model) && isRunningOnPhone,
-                                onDownload: { downloadTarget = model },
-                                onCancelDownload: { downloads.cancel(model.id) },
-                                onLoad: {
-                                    if model.format == .mlx {
-                                        Task {
-                                            await runtime.load(model)
-                                            await settings.set(\.selectedModelID, to: model.id)
-                                        }
-                                    }
-                                },
-                                onUnload: {
-                                    if model.format == .mlx {
-                                        Task { await runtime.unload() }
-                                    }
-                                },
-                                onCancelMLXLoad: { runtime.cancelMLXLoad() },
-                                onDelete: { },
-                                onInfo: { infoTarget = model }
-                            )
+                        if section.kind == .onDevice {
+                            Text(storageFooterText)
+                        } else {
+                            Text(section.footerText)
                         }
-                    } header: {
-                        Text("Available to download")
-                    } footer: {
-                        Text("Models run entirely on this device. Sizes shown are compressed quantizations that fit in device RAM.")
                     }
                 }
 
-                // ── EMPTY STATE ─────────────────────────────────────────────
-                if localModels.isEmpty && availableModels.isEmpty {
+                // Empty state — shown only when no sections at all.
+                if filteredSections.isEmpty {
                     Section {
                         VStack(alignment: .center, spacing: HHTheme.spaceM) {
                             Image(systemName: "cube.box")
@@ -188,6 +128,8 @@ struct ModelsView: View {
                 await downloads.reconcileInstallStates()
             }
             .onAppear {
+                // Connect the view-model once; idempotent on subsequent appearances.
+                vm.connect(catalog: catalog, downloads: downloads, runtime: runtime)
                 refreshAvailableBytes()
             }
             .toolbar {
@@ -195,9 +137,7 @@ struct ModelsView: View {
                     SidebarMenuButton()
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        showAddFromURL = true
-                    } label: {
+                    Button { showAddFromURL = true } label: {
                         Label("Add from URL", systemImage: "plus")
                     }
                 }
@@ -208,7 +148,7 @@ struct ModelsView: View {
             .sheet(isPresented: $showAddFromURL) {
                 AddFromURLSheet()
             }
-            // Download confirmation alert
+            // ── Download confirmation alert ─────────────────────────────────
             .alert(
                 "Download \(downloadTarget?.displayName ?? "")?",
                 isPresented: Binding(
@@ -220,8 +160,6 @@ struct ModelsView: View {
                     if hasSufficientSpace(for: model) {
                         let label = model.sizeBytes > 0 ? "Download \(model.sizeFormatted)" : "Download"
                         Button(label) {
-                            // MLX models: background multi-file download via Hub manifest.
-                            // GGUF models: single-file URLSession download.
                             if model.format == .mlx {
                                 Task { await downloads.startMLXDownload(model) }
                             } else {
@@ -244,13 +182,13 @@ struct ModelsView: View {
                             Text("The model will be downloaded and stored on this device.\(suffix)")
                         }
                     } else {
-                        let needed = ByteCountFormatter.string(fromByteCount: model.sizeBytes, countStyle: .file)
-                        let free   = ByteCountFormatter.string(fromByteCount: availableBytes,  countStyle: .file)
+                        let needed = ByteCountFormatter.string(fromByteCount: model.sizeBytes,  countStyle: .file)
+                        let free   = ByteCountFormatter.string(fromByteCount: availableBytes,   countStyle: .file)
                         Text("Not enough storage. Need \(needed) but only \(free) available. Free up space and try again.")
                     }
                 }
             }
-            // Delete confirmation alert
+            // ── Delete confirmation alert ───────────────────────────────────
             .alert(
                 "Delete \(deleteTarget?.displayName ?? "")?",
                 isPresented: Binding(
@@ -262,7 +200,6 @@ struct ModelsView: View {
                     Button("Delete", role: .destructive) {
                         Task {
                             await downloads.deleteModel(model.id, runtime: runtime)
-                            // Clear selected model if it was this one.
                             if settings.current.selectedModelID == model.id {
                                 await settings.set(\.selectedModelID, to: nil)
                             }
@@ -284,42 +221,34 @@ struct ModelsView: View {
     }
 }
 
-// MARK: - ModelRow
+// MARK: - ModelBrowserRow
 
-private struct ModelRow: View {
-    let model: LocalModel
-    let downloadPhase: ModelDownloadService.DownloadPhase?
-    /// Non-nil when this row's MLX model is actively downloading or initializing.
-    var mlxLoadProgress: MLXLoadProgress? = nil
-    let isLoaded: Bool
-    let isLoading: Bool
-    /// Non-nil when the most recent `runtime.load(_:)` attempt targeted this
-    /// model and failed. Drives the inline error label + Retry button below
-    /// the Load control so load failures are never silent.
-    let loadFailureReason: String?
-    let hasResumeData: Bool
-    let showIPadOnlyWarning: Bool
-    let onDownload: () -> Void
-    let onCancelDownload: () -> Void
-    let onLoad: () -> Void
-    let onUnload: () -> Void
-    var onCancelMLXLoad: () -> Void = {}
-    let onDelete: () -> Void
-    let onInfo: () -> Void
+private struct ModelBrowserRow: View {
+    let item:             ModelBrowserItem
+    let isRunningOnPhone: Bool
+    let onDownload:       () -> Void
+    let onCancel:         () -> Void
+    let onLoad:           () -> Void
+    let onUnload:         () -> Void
+    let onCancelMLXLoad:  () -> Void
+    let onDelete:         () -> Void
+    let onInfo:           () -> Void
+
+    private var model: LocalModel { item.model }
 
     var body: some View {
         VStack(alignment: .leading, spacing: HHTheme.spaceM) {
+            // ── Header ───────────────────────────────────────────────────────
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 6) {
                         Text(model.displayName)
                             .font(HHTheme.headline)
                         backendBadge
-                        if showIPadOnlyWarning {
+                        if isRunningOnPhone && isIPadOnly {
                             Image(systemName: "exclamationmark.triangle.fill")
                                 .foregroundStyle(HHTheme.warning)
                                 .imageScale(.small)
-                                .help("Recommended for iPad M-series only. May exceed iPhone RAM.")
                         }
                         if model.isUserAdded {
                             Text("Custom")
@@ -332,42 +261,43 @@ private struct ModelRow: View {
                         }
                     }
                     modelSubtitle
-                    if showIPadOnlyWarning {
+                    if isRunningOnPhone && isIPadOnly {
                         Text("iPad-only — likely to OOM on iPhone")
                             .font(HHTheme.caption)
                             .foregroundStyle(HHTheme.warning)
                     }
                 }
                 Spacer()
-                HStack(spacing: 12) {
-                    Button(action: onInfo) {
-                        Image(systemName: "info.circle")
-                            .foregroundStyle(HHTheme.textSecondary)
-                            .imageScale(.medium)
-                    }
-                    .buttonStyle(.plain)
+                Button(action: onInfo) {
+                    Image(systemName: "info.circle")
+                        .foregroundStyle(HHTheme.textSecondary)
+                        .imageScale(.medium)
                 }
+                .buttonStyle(.plain)
             }
 
+            // ── State controls ────────────────────────────────────────────
             stateControls
         }
         .padding(.vertical, 6)
     }
 
-    /// Compact "MLX" / "GGUF" pill so users see at a glance which runtime
-    /// each catalog row targets. The badge dims when the build can't load
-    /// the model (e.g. GGUF on the default MLX-only build) so the user can
-    /// scan the list and know which entries they can actually use.
+    // MARK: - Header sub-views
+
+    private var isIPadOnly: Bool {
+        !model.recommendedFor.contains(.iPhone)
+    }
+
     private var backendBadge: some View {
         Text(model.backend.displayName)
             .font(.system(size: 10, weight: .semibold))
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
-            .background(badgeBackground, in: Capsule())
-            .foregroundStyle(badgeForeground)
+            .background(badgeBg, in: Capsule())
+            .foregroundStyle(badgeFg)
     }
 
-    private var badgeForeground: Color {
+    private var badgeFg: Color {
         guard model.isUsableInThisBuild else { return HHTheme.textSecondary }
         switch model.backend {
         case .mlx:      return HHTheme.accent
@@ -375,7 +305,7 @@ private struct ModelRow: View {
         }
     }
 
-    private var badgeBackground: Color {
+    private var badgeBg: Color {
         guard model.isUsableInThisBuild else { return HHTheme.textSecondary.opacity(0.10) }
         switch model.backend {
         case .mlx:      return HHTheme.accent.opacity(0.15)
@@ -386,7 +316,6 @@ private struct ModelRow: View {
     @ViewBuilder
     private var modelSubtitle: some View {
         if model.isUserAdded {
-            // For user models, show the URL host + context length
             let host = model.downloadURL.host(percentEncoded: false) ?? "custom"
             Text("\(host) · \(model.contextLength) tokens")
                 .font(HHTheme.footnote)
@@ -401,13 +330,13 @@ private struct ModelRow: View {
         }
     }
 
+    // MARK: - State controls
+
     @ViewBuilder
     private var stateControls: some View {
-        // Models targeting a backend not linked into this build can't be
-        // loaded — replace the action affordance with a single explanation
-        // row pointing at the opt-in flag. Avoids dead buttons that only
-        // throw at runtime.
         if !model.isUsableInThisBuild, let reason = model.unavailableReason {
+            // Backend not linked in this build — replace all affordances with a
+            // single explanation so dead buttons never reach the user.
             Label(reason, systemImage: "exclamationmark.triangle.fill")
                 .font(HHTheme.caption)
                 .foregroundStyle(HHTheme.warning)
@@ -419,83 +348,106 @@ private struct ModelRow: View {
 
     @ViewBuilder
     private var stateControlsUsable: some View {
-        switch model.installState {
+        switch item.status {
+
+        // ── Not installed ───────────────────────────────────────────────────
         case .notInstalled:
-            VStack(alignment: .leading, spacing: 6) {
-                if model.format == .mlx, let progress = mlxLoadProgress {
-                    // MLX is actively loading — show honest two-phase progress
-                    mlxProgressView(progress: progress)
-                } else if model.format == .mlx {
-                    // MLX idle — download weights first via background URLSession,
-                    // then load from local cache. Two separate steps so the download
-                    // survives screen-off and the user can start multiple downloads.
-                    VStack(alignment: .leading, spacing: 4) {
-                        Button("Download") { onDownload() }
-                            .buttonStyle(HHSecondaryButtonStyle())
-                            .accessibilityIdentifier("mlx_download_button")
-                        Text("Background transfer · \(model.sizeFormatted) · tap Load after")
+            if model.format == .mlx, let progress = item.mlxLoadProgress {
+                mlxProgressView(progress: progress)
+            } else if model.format == .mlx {
+                VStack(alignment: .leading, spacing: 4) {
+                    Button("Download") { onDownload() }
+                        .buttonStyle(HHSecondaryButtonStyle())
+                        .accessibilityIdentifier("mlx_download_button")
+                    Text("Background transfer · \(model.sizeFormatted) · tap Load after")
+                        .font(HHTheme.caption)
+                        .foregroundStyle(HHTheme.textSecondary)
+                }
+            } else {
+                HStack(spacing: HHTheme.spaceS) {
+                    Button(item.hasResumeData ? "Resume" : "Download", action: onDownload)
+                        .buttonStyle(HHSecondaryButtonStyle())
+                    if item.hasResumeData {
+                        Label("Paused", systemImage: "pause.circle.fill")
                             .font(HHTheme.caption)
-                            .foregroundStyle(HHTheme.textSecondary)
-                    }
-                } else {
-                    // GGUF — unchanged
-                    HStack(spacing: HHTheme.spaceS) {
-                        Button(hasResumeData ? "Resume" : "Download", action: onDownload)
-                            .buttonStyle(HHSecondaryButtonStyle())
-                        if hasResumeData {
-                            Label("Paused", systemImage: "pause.circle.fill")
-                                .font(HHTheme.caption)
-                                .foregroundStyle(HHTheme.warning)
-                        }
+                            .foregroundStyle(HHTheme.warning)
                     }
                 }
             }
 
-        case .downloading(let progress):
+        // ── Downloading ─────────────────────────────────────────────────────
+        case .downloading(let progress, let phase):
             VStack(alignment: .leading, spacing: 6) {
-                ProgressView(value: progress).tint(HHTheme.accent)
+                // Indeterminate when: still preparing, or chunked transfer
+                // (no Content-Length header → progress stays at 0).
+                let isIndeterminate = (phase == .preparing) ||
+                                      (phase == .downloading && progress < 0.001)
+                if isIndeterminate {
+                    ProgressView().controlSize(.regular)
+                } else {
+                    ProgressView(value: progress).tint(HHTheme.accent)
+                }
                 HStack {
-                    progressLabel(progress: progress)
+                    downloadPhaseLabel(progress: progress, phase: phase,
+                                       indeterminate: isIndeterminate)
                     Spacer()
-                    Button("Cancel", action: onCancelDownload)
+                    Button("Cancel", action: onCancel)
                         .font(HHTheme.subheadline)
                         .tint(HHTheme.danger)
                 }
             }
 
-        case .installed:
+        // ── Reconnecting ────────────────────────────────────────────────────
+        case .reconnecting:
             VStack(alignment: .leading, spacing: 6) {
-                if model.format == .mlx, let progress = mlxLoadProgress {
-                    // Already-cached MLX model is loading (warm cache path)
-                    mlxProgressView(progress: progress)
-                } else {
-                    HStack(spacing: HHTheme.spaceS) {
-                        Button(isLoaded ? "Unload" : (loadFailureReason != nil ? "Retry" : "Load")) {
-                            isLoaded ? onUnload() : onLoad()
-                        }
-                        .buttonStyle(HHSecondaryButtonStyle())
-                        .accessibilityIdentifier(isLoaded ? "mlx_unload_button" : (loadFailureReason != nil ? "mlx_retry_button" : "mlx_load_button"))
-                        if isLoading {
-                            ProgressView().controlSize(.small)
-                        }
-                        Spacer()
-                        installedMetadata
-                        Button(role: .destructive, action: onDelete) {
-                            Image(systemName: "trash")
-                                .foregroundStyle(HHTheme.danger)
-                                .imageScale(.medium)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                if let reason = loadFailureReason {
-                    Label(reason, systemImage: "exclamationmark.triangle.fill")
+                ProgressView().controlSize(.regular)
+                HStack {
+                    Text("Reconnecting to background download…")
                         .font(HHTheme.caption)
-                        .foregroundStyle(HHTheme.warning)
-                        .lineLimit(3)
+                        .foregroundStyle(HHTheme.textSecondary)
+                    Spacer()
+                    Button("Cancel", action: onCancel)
+                        .font(HHTheme.subheadline)
+                        .tint(HHTheme.danger)
                 }
             }
 
+        // ── Installed ───────────────────────────────────────────────────────
+        case .installed:
+            if model.format == .mlx, let progress = item.mlxLoadProgress {
+                // Warm-cache load path: file is on disk, weights loading.
+                mlxProgressView(progress: progress)
+            } else {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: HHTheme.spaceS) {
+                        Button("Load", action: onLoad)
+                            .buttonStyle(HHSecondaryButtonStyle())
+                            .accessibilityIdentifier("mlx_load_button")
+                        Spacer()
+                        sizeLabel
+                        deleteButton
+                    }
+                }
+            }
+
+        // ── Loading ─────────────────────────────────────────────────────────
+        case .loading:
+            if let progress = item.mlxLoadProgress {
+                mlxProgressView(progress: progress)
+            } else {
+                HStack(spacing: HHTheme.spaceS) {
+                    ProgressView().controlSize(.small)
+                    Text("Loading…")
+                        .font(HHTheme.caption)
+                        .foregroundStyle(HHTheme.textSecondary)
+                    Spacer()
+                    Button("Cancel") { onCancelMLXLoad() }
+                        .font(HHTheme.subheadline)
+                        .tint(HHTheme.danger)
+                }
+            }
+
+        // ── Loaded ──────────────────────────────────────────────────────────
         case .loaded:
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: HHTheme.spaceS) {
@@ -506,43 +458,58 @@ private struct ModelRow: View {
                         .font(HHTheme.caption)
                         .foregroundStyle(HHTheme.success)
                     Spacer()
-                    installedMetadata
-                    Button(role: .destructive, action: onDelete) {
-                        Image(systemName: "trash")
-                            .foregroundStyle(HHTheme.danger)
-                            .imageScale(.medium)
-                    }
-                    .buttonStyle(.plain)
+                    sizeLabel
+                    deleteButton
                 }
             }
 
-        case .failed(let reason):
+        // ── Unloading ───────────────────────────────────────────────────────
+        case .unloading:
+            HStack(spacing: HHTheme.spaceS) {
+                ProgressView().controlSize(.small)
+                Text("Unloading…")
+                    .font(HHTheme.caption)
+                    .foregroundStyle(HHTheme.textSecondary)
+            }
+
+        // ── Download failed ─────────────────────────────────────────────────
+        case .downloadFailed(let reason):
             VStack(alignment: .leading, spacing: 6) {
                 Label(reason, systemImage: "exclamationmark.triangle.fill")
                     .font(HHTheme.caption)
                     .foregroundStyle(HHTheme.warning)
                     .lineLimit(3)
                 HStack(spacing: HHTheme.spaceS) {
-                    // MLX models download via the Hub during load — retrying
-                    // must call onLoad(), not onDownload() (GGUF pipeline).
-                    Button(model.format == .mlx ? "Retry" : (hasResumeData ? "Resume" : "Retry")) {
+                    Button(model.format == .mlx ? "Retry" : (item.hasResumeData ? "Resume" : "Retry")) {
                         model.format == .mlx ? onLoad() : onDownload()
                     }
                     .buttonStyle(HHSecondaryButtonStyle())
-                    Button(role: .destructive, action: onDelete) {
-                        Image(systemName: "trash")
-                            .foregroundStyle(HHTheme.danger)
-                    }
-                    .buttonStyle(.plain)
+                    deleteButton
+                }
+            }
+
+        // ── Load failed ─────────────────────────────────────────────────────
+        case .loadFailed(let reason):
+            VStack(alignment: .leading, spacing: 6) {
+                Label(reason, systemImage: "exclamationmark.triangle.fill")
+                    .font(HHTheme.caption)
+                    .foregroundStyle(HHTheme.warning)
+                    .lineLimit(3)
+                HStack(spacing: HHTheme.spaceS) {
+                    Button("Retry", action: onLoad)
+                        .buttonStyle(HHSecondaryButtonStyle())
+                        .accessibilityIdentifier("mlx_retry_button")
+                    Spacer()
+                    sizeLabel
+                    deleteButton
                 }
             }
         }
     }
 
-    /// Two-phase MLX progress view.
-    ///
-    /// - `.downloading`: Real fraction from Hub downloader → determinate ProgressView.
-    /// - `.preparing`: Indeterminate spinner + label. No fake percentage shown.
+    // MARK: - Reusable sub-views
+
+    /// Two-phase MLX progress view for loading (download + prepare).
     @ViewBuilder
     private func mlxProgressView(progress: MLXLoadProgress) -> some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -573,15 +540,18 @@ private struct ModelRow: View {
     }
 
     @ViewBuilder
-    private func progressLabel(progress: Double) -> some View {
-        let phase = downloadPhase ?? .downloading
+    private func downloadPhaseLabel(
+        progress: Double,
+        phase: ModelDownloadService.DownloadPhase,
+        indeterminate: Bool
+    ) -> some View {
         switch phase {
         case .preparing:
             Text("Preparing…")
                 .font(HHTheme.caption)
                 .foregroundStyle(HHTheme.textSecondary)
         case .downloading:
-            Text("Downloading · \(Int(progress * 100))%")
+            Text(indeterminate ? "Downloading…" : "Downloading · \(Int(progress * 100))%")
                 .font(HHTheme.caption)
                 .foregroundStyle(HHTheme.textSecondary)
         case .validating:
@@ -596,13 +566,20 @@ private struct ModelRow: View {
     }
 
     @ViewBuilder
-    private var installedMetadata: some View {
-        // Show actual on-disk size (may differ from catalog estimate for user models)
+    private var sizeLabel: some View {
         if model.sizeBytes > 0 {
             Text(model.sizeFormatted)
                 .font(HHTheme.caption)
                 .foregroundStyle(HHTheme.textSecondary)
         }
     }
-}
 
+    private var deleteButton: some View {
+        Button(role: .destructive, action: onDelete) {
+            Image(systemName: "trash")
+                .foregroundStyle(HHTheme.danger)
+                .imageScale(.medium)
+        }
+        .buttonStyle(.plain)
+    }
+}

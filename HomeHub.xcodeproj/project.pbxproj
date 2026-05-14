@@ -23,6 +23,7 @@
 		14FAEF7AA8F9766C17935525 /* DeveloperDiagnosticsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71E59AFA3D1ABAFB10F4588D /* DeveloperDiagnosticsView.swift */; };
 		16A47601CAC86406ED514264 /* AppSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4A1A02E95EBC929BFA1E294 /* AppSettings.swift */; };
 		176A80528E29A02F7A1171C2 /* ModelsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 150D6725C49C164B4D42BED7 /* ModelsView.swift */; };
+		A3F1B2C4D5E6789012345ABC /* ModelBrowserViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4E2C3D5F6A7890123456DEF /* ModelBrowserViewModel.swift */; };
 		1B35255E82D496F3A71B5B89 /* NLExtractionPassTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B75DA155D098AD01135C68EA /* NLExtractionPassTests.swift */; };
 		1C315497AED7E8DB2F4CB28F /* SharedStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6FD0FEECC8971E164461D5F4 /* SharedStorage.swift */; };
 		1F3878B63C9D53DCC1B1E604 /* HuggingFaceAPIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F7D5D95702A27B02BC796CB /* HuggingFaceAPIClient.swift */; };
@@ -85,6 +86,9 @@
 		7629722F102C7927F88A6518 /* ConversationServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7DD19EC3EBE08D562808D71 /* ConversationServiceTests.swift */; };
 		770206C6CAE60084E18533D6 /* HHLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF97DC7E6219D59675C938A3 /* HHLogger.swift */; };
 		77A2BFE7029339AF67FC04EA /* DocumentReaderService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A5B1A379B37297E9D0E7F31 /* DocumentReaderService.swift */; };
+		CC4D5E6F7A8B9C0D1E2F3A4B /* DeviceMemoryProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD4D5E6F7A8B9C0D1E2F3A4B /* DeviceMemoryProvider.swift */; };
+		AA1B2C3D4E5F6A7B8C9D0E1F /* ManifestStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB1B2C3D4E5F6A7B8C9D0E1F /* ManifestStore.swift */; };
+		CC2A3B4C5D6E7F8A9B0C1D2E /* DownloadManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD2A3B4C5D6E7F8A9B0C1D2E /* DownloadManager.swift */; };
 		788064224F0340D1E4C2CE46 /* MemoryService.swift in Sources */ = {isa = PBXBuildFile; fileRef = FDFE66596111A6FF50BB05B4 /* MemoryService.swift */; };
 		7A0D9656B6282E84CC87FBCC /* Transformers in Frameworks */ = {isa = PBXBuildFile; productRef = 0F5310EB2527D7F060DB0CA1 /* Transformers */; };
 		7AF2D364C0144AB77338FB86 /* MLXRuntimeManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADD4E25F5DFF5967F1506916 /* MLXRuntimeManagerTests.swift */; };
@@ -234,9 +238,13 @@
 		149D5CEB395DB0533A6D2706 /* ModelImportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelImportTests.swift; sourceTree = "<group>"; };
 		14F56F13E17D9A38363D6734 /* HHTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HHTheme.swift; sourceTree = "<group>"; };
 		150D6725C49C164B4D42BED7 /* ModelsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelsView.swift; sourceTree = "<group>"; };
+		B4E2C3D5F6A7890123456DEF /* ModelBrowserViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelBrowserViewModel.swift; sourceTree = "<group>"; };
 		15725DCFC610AA047227CEF3 /* VoiceService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceService.swift; sourceTree = "<group>"; };
 		1911D715424CCA8F05E5837E /* AppIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppIntents.swift; sourceTree = "<group>"; };
 		1A5B1A379B37297E9D0E7F31 /* DocumentReaderService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentReaderService.swift; sourceTree = "<group>"; };
+		DD4D5E6F7A8B9C0D1E2F3A4B /* DeviceMemoryProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceMemoryProvider.swift; sourceTree = "<group>"; };
+		BB1B2C3D4E5F6A7B8C9D0E1F /* ManifestStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManifestStore.swift; sourceTree = "<group>"; };
+		DD2A3B4C5D6E7F8A9B0C1D2E /* DownloadManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DownloadManager.swift; sourceTree = "<group>"; };
 		1BD39745EA094616811F82E7 /* SidebarMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarMenu.swift; sourceTree = "<group>"; };
 		1C288703E8D1ED450B77065A /* WebSearchEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSearchEngine.swift; sourceTree = "<group>"; };
 		1E8F0A241288CD9D9A9BAC04 /* ModelCatalogMLXFirstTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelCatalogMLXFirstTests.swift; sourceTree = "<group>"; };
@@ -650,6 +658,7 @@
 			children = (
 				D7BC49E198845B5E14E130CE /* AddFromURLSheet.swift */,
 				57A5CB25A449448E1344C41E /* ModelInfoSheet.swift */,
+				B4E2C3D5F6A7890123456DEF /* ModelBrowserViewModel.swift */,
 				150D6725C49C164B4D42BED7 /* ModelsView.swift */,
 			);
 			path = Models;
@@ -717,6 +726,9 @@
 				3BC9E0FDD68A0DB9199618F6 /* BackgroundDownloadCoordinator.swift */,
 				737FF123586BC755A3623CE5 /* BackgroundDownloadProgressing.swift */,
 				AE8824F44274F1BFCA74AB43 /* ConversationService.swift */,
+				DD4D5E6F7A8B9C0D1E2F3A4B /* DeviceMemoryProvider.swift */,
+				BB1B2C3D4E5F6A7B8C9D0E1F /* ManifestStore.swift */,
+				DD2A3B4C5D6E7F8A9B0C1D2E /* DownloadManager.swift */,
 				1A5B1A379B37297E9D0E7F31 /* DocumentReaderService.swift */,
 				0849DBA3B58F500B866BAEF3 /* EmbeddingService.swift */,
 				09312790940AEED7D967E37C /* ExtractionPromptBuilder.swift */,
@@ -970,6 +982,9 @@
 				F1691E0C614E12C47AFD0DAB /* DeepLink.swift in Sources */,
 				14FAEF7AA8F9766C17935525 /* DeveloperDiagnosticsView.swift in Sources */,
 				9D8EF2A40D6F76632956FC04 /* DeviceInfoSkill.swift in Sources */,
+				CC4D5E6F7A8B9C0D1E2F3A4B /* DeviceMemoryProvider.swift in Sources */,
+				AA1B2C3D4E5F6A7B8C9D0E1F /* ManifestStore.swift in Sources */,
+				CC2A3B4C5D6E7F8A9B0C1D2E /* DownloadManager.swift in Sources */,
 				C4D9903500DFAF96469749FA /* DiagnosticReport.swift in Sources */,
 				F288C9F9088CBE39B86E5B4C /* DocumentChunker.swift in Sources */,
 				85F7FE036E4A4BC3B8ECD920 /* DocumentEmbedder.swift in Sources */,
@@ -1028,6 +1043,7 @@
 				7D21F8106E95A1C868B6E19C /* ModelCatalogService.swift in Sources */,
 				926042A64C5F3C4074B5EC83 /* ModelDownloadService.swift in Sources */,
 				CE53BB67DEEBB559A32D0B18 /* ModelInfoSheet.swift in Sources */,
+				A3F1B2C4D5E6789012345ABC /* ModelBrowserViewModel.swift in Sources */,
 				176A80528E29A02F7A1171C2 /* ModelsView.swift in Sources */,
 				C3255CC2686294D3AC8EB739 /* NLExtractionPass.swift in Sources */,
 				D20C632060CBA3580318BE18 /* OnboardingAssistantStyleView.swift in Sources */,

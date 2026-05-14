@@ -550,6 +550,7 @@ struct SettingsView: View {
     private var runtimeStateLabel: String {
         switch runtime.state {
         case .idle:            return "Idle"
+        case .unloading:       return "Unloading"
         case .loading(let id): return "Loading \(id)"
         case .ready(let id):   return "Ready — \(id)"
         case .failed:          return "Failed (see Developer Diagnostics)"

@@ -81,7 +81,7 @@ final class ModelDownloadService: ObservableObject {
     }
 
     func isDownloading(_ modelID: String) -> Bool {
-        active[modelID] != nil || mlxDownloader.activeDownloads.contains(modelID)
+        active[modelID] != nil || DownloadManager.shared.isActive(modelID)
     }
 
     /// Returns `true` when a previous download was interrupted and resume
@@ -137,10 +137,7 @@ final class ModelDownloadService: ObservableObject {
         tasks[modelID]?.cancel()
         tasks[modelID] = nil
         active[modelID] = nil
-        // Cancel GGUF coordinator (stores resume data for later resumption)
-        BackgroundDownloadCoordinator.shared.cancelDownload(modelID: modelID)
-        // Cancel MLX coordinator (multi-file background download)
-        mlxDownloader.cancelDownload(modelID: modelID)
+        DownloadManager.shared.cancel(modelID: modelID)
         catalog.setInstallState(.notInstalled, for: modelID)
         log.info("Cancelled download for '\(modelID, privacy: .public)'")
     }
@@ -585,7 +582,7 @@ final class ModelDownloadService: ObservableObject {
             catalog.setInstallState(.failed(reason: "Invalid model URL (no HF repo ID)."), for: model.id)
             return
         }
-        guard !mlxDownloader.activeDownloads.contains(model.id) else { return }
+        guard !DownloadManager.shared.isActive(model.id) else { return }
 
         // Disk-space preflight
         if model.sizeBytes > 0,
@@ -607,7 +604,7 @@ final class ModelDownloadService: ObservableObject {
             }
             let cacheDir = await localModels.resolvedMLXCacheURL(for: repoId)
             try FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
-            mlxDownloader.startDownload(modelID: model.id, repoId: repoId, cacheDir: cacheDir, files: files)
+            DownloadManager.shared.startMLX(modelID: model.id, repoId: repoId, cacheDir: cacheDir, files: files)
             log.info("MLX: Started background download of \(files.count) files for '\(model.id, privacy: .public)'")
         } catch {
             log.error("MLX: Manifest fetch failed for '\(repoId, privacy: .public)': \(error.localizedDescription, privacy: .public)")
@@ -618,48 +615,48 @@ final class ModelDownloadService: ObservableObject {
     // MARK: - Coordinator callbacks
 
     private func setupCoordinatorCallbacks() {
-        // ── GGUF single-file session ──────────────────────────────────────
-        let coordinator = BackgroundDownloadCoordinator.shared
-        coordinator.onProgress = { [weak self] id, fraction in
-            guard let self else { return }
-            self.active[id]?.progress = fraction
-            self.active[id]?.phase = .downloading
-            self.catalog.setInstallState(.downloading(progress: fraction), for: id)
-        }
-        coordinator.onCompleted = { [weak self] id, tempURL in
-            guard let self else { return }
-            Task { await self.finalizeDownload(modelID: id, tempURL: tempURL) }
-        }
-        coordinator.onFailed = { [weak self] id, error, resumeData in
-            guard let self else { return }
-            self.handleDownloadError(modelID: id, error: error, resumeData: resumeData)
-        }
-        coordinator.reconnect()
-
-        // ── MLX multi-file session ────────────────────────────────────────
-        mlxDownloader.onProgress = { [weak self] id, fraction in
-            self?.catalog.setInstallState(.downloading(progress: fraction), for: id)
-        }
-        mlxDownloader.onCompleted = { [weak self] id in
-            guard let self else { return }
-            guard let model = self.catalog.model(withID: id),
-                  let repoId = model.repoId else { return }
-            Task {
-                let cacheDir = await self.localModels.resolvedMLXCacheURL(for: repoId)
-                self.catalog.setInstallState(.installed(localURL: cacheDir), for: id)
-                self.log.info("MLX: Model '\(id, privacy: .public)' installed at \(cacheDir.path, privacy: .public)")
-                if let model = self.catalog.model(withID: id) {
-                    await self.onModelInstalled?(model)
+        DownloadManager.shared.wireAndReconnect(
+            ggufProgress: { [weak self] id, fraction in
+                guard let self else { return }
+                self.active[id]?.progress = fraction
+                self.active[id]?.phase = .downloading
+                self.catalog.setInstallState(.downloading(progress: fraction), for: id)
+            },
+            ggufCompleted: { [weak self] id, tempURL in
+                DownloadManager.shared.markFinished(modelID: id)
+                guard let self else { return }
+                Task { await self.finalizeDownload(modelID: id, tempURL: tempURL) }
+            },
+            ggufFailed: { [weak self] id, error, resumeData in
+                DownloadManager.shared.markFinished(modelID: id)
+                guard let self else { return }
+                self.handleDownloadError(modelID: id, error: error, resumeData: resumeData)
+            },
+            mlxProgress: { [weak self] id, fraction in
+                self?.catalog.setInstallState(.downloading(progress: fraction), for: id)
+            },
+            mlxCompleted: { [weak self] id in
+                DownloadManager.shared.markFinished(modelID: id)
+                guard let self else { return }
+                guard let model = self.catalog.model(withID: id),
+                      let repoId = model.repoId else { return }
+                Task {
+                    let cacheDir = await self.localModels.resolvedMLXCacheURL(for: repoId)
+                    self.catalog.setInstallState(.installed(localURL: cacheDir), for: id)
+                    self.log.info("MLX: Model '\(id, privacy: .public)' installed at \(cacheDir.path, privacy: .public)")
+                    if let model = self.catalog.model(withID: id) {
+                        await self.onModelInstalled?(model)
+                    }
                 }
+            },
+            mlxFailed: { [weak self] id, error in
+                DownloadManager.shared.markFinished(modelID: id)
+                guard let self else { return }
+                let reason = error.localizedDescription
+                self.log.error("MLX: Download failed for '\(id, privacy: .public)': \(reason, privacy: .public)")
+                self.catalog.setInstallState(.failed(reason: reason), for: id)
             }
-        }
-        mlxDownloader.onFailed = { [weak self] id, error in
-            guard let self else { return }
-            let reason = error.localizedDescription
-            self.log.error("MLX: Download failed for '\(id, privacy: .public)': \(reason, privacy: .public)")
-            self.catalog.setInstallState(.failed(reason: reason), for: id)
-        }
-        mlxDownloader.reconnect()
+        )
     }
 
     private func realDownload(model: LocalModel) async {
@@ -677,13 +674,12 @@ final class ModelDownloadService: ObservableObject {
 
         active[modelID]?.phase = .downloading
 
-        let coordinator = BackgroundDownloadCoordinator.shared
         if let resumeData = loadResumeData(for: modelID) {
             // Clear resume data now; a fresh cancel will store new resume data.
             clearResumeData(for: modelID)
-            coordinator.startDownload(modelID: modelID, resumeData: resumeData)
+            DownloadManager.shared.resume(modelID: modelID, resumeData: resumeData)
         } else {
-            coordinator.startDownload(modelID: modelID, url: model.downloadURL)
+            DownloadManager.shared.start(modelID: modelID, url: model.downloadURL)
         }
         // Download now runs independently in the background session.
     }
@@ -702,6 +698,26 @@ final class ModelDownloadService: ObservableObject {
             catalog.setInstallState(
                 .failed(reason: DownloadError.fileMissingAfterDownload.errorDescription
                         ?? "Soubor modelu chybí po stažení."),
+                for: modelID
+            )
+            active[modelID] = nil
+            tasks[modelID] = nil
+            return
+        }
+
+        // File-size sanity check: a real GGUF is measured in megabytes; a file
+        // under 1 KB is almost certainly an HTML error page saved by URLSession
+        // (gated-model auth challenge body, CDN error page, etc.). The HTTP
+        // status guard in BackgroundDownloadCoordinator catches most non-2xx
+        // cases, but some CDNs reply 200 with an HTML body regardless.
+        let fileSizeThreshold: Int64 = 1_024  // 1 KB
+        let fileAttrs = try? FileManager.default.attributesOfItem(atPath: tempURL.path)
+        if let fileSize = (fileAttrs?[.size] as? NSNumber)?.int64Value,
+           fileSize < fileSizeThreshold {
+            log.error("Downloaded file suspiciously small (\(fileSize, privacy: .public) B) for '\(modelID, privacy: .public)' — likely an error page")
+            try? FileManager.default.removeItem(at: tempURL)
+            catalog.setInstallState(
+                .failed(reason: "Downloaded file is too small (\(fileSize) bytes). The URL may be gated or return an error page instead of a model."),
                 for: modelID
             )
             active[modelID] = nil

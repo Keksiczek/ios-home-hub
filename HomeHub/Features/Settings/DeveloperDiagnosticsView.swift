@@ -405,6 +405,7 @@ struct DeveloperDiagnosticsView: View {
     private var stateLabel: String {
         switch runtime.state {
         case .idle:               return "Idle"
+        case .unloading:          return "Unloading"
         case .loading(let id):    return "Loading: \(id)"
         case .ready(let id):      return "Ready: \(id)"
         case .failed:             return "Failed (see error below)"
@@ -496,6 +497,7 @@ struct DeveloperDiagnosticsView: View {
         var failureReason: String?
         switch runtime.state {
         case .idle:                       runtimeState = "idle"
+        case .unloading:                  runtimeState = "unloading"
         case .loading(let id):            runtimeState = "loading: \(id)"
         case .ready(let id):              runtimeState = "ready: \(id)"
         case .failed(let id, let reason):

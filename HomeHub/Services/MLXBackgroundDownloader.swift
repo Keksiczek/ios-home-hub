@@ -151,10 +151,20 @@ final class MLXBackgroundDownloader: NSObject, ObservableObject, BackgroundDownl
     /// System background-session completion handler stored by AppDelegate.
     private var systemCompletionHandler: (() -> Void)?
 
-    // MARK: - UserDefaults keys
+    // MARK: - Manifest
 
-    private static let udTaskMapKey = "com.homehub.mlx.taskMap"
-    private static let udJobMapKey  = "com.homehub.mlx.jobMap"
+    private struct MLXManifest: Codable {
+        static let currentVersion = 1
+        var version: Int
+        var tasks: [String: MLXFileTask]    // String(taskIdentifier) → MLXFileTask
+        var jobs: [String: MLXDownloadJob]  // modelID → MLXDownloadJob
+    }
+
+    private let store = ManifestStore<MLXManifest>.appSupport(filename: "mlx-download-manifest.json")
+
+    // One-time migration keys from UserDefaults persistence.
+    private static let legacyUDTaskKey = "com.homehub.mlx.taskMap"
+    private static let legacyUDJobKey  = "com.homehub.mlx.jobMap"
 
     // MARK: - Init
 
@@ -165,6 +175,17 @@ final class MLXBackgroundDownloader: NSObject, ObservableObject, BackgroundDownl
 
     // MARK: - Public API
 
+    /// Model IDs currently tracked in the in-memory job map.
+    ///
+    /// Read by `DownloadManager.wireAndReconnect()` to seed `activeModelIDs`
+    /// before the async `reconnect()` call fires — so `isActive()` /
+    /// `isDownloading()` return `true` for any URLSession tasks that survived
+    /// an OS kill while the app was dead. Orphan recovery in `reconnect()`
+    /// will call `onFailed` for stale IDs and `markFinished` will prune them.
+    var manifestModelIDs: Set<String> {
+        serialRead { Set(jobMap.keys) }
+    }
+
     /// Forces session creation and reconnects to any in-flight background tasks
     /// from a previous app launch. Call after `onProgress/onCompleted/onFailed`
     /// are wired.
@@ -172,16 +193,47 @@ final class MLXBackgroundDownloader: NSObject, ObservableObject, BackgroundDownl
         _ = session          // ensures the lazy property is initialised
         session.getTasksWithCompletionHandler { [weak self] _, _, downloadTasks in
             guard let self else { return }
-            // Re-register any in-flight tasks the system kept alive across a kill.
-            let existing = self.serialQueue.sync { self.taskMap }
-            for task in downloadTasks {
-                guard let fileTask = existing[task.taskIdentifier] else { continue }
-                self.log.info("MLX: Reconnected background task \(task.taskIdentifier) for '\(fileTask.modelID, privacy: .public)'")
-                // Mark the model active on MainActor.
-                Task { @MainActor [weak self] in
-                    self?.activeDownloads.insert(fileTask.modelID)
+            let existing = self.serialRead { self.taskMap }
+            let liveIDs = Set(downloadTasks.map { $0.taskIdentifier })
+
+            self.log.info("MLX: reconnect — manifest=\(existing.count) live=\(liveIDs.count)")
+
+            // Orphan recovery: manifest tasks whose URLSession task is gone.
+            var orphanModelIDs: Set<String> = []
+            var orphanTIDs: [Int] = []
+            for (tid, ft) in existing where !liveIDs.contains(tid) {
+                orphanModelIDs.insert(ft.modelID)
+                orphanTIDs.append(tid)
+            }
+            if !orphanTIDs.isEmpty {
+                self.serialMutate {
+                    for tid in orphanTIDs { self.taskMap.removeValue(forKey: tid) }
+                    for modelID in orphanModelIDs { self.jobMap.removeValue(forKey: modelID) }
+                }
+                self.persistState()
+                let err = URLError(
+                    .networkConnectionLost,
+                    userInfo: [NSLocalizedDescriptionKey: "Download was interrupted while the app was stopped."]
+                )
+                for modelID in orphanModelIDs {
+                    self.log.warning("MLX: Orphaned download for '\(modelID, privacy: .public)' — tasks not in nsurlsessiond; notifying failed")
+                    Task { @MainActor [weak self] in self?.onFailed?(modelID, err) }
                 }
             }
+
+            // Unrecognised live tasks: in URLSession but absent from manifest.
+            // Should not happen in normal operation — log and leave to time out.
+            var resumed = 0
+            for task in downloadTasks {
+                guard let ft = existing[task.taskIdentifier] else {
+                    self.log.notice("MLX: Unrecognised live task \(task.taskIdentifier) — no manifest entry, leaving to time out")
+                    continue
+                }
+                self.log.info("MLX: Resumed task \(task.taskIdentifier) ('\(ft.rfilename, privacy: .public)') for '\(ft.modelID, privacy: .public)'")
+                Task { @MainActor [weak self] in self?.activeDownloads.insert(ft.modelID) }
+                resumed += 1
+            }
+            self.log.info("MLX: reconnect complete — orphans=\(orphanModelIDs.count) resumed=\(resumed)")
         }
     }
 
@@ -252,33 +304,27 @@ final class MLXBackgroundDownloader: NSObject, ObservableObject, BackgroundDownl
 
     /// Cancels all in-flight file downloads for `modelID`.
     func cancelDownload(modelID: String) {
-        // Run map cleanup under the serial queue. We don't actually
-        // need the URLSessionTask handles here — the next block fetches
-        // them via `getTasksWithCompletionHandler` (calling URLSession
-        // from inside the serial queue would risk a deadlock).
-        serialQueue.sync {
-            var ids: [Int] = []
-            for (tid, ft) in taskMap where ft.modelID == modelID {
-                ids.append(tid)
-            }
+        // Capture task IDs BEFORE clearing the map — if we cleared first,
+        // the getAllTasks callback would find taskMap empty and cancel nothing.
+        let idsToCancel: Set<Int> = serialMutate {
+            let ids = Set(taskMap.filter { $0.value.modelID == modelID }.keys)
             for id in ids { taskMap.removeValue(forKey: id) }
             jobMap.removeValue(forKey: modelID)
-        }
-        session.getTasksWithCompletionHandler { [weak self] _, _, downloadTasks in
-            guard let self else { return }
-            for task in downloadTasks {
-                let belongs = self.serialQueue.sync {
-                    self.taskMap[task.taskIdentifier]?.modelID == modelID
-                }
-                if belongs { task.cancel() }
-            }
+            return ids
         }
         persistState()
+        if !idsToCancel.isEmpty {
+            session.getAllTasks { tasks in
+                for task in tasks where idsToCancel.contains(task.taskIdentifier) {
+                    task.cancel()
+                }
+            }
+        }
         Task { @MainActor [weak self] in
             self?.activeDownloads.remove(modelID)
             self?.downloadProgress.removeValue(forKey: modelID)
         }
-        log.info("MLX: Cancelled download for '\(modelID, privacy: .public)'")
+        log.info("MLX: Cancelled \(idsToCancel.count) tasks for '\(modelID, privacy: .public)'")
     }
 
     /// Called by `AppDelegate` when the system wakes the app for this session.
@@ -289,30 +335,49 @@ final class MLXBackgroundDownloader: NSObject, ObservableObject, BackgroundDownl
     // MARK: - Persistence
 
     private func persistState() {
-        let (tasks, jobs) = serialQueue.sync { (taskMap, jobMap) }
-        let encoder = JSONEncoder()
-        if let taskData = try? encoder.encode(tasks.mapKeys { String($0) }) {
-            UserDefaults.standard.set(taskData, forKey: Self.udTaskMapKey)
-        }
-        if let jobData = try? encoder.encode(jobs) {
-            UserDefaults.standard.set(jobData, forKey: Self.udJobMapKey)
-        }
+        let (tasks, jobs) = serialRead { (taskMap, jobMap) }
+        store.save(MLXManifest(
+            version: MLXManifest.currentVersion,
+            tasks: tasks.mapKeys { String($0) },
+            jobs: jobs
+        ))
     }
 
     private func restorePersistedState() {
-        let decoder = JSONDecoder()
-        if let taskData = UserDefaults.standard.data(forKey: Self.udTaskMapKey),
-           let decoded = try? decoder.decode([String: MLXFileTask].self, from: taskData) {
-            let intKeyed = Dictionary(uniqueKeysWithValues: decoded.compactMap { k, v -> (Int, MLXFileTask)? in
-                guard let i = Int(k) else { return nil }
-                return (i, v)
-            })
-            serialQueue.sync { taskMap = intKeyed }
+        let ud = UserDefaults.standard
+        // One-time migration from UserDefaults persistence.
+        if ud.data(forKey: Self.legacyUDTaskKey) != nil || ud.data(forKey: Self.legacyUDJobKey) != nil {
+            let decoder = JSONDecoder()
+            if let taskData = ud.data(forKey: Self.legacyUDTaskKey),
+               let decoded = try? decoder.decode([String: MLXFileTask].self, from: taskData) {
+                let intKeyed = Dictionary(uniqueKeysWithValues: decoded.compactMap { k, v -> (Int, MLXFileTask)? in
+                    guard let i = Int(k) else { return nil }
+                    return (i, v)
+                })
+                serialMutate { taskMap = intKeyed }
+            }
+            if let jobData = ud.data(forKey: Self.legacyUDJobKey),
+               let decoded = try? decoder.decode([String: MLXDownloadJob].self, from: jobData) {
+                serialMutate { jobMap = decoded }
+            }
+            ud.removeObject(forKey: Self.legacyUDTaskKey)
+            ud.removeObject(forKey: Self.legacyUDJobKey)
+            let count = serialRead { taskMap.count }
+            log.info("MLX: Migrated \(count) tasks from UserDefaults to manifest")
+            persistState()
+            return
         }
-        if let jobData = UserDefaults.standard.data(forKey: Self.udJobMapKey),
-           let decoded = try? decoder.decode([String: MLXDownloadJob].self, from: jobData) {
-            serialQueue.sync { jobMap = decoded }
+
+        guard let manifest = store.load() else { return }
+        let intKeyed = Dictionary(uniqueKeysWithValues: manifest.tasks.compactMap { k, v -> (Int, MLXFileTask)? in
+            guard let i = Int(k) else { return nil }
+            return (i, v)
+        })
+        serialMutate {
+            taskMap = intKeyed
+            jobMap = manifest.jobs
         }
+        log.info("MLX: Restored \(intKeyed.count) tasks from manifest v\(manifest.version)")
     }
 }
 
@@ -402,7 +467,7 @@ extension MLXBackgroundDownloader: URLSessionDownloadDelegate {
             if FileManager.default.fileExists(atPath: dest.path) {
                 try FileManager.default.removeItem(at: dest)
             }
-            try FileManager.default.copyItem(at: location, to: dest)
+            try FileManager.default.moveItem(at: location, to: dest)
         } catch {
             log.error("MLX: File move failed for '\(fileTask.rfilename, privacy: .public)': \(error.localizedDescription, privacy: .public)")
             handleFileFailure(fileTask: fileTask, error: error)
@@ -468,6 +533,7 @@ extension MLXBackgroundDownloader: URLSessionDownloadDelegate {
             systemCompletionHandler = nil
             return h
         }
+        log.info("MLX: Background session finished delivering events; calling system completion handler: \(handler != nil)")
         DispatchQueue.main.async { handler?() }
     }
 
