@@ -358,6 +358,7 @@ private struct ModelBrowserRow: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Button("Download") { onDownload() }
                         .buttonStyle(HHSecondaryButtonStyle())
+                        .disabled(!item.actions.canDownload)
                         .accessibilityIdentifier("mlx_download_button")
                     Text("Background transfer · \(model.sizeFormatted) · tap Load after")
                         .font(HHTheme.caption)
@@ -367,6 +368,7 @@ private struct ModelBrowserRow: View {
                 HStack(spacing: HHTheme.spaceS) {
                     Button(item.hasResumeData ? "Resume" : "Download", action: onDownload)
                         .buttonStyle(HHSecondaryButtonStyle())
+                        .disabled(!item.actions.canDownload)
                     if item.hasResumeData {
                         Label("Paused", systemImage: "pause.circle.fill")
                             .font(HHTheme.caption)
@@ -422,6 +424,7 @@ private struct ModelBrowserRow: View {
                     HStack(spacing: HHTheme.spaceS) {
                         Button("Load", action: onLoad)
                             .buttonStyle(HHSecondaryButtonStyle())
+                            .disabled(!item.actions.canLoad)
                             .accessibilityIdentifier("mlx_load_button")
                         Spacer()
                         sizeLabel
@@ -453,6 +456,7 @@ private struct ModelBrowserRow: View {
                 HStack(spacing: HHTheme.spaceS) {
                     Button("Unload", action: onUnload)
                         .buttonStyle(HHSecondaryButtonStyle())
+                        .disabled(!item.actions.canUnload)
                         .accessibilityIdentifier("mlx_unload_button")
                     Label("Active", systemImage: "bolt.fill")
                         .font(HHTheme.caption)
@@ -484,6 +488,7 @@ private struct ModelBrowserRow: View {
                         model.format == .mlx ? onLoad() : onDownload()
                     }
                     .buttonStyle(HHSecondaryButtonStyle())
+                    .disabled(model.format == .mlx ? !item.actions.canLoad : !item.actions.canDownload)
                     deleteButton
                 }
             }
@@ -498,6 +503,7 @@ private struct ModelBrowserRow: View {
                 HStack(spacing: HHTheme.spaceS) {
                     Button("Retry", action: onLoad)
                         .buttonStyle(HHSecondaryButtonStyle())
+                        .disabled(!item.actions.canLoad)
                         .accessibilityIdentifier("mlx_retry_button")
                     Spacer()
                     sizeLabel

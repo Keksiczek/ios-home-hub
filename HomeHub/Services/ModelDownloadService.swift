@@ -521,6 +521,11 @@ final class ModelDownloadService: ObservableObject {
         }
 
         catalog.setInstallState(.installed(localURL: localURL), for: modelID)
+        // Read GGUF header now while the file is fresh on disk and the user
+        // is already waiting on the install spinner — pushes the parse cost
+        // off the first chat send. Non-GGUF formats no-op inside the catalog
+        // helper. The parse is O(header), bounded at ~1 MB by the reader.
+        catalog.cacheGGUFMetadata(for: modelID, fileURL: localURL)
         active[modelID] = nil
         tasks[modelID] = nil
         log.info("Model '\(modelID, privacy: .public)' installed at \(localURL.path, privacy: .public)")

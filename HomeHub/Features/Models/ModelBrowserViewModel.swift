@@ -55,6 +55,23 @@ struct ModelBrowserItem: Identifiable, Equatable {
     let hasResumeData: Bool
     /// Non-nil while an MLX model is loading weights into memory for this row.
     let mlxLoadProgress: MLXLoadProgress?
+    /// Whether each affordance should be enabled. Computed in
+    /// `ModelBrowserViewModel.recompute()` from the combined download +
+    /// runtime state so the view layer doesn't have to re-derive it.
+    let actions: Actions
+
+    struct Actions: Equatable {
+        /// Download / Resume button. Disabled when a transport is already
+        /// in flight or the file is already on disk.
+        let canDownload: Bool
+        /// Load button. Disabled when another model is loading / unloading
+        /// (the runtime serialises load operations) or when this model is
+        /// already the active one.
+        let canLoad: Bool
+        /// Unload button. Disabled unless this exact model is the active
+        /// runtime model in a stable (.ready) state.
+        let canUnload: Bool
+    }
 }
 
 // MARK: - ModelBrowserSection
@@ -197,11 +214,18 @@ final class ModelBrowserViewModel: ObservableObject {
                 unloadingID:     unloadingID,
                 activeDownloads: activeDownloads
             )
+            let actions = computeActions(
+                model:          model,
+                status:         status,
+                runtimeState:   runtimeState,
+                activeModelID:  activeModelID
+            )
             let item = ModelBrowserItem(
                 model:           model,
                 status:          status,
                 hasResumeData:   downloads.hasResumeData(for: model.id),
-                mlxLoadProgress: mlxProgress?.modelID == model.id ? mlxProgress : nil
+                mlxLoadProgress: mlxProgress?.modelID == model.id ? mlxProgress : nil,
+                actions:         actions
             )
             if case .notInstalled = status { available.append(item) }
             else                           { onDevice.append(item) }
@@ -211,6 +235,70 @@ final class ModelBrowserViewModel: ObservableObject {
         if !onDevice.isEmpty  { result.append(.init(kind: .onDevice,  items: onDevice)) }
         if !available.isEmpty { result.append(.init(kind: .available, items: available)) }
         return result
+    }
+
+    /// Single place that decides which affordances each row can offer.
+    /// Mirrors the runtime serialisation invariant in `RuntimeManager`:
+    /// only one load or unload may be in flight at a time, so while any
+    /// model is `.loading` or `.unloading` every other row's Load button
+    /// is disabled.
+    private func computeActions(
+        model:         LocalModel,
+        status:        ModelBrowserStatus,
+        runtimeState:  RuntimeManager.State,
+        activeModelID: String?
+    ) -> ModelBrowserItem.Actions {
+        // Build-time gate: if the backend isn't linked, nothing applies.
+        guard model.isUsableInThisBuild else {
+            return .init(canDownload: false, canLoad: false, canUnload: false)
+        }
+
+        // Runtime-level serialisation: if anything is loading or unloading
+        // anywhere, no row may start a new load.
+        let runtimeBusy: Bool = {
+            switch runtimeState {
+            case .loading, .unloading: return true
+            default:                   return false
+            }
+        }()
+
+        // Download enablement: only when the file is absent AND no transport
+        // is already in-flight for this model. Failure rows present "Retry"
+        // through the same affordance, so we keep that path enabled.
+        let canDownload: Bool = {
+            switch status {
+            case .notInstalled, .downloadFailed:
+                return !DownloadManager.shared.isActive(model.id)
+            default:
+                return false
+            }
+        }()
+
+        // Load enablement: installed, no other operation in flight, and not
+        // already the active model. `.loadFailed` is allowed so the Retry
+        // button can route through onLoad.
+        let canLoad: Bool = {
+            switch status {
+            case .installed, .loadFailed:
+                return !runtimeBusy && activeModelID != model.id
+            default:
+                return false
+            }
+        }()
+
+        // Unload enablement: only when THIS model is the active runtime
+        // model and the state machine is stable (no concurrent load /
+        // unload). The runtime would otherwise queue and serialise, but
+        // a disabled button is clearer to the user than a queued one.
+        let canUnload: Bool = {
+            guard activeModelID == model.id else { return false }
+            switch runtimeState {
+            case .ready: return true
+            default:     return false
+            }
+        }()
+
+        return .init(canDownload: canDownload, canLoad: canLoad, canUnload: canUnload)
     }
 
     private func computeStatus(

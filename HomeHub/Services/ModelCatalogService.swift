@@ -12,6 +12,16 @@ import SwiftUI
 final class ModelCatalogService: ObservableObject {
     @Published private(set) var models: [LocalModel]
 
+    /// Per-model GGUF header snapshot. Populated on:
+    ///   1. successful GGUF install (post-finalize in ModelDownloadService), and
+    ///   2. disk reconcile at app launch (so an already-installed GGUF picks up
+    ///      its metadata even though no install event fires).
+    ///
+    /// Read by the runtime to choose chat-template source + effective context
+    /// length, and by `ModelInfoSheet` to surface metadata to the user.
+    /// Missing entries are normal — callers fall back to catalog defaults.
+    @Published private(set) var ggufMetadata: [String: GGUFModelMetadata] = [:]
+
     init(models: [LocalModel] = ModelCatalog.curated) {
         let memoryProfile = DeviceMemoryProvider.shared.profile
         // Adjust all models' context windows to device memory tier.
@@ -43,6 +53,41 @@ final class ModelCatalogService: ObservableObject {
     func setInstallState(_ state: ModelInstallState, for modelID: String) {
         guard let idx = models.firstIndex(where: { $0.id == modelID }) else { return }
         models[idx].installState = state
+    }
+
+    // MARK: - GGUF metadata cache
+
+    /// Reads + caches the header for a freshly-installed GGUF file. No-op
+    /// for non-GGUF formats (MLX models get their metadata from the
+    /// tokenizer snapshot at load time, not here). Safe to call repeatedly:
+    /// re-reads the same file and overwrites the cache entry.
+    func cacheGGUFMetadata(for modelID: String, fileURL: URL) {
+        guard let model = model(withID: modelID), model.format == .gguf else { return }
+        if let meta = GGUFModelMetadata.read(at: fileURL) {
+            ggufMetadata[modelID] = meta
+        } else {
+            // Failure already logged inside GGUFModelMetadata.read — drop
+            // any stale entry so the UI doesn't report old metadata for a
+            // file the user just re-downloaded.
+            ggufMetadata.removeValue(forKey: modelID)
+        }
+    }
+
+    /// Returns the cached metadata if known.
+    func metadata(for modelID: String) -> GGUFModelMetadata? {
+        ggufMetadata[modelID]
+    }
+
+    /// Catalog-aware effective context length for `modelID`.
+    /// Picks the smaller of the catalog's per-device-adjusted value and
+    /// the model's declared native context (when known) so the runtime
+    /// never exceeds either bound.
+    func effectiveContextLength(for modelID: String) -> Int {
+        guard let model = model(withID: modelID) else { return 2048 }
+        if let metaCtx = ggufMetadata[modelID]?.contextLength {
+            return min(model.contextLength, metaCtx)
+        }
+        return model.contextLength
     }
 
     var recommendedStarter: LocalModel {
@@ -183,6 +228,12 @@ final class ModelCatalogService: ObservableObject {
                 if installedGGUF.contains(model.id) {
                     let localURL = await localModels.localURL(for: model.id)
                     models[idx].installState = .installed(localURL: localURL)
+                    // Pre-warm the metadata cache so the first model load doesn't
+                    // pay the header parse on the @MainActor and the Model Info
+                    // sheet has real values to show before any load is attempted.
+                    if ggufMetadata[model.id] == nil {
+                        cacheGGUFMetadata(for: model.id, fileURL: localURL)
+                    }
                 } else {
                     // File gone or invalid — ensure state is consistent.
                     if model.installState != .notInstalled {

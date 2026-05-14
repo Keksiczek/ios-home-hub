@@ -181,6 +181,14 @@ final class AppContainer: ObservableObject {
             conversations: conversations,
             knowledgeBase: knowledgeBaseService
         )
+
+        // Plumb the GGUF metadata cache into the runtime so per-load logs
+        // can name the template source and effective context. Weak capture
+        // because RuntimeManager outlives single bootstraps and we don't
+        // want a retain loop through the container.
+        runtimeManager.ggufMetadataProvider = { [weak catalog] modelID in
+            catalog?.metadata(for: modelID)
+        }
     }
 
     // MARK: - Spotlight subscriptions
@@ -279,6 +287,20 @@ final class AppContainer: ObservableObject {
         async let onboardLoad: Void = onboardingService.load()
         async let convLoad:    Void = conversationService.load()
         _ = await (settingsLoad, personLoad, memoryLoad, onboardLoad, convLoad)
+
+        // Sync the chosen performance profile into the runtime once
+        // settings have actually loaded from disk, then keep it in sync
+        // for the rest of the session. Live edits in Settings publish
+        // through `settings.$current` and the sink pushes a new factor
+        // into the runtime; the next `load()` picks it up automatically.
+        runtimeManager.performanceProfile = settingsService.current.performanceProfile
+        settingsService.$current
+            .map(\.performanceProfile)
+            .removeDuplicates()
+            .sink { [weak runtimeManager] profile in
+                runtimeManager?.performanceProfile = profile
+            }
+            .store(in: &spotlightCancellables)   // re-use the existing cancellables bag
 
         // WebSearch is the one tool that's NOT registered by default in
         // `SkillManager.init` — it needs explicit user consent, and the
@@ -581,6 +603,16 @@ final class AppContainer: ObservableObject {
         container.modelDownloadService.onModelInstalled = { [weak container] model in
             await container?.autoActivateAfterInstall(model)
         }
+
+        // Plumb the GGUF metadata cache into the llama.cpp runtime so it
+        // can read architecture-driven chat templates + native context
+        // limits the same way `RuntimeManager` already does for logging.
+        #if HOMEHUB_LLAMA_RUNTIME
+        llama.ggufMetadataProvider = { [weak container] modelID in
+            container?.modelCatalogService.metadata(for: modelID)
+        }
+        #endif
+
         return container
     }
 

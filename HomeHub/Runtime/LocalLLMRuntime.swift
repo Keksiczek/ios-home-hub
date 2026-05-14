@@ -90,6 +90,15 @@ protocol LocalLLMRuntime: AnyObject, Sendable {
     /// Removes any cached state or session for the given conversation.
     /// No-op if the runtime doesn't support session persistence.
     func invalidateSession(for conversationID: UUID) async
+
+    /// Most recent user-facing generation failure, or `nil` if the last
+    /// generation succeeded (or nothing has run yet). Backend-agnostic
+    /// surface consumed by `ModelInfoSheet` and `DeveloperDiagnostics`.
+    var lastGenerationError: GenerationFailure? { get }
+
+    /// Rolling-average tokens/sec for `modelID`, or `nil` if the runtime
+    /// doesn't track throughput. Read by diagnostics only.
+    func averageThroughput(for modelID: String) -> (tps: Double, samples: Int)?
 }
 
 // MARK: - Default implementations
@@ -116,6 +125,13 @@ extension LocalLLMRuntime {
 
     /// Default: no-op.
     func invalidateSession(for conversationID: UUID) async {}
+
+    /// Default: runtime does not record failures. Concrete runtimes
+    /// (MLX, llama.cpp) override.
+    var lastGenerationError: GenerationFailure? { nil }
+
+    /// Default: no throughput tracking. Concrete runtimes override.
+    func averageThroughput(for modelID: String) -> (tps: Double, samples: Int)? { nil }
 }
 
 // MARK: - Supporting types
@@ -163,6 +179,28 @@ struct RuntimeParameters: Sendable {
     /// Conversation the generation belongs to.
     /// When set, `LlamaCppRuntime` attempts KV-cache prefix reuse across turns.
     var conversationID: UUID?
+
+    /// When `true`, the runtime MUST rebuild generation state from scratch
+    /// (a fresh `ChatSession` for MLX, no `llama_kv_cache_clear` skip for
+    /// llama.cpp) rather than reusing a cached prefix. Use this to bypass
+    /// the entire KV-cache reuse logic when:
+    ///   - Investigating multi-turn "garbage output" regressions, or
+    ///   - The caller wants a single-turn-style inference that's known to
+    ///     be insulated from any formatting discrepancy in the history
+    ///     (the "stateless pipeline" from the architectural blueprint).
+    ///
+    /// **Interaction with `ChatTemplate`:** stateless mode does not change
+    /// templating. The MLX path still passes `prompt.messages.dropLast()`
+    /// as the session history; we just construct a brand-new session for
+    /// every turn instead of reusing the one keyed on `conversationID`.
+    /// The llama.cpp path uses the same `ChatTemplate.render` output it
+    /// always does — the only difference is that the cached prefix
+    /// comparison in `LlamaRuntimeActor` is short-circuited to "no match".
+    ///
+    /// Default `false` — current behaviour. No UI toggle yet; flip in
+    /// code or via `RuntimeParameters(.balanced + forceStateless: true)`
+    /// for experiments.
+    var forceStateless: Bool = false
 
     static let balanced = RuntimeParameters(
         maxTokens: 768,

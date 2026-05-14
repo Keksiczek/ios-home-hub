@@ -17,13 +17,67 @@ import Foundation
 /// ChatML so the mock runtime and tests work without changes.
 enum ChatTemplate {
 
+    /// Source of the chat template chosen for a render call. Surfaced in
+    /// logs / DeveloperDiagnostics so multi-turn issues can be traced to
+    /// the family selection step rather than the runtime itself.
+    enum Source: Equatable {
+        /// `model.family` from the curated catalog selected the family.
+        case catalogFamily(String)
+        /// `metadata.architecture` from the GGUF header overrode the catalog.
+        /// Carries the architecture key (e.g. "llama", "qwen2", "gemma") that
+        /// drove the dispatch.
+        case ggufArchitecture(String)
+        /// No usable family — fell back to the ChatML default.
+        case chatMLFallback
+    }
+
     static func render(_ prompt: RuntimePrompt, family: String = "") -> String {
-        switch family.lowercased() {
-        case "llama":   return renderLlama3(prompt)
-        case "gemma3":  return renderGemma3(prompt)
-        case "gemma2":  return renderGemma2(prompt)
-        default:        return renderChatML(prompt)
+        render(prompt, family: family, metadata: nil).rendered
+    }
+
+    /// Extended render path that consults GGUF header metadata before
+    /// falling back to the catalog `family` string. Returns both the
+    /// rendered text and the `Source` so callers can log which path was
+    /// taken without re-deriving the answer.
+    ///
+    /// **Why architecture wins over family**: the catalog `family` field
+    /// is a human-curated string that can drift from reality (e.g. a
+    /// "Llama" entry that actually points at a Qwen-2.5 GGUF). The GGUF
+    /// `general.architecture` value is written by the model author and
+    /// is the authoritative identifier of which template the model
+    /// expects. We still keep `family` as a fallback because not every
+    /// GGUF ships metadata and the MLX path doesn't go through here at all.
+    static func render(
+        _ prompt: RuntimePrompt,
+        family: String,
+        metadata: GGUFModelMetadata?
+    ) -> (rendered: String, source: Source) {
+        if let arch = metadata?.architecture?.lowercased(), !arch.isEmpty {
+            let rendered: String
+            switch arch {
+            case "llama":           rendered = renderLlama3(prompt)
+            case "gemma3", "gemma": rendered = renderGemma3(prompt)
+            case "gemma2":          rendered = renderGemma2(prompt)
+            case "qwen2", "qwen3", "phi3", "phi2":
+                rendered = renderChatML(prompt)
+            default:
+                // Unknown architecture — still record the value we saw so
+                // the diagnostics surface can explain *why* we picked
+                // ChatML over the catalog hint.
+                return (renderChatML(prompt), .ggufArchitecture(arch))
+            }
+            return (rendered, .ggufArchitecture(arch))
         }
+        let key = family.lowercased()
+        let rendered: String
+        switch key {
+        case "llama":   rendered = renderLlama3(prompt)
+        case "gemma3":  rendered = renderGemma3(prompt)
+        case "gemma2":  rendered = renderGemma2(prompt)
+        default:
+            return (renderChatML(prompt), key.isEmpty ? .chatMLFallback : .catalogFamily(key))
+        }
+        return (rendered, .catalogFamily(key))
     }
 
     // MARK: - ChatML  (Qwen 2.x, Phi 3.x)

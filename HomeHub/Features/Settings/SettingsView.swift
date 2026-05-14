@@ -379,6 +379,25 @@ struct SettingsView: View {
 
     private var generationSection: some View {
         Section {
+            // Performance profile — drives the memory safety factor that
+            // gates model loads (`RuntimeManager.memorySafetyFactor(for:)`).
+            // Kept at the top of the section so users see the global lever
+            // before the fine-grained sampler knobs.
+            VStack(alignment: .leading, spacing: 4) {
+                Picker("Performance profile", selection: Binding(
+                    get: { settings.current.performanceProfile },
+                    set: { newValue in Task { await settings.set(\.performanceProfile, to: newValue) } }
+                )) {
+                    ForEach(PerformanceProfile.allCases) { profile in
+                        Text(profile.label).tag(profile)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Text(settings.current.performanceProfile.blurb)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Toggle("Stream responses", isOn: Binding(
                 get: { settings.current.streamingEnabled },
                 set: { newValue in Task { await settings.set(\.streamingEnabled, to: newValue) } }

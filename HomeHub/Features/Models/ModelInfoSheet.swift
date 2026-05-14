@@ -12,6 +12,7 @@ struct ModelInfoSheet: View {
 
     @EnvironmentObject private var downloads: ModelDownloadService
     @EnvironmentObject private var runtime:   RuntimeManager
+    @EnvironmentObject private var catalog:   ModelCatalogService
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -26,6 +27,7 @@ struct ModelInfoSheet: View {
                 Section("Runtime") {
                     row("Backend", model.backend.displayName)
                     row("Format",  model.format.rawValue)
+                    row("Safe mode", safeModeLabel)
                     if !model.isUsableInThisBuild, let reason = model.unavailableReason {
                         Label(reason, systemImage: "exclamationmark.triangle.fill")
                             .font(.caption)
@@ -35,6 +37,16 @@ struct ModelInfoSheet: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+                    // Surface the most recent generation failure (if any
+                    // and if it belongs to *this* model). Keeps the error
+                    // visible without forcing the user back into chat.
+                    if let failure = runtime.lastGenerationError,
+                       failure.modelID == model.id {
+                        Label(failure.message, systemImage: "exclamationmark.bubble.fill")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                            .textSelection(.enabled)
+                    }
                 }
 
                 // ── Identity ─────────────────────────────────────────────────
@@ -43,6 +55,9 @@ struct ModelInfoSheet: View {
                     row("Parameters",   model.parameterCount)
                     row("Quantization", model.quantization)
                 }
+
+                // ── Model metadata (from GGUF header when available) ─────────
+                modelMetadataSection
 
                 // ── Requirements ─────────────────────────────────────────────
                 Section("Requirements") {
@@ -72,6 +87,75 @@ struct ModelInfoSheet: View {
                     Button("Done") { dismiss() }
                 }
             }
+        }
+    }
+
+    // MARK: - Hardware cue
+
+    /// Compact "ON (A14)" / "OFF" style label so the row reads at a
+    /// glance. Pulls straight from `HardwareCapabilities` — that's the
+    /// single source of truth for the safe-attention decision.
+    private var safeModeLabel: String {
+        let hw = HardwareCapabilities.shared
+        return hw.safeAttentionMode ? "ON (\(hw.soc.label))" : "OFF"
+    }
+
+    // MARK: - Model metadata
+
+    /// Surfaces the small subset of GGUF header fields we cache plus the
+    /// resolved "what will the runtime actually use" values. MLX models
+    /// don't go through this cache (their template comes from the
+    /// tokenizer snapshot inside `MLXLLM.ChatSession`) so we render a
+    /// dedicated note instead of pretending we have data.
+    @ViewBuilder
+    private var modelMetadataSection: some View {
+        let meta = catalog.metadata(for: model.id)
+        Section("Model metadata") {
+            switch model.format {
+            case .mlx:
+                LabeledContent("Architecture", value: model.family)
+                LabeledContent("Context window", value: "\(model.contextLength) tokens")
+                LabeledContent("Template source", value: "Tokenizer snapshot (MLX)")
+                Text("MLX models load their chat template from the tokenizer snapshot at load time. The runtime always uses the model's own template — no built-in fallback.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+            case .gguf:
+                if let meta {
+                    LabeledContent("Architecture", value: meta.architecture ?? "unknown")
+                    LabeledContent("Context window", value: contextLabel(for: meta))
+                    LabeledContent("Template source", value: templateSourceLabel(meta.templateSource))
+                    if let metaName = meta.displayName, metaName != model.displayName {
+                        LabeledContent("Embedded name", value: metaName)
+                    }
+                } else if case .notInstalled = model.installState {
+                    Text("Metadata is read from the GGUF header after download.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("Metadata is not available — either the GGUF header could not be parsed or the cache hasn't been populated yet. Re-installing the model rebuilds it.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private func contextLabel(for meta: GGUFModelMetadata) -> String {
+        if let metaCtx = meta.contextLength {
+            let effective = min(model.contextLength, metaCtx)
+            if effective == metaCtx {
+                return "\(effective) tokens (model native)"
+            }
+            return "\(effective) tokens (limited from \(metaCtx))"
+        }
+        return "\(model.contextLength) tokens (catalog)"
+    }
+
+    private func templateSourceLabel(_ source: GGUFModelMetadata.TemplateSource) -> String {
+        switch source {
+        case .gguf:    return "From GGUF metadata"
+        case .builtIn: return "Built-in (family: \(model.family))"
         }
     }
 
