@@ -99,6 +99,40 @@ final class LlamaCppRuntime: LocalLLMRuntime, @unchecked Sendable {
     /// Default: `.onBackgroundOrMemoryPressure`.
     var unloadPolicy: UnloadPolicy = .manual  // Keep model loaded
 
+    // MARK: - Metadata provider
+
+    /// Optional hook injected by `AppContainer` so the llama.cpp runtime
+    /// can consult the GGUF metadata cache for:
+    ///   - architecture-driven `ChatTemplate` family override
+    ///   - native context-length clamp at load time
+    /// Mirrors `RuntimeManager.ggufMetadataProvider`. Stays optional so
+    /// previews / tests don't need the full graph.
+    ///
+    /// The provider is invoked **only from `load()`** which runs on the
+    /// main actor via `RuntimeManager`. The result is snapshotted into
+    /// `_loadedMetadata` so the detached generation Task never reaches
+    /// back across an actor boundary.
+    var ggufMetadataProvider: (@MainActor (String) -> GGUFModelMetadata?)?
+
+    /// Per-load snapshot of the metadata applicable to `_loadedModel`.
+    /// Set by `load()`, cleared by `unload()`. Read by the detached
+    /// generation Task without locking — write happens before any
+    /// generate() call can borrow the context and the field is
+    /// effectively immutable for the lifetime of one load.
+    private var _loadedMetadata: GGUFModelMetadata?
+
+    // MARK: - Last error
+
+    /// User-facing snapshot of the last failed generation. Surfaced in
+    /// Model Info + DeveloperDiagnostics. Cleared on the next successful
+    /// generation. Stored as a single atomic-ish field — only written from
+    /// the generation Task, only read from the @MainActor.
+    private let errorLock = NSLock()
+    private var _lastGenerationError: GenerationFailure?
+    var lastGenerationError: GenerationFailure? {
+        errorLock.withLock { _lastGenerationError }
+    }
+
     // MARK: - State
 
     /// Owns the C++ context and model info; serialises all mutations.
@@ -127,9 +161,38 @@ final class LlamaCppRuntime: LocalLLMRuntime, @unchecked Sendable {
         // ~10 bytes and won't have the GGUF magic header.
         try Self.validateGGUFFile(at: url)
 
+        // GGUF-metadata-aware context clamp. The catalog stores a
+        // per-device-tuned `contextLength` (e.g. 2048 on iPhone for safety),
+        // and the GGUF header advertises the model's *trained* context
+        // (e.g. 32 k for Qwen). We pick the smaller — never widen the
+        // catalog hint past what the device can hold, never feed the C++
+        // bridge a value past what the model was trained for.
+        // load() is invoked from RuntimeManager which is @MainActor;
+        // it's safe to call the @MainActor closure here directly.
+        let metadata: GGUFModelMetadata? = await MainActor.run {
+            ggufMetadataProvider?(model.id)
+        }
+        _loadedMetadata = metadata
+        let effectiveContextLength: Int = {
+            if let nativeCtx = metadata?.contextLength, nativeCtx > 0 {
+                return min(model.contextLength, nativeCtx)
+            }
+            return model.contextLength
+        }()
+
+        if let arch = metadata?.architecture {
+            log.info("llama.cpp load: backend=llama.cpp modelID=\(model.id, privacy: .public) arch=\(arch, privacy: .public) ctx=\(effectiveContextLength) (catalog=\(model.contextLength) metadata=\(metadata?.contextLength ?? -1))")
+        } else {
+            log.info("llama.cpp load: backend=llama.cpp modelID=\(model.id, privacy: .public) ctx=\(effectiveContextLength) (catalog only; no GGUF metadata available)")
+        }
+
         let started = Date()
         do {
-            try await runtimeActor.load(model: model, path: url.path)
+            try await runtimeActor.load(
+                model: model,
+                path: url.path,
+                contextLength: effectiveContextLength
+            )
         } catch let runtimeError as RuntimeError {
             throw runtimeError
         } catch {
@@ -142,10 +205,7 @@ final class LlamaCppRuntime: LocalLLMRuntime, @unchecked Sendable {
         let handle = ModelHandle(from: model)
 
         await telemetry.emit(.modelLoaded(handle: handle, durationMs: loadMs))
-        log.info("Model loaded: '\(model.displayName, privacy: .public)' in \(loadMs)ms")
-        #if DEBUG
-        print("[LlamaCppRuntime] ✓ '\(model.displayName)' loaded in \(loadMs)ms")
-        #endif
+        log.info("Model loaded: '\(model.displayName, privacy: .public)' in \(loadMs)ms (effective ctx \(effectiveContextLength))")
     }
 
     // MARK: - Unload (protocol)
@@ -173,6 +233,18 @@ final class LlamaCppRuntime: LocalLLMRuntime, @unchecked Sendable {
         let log      = log
         let telemetry = telemetry
         let requestID = UUID()
+        // Snapshot the per-load metadata cache value once. `load()` writes
+        // it under @MainActor before this generate() can be reached, and
+        // `unload()` clears it — both happen *outside* this detached Task,
+        // so the snapshot is effectively immutable for the lifetime of one
+        // generation. We DO NOT call the @MainActor `ggufMetadataProvider`
+        // closure from the detached Task — that would be an actor hop on
+        // a hot path (and also a Sendable violation).
+        let metadata = self._loadedMetadata
+        let setError: @Sendable (GenerationFailure?) -> Void = { [weak self] failure in
+            guard let self else { return }
+            self.errorLock.withLock { self._lastGenerationError = failure }
+        }
 
         return AsyncThrowingStream { continuation in
             let task = Task.detached(priority: .userInitiated) {
@@ -202,9 +274,20 @@ final class LlamaCppRuntime: LocalLLMRuntime, @unchecked Sendable {
                     await telemetry.emit(.generationStarted(requestID: requestID, handle: handle))
                 }
 
-                // Pass the model family so ChatTemplate selects the correct format.
-                // Llama 3.x uses header tokens; Qwen/Phi use ChatML (<|im_start|>).
-                let renderedPrompt = ChatTemplate.render(prompt, family: loadedModel?.family ?? "")
+                // GGUF-metadata-aware template selection. When the header has
+                // `general.architecture`, it overrides the catalog `family`
+                // string — the model author's identifier wins over our
+                // curation. When metadata is absent we fall back to the
+                // catalog family exactly like before.
+                let modelID = loadedModel?.id ?? "(none)"
+                let renderResult = ChatTemplate.render(
+                    prompt,
+                    family: loadedModel?.family ?? "",
+                    metadata: metadata
+                )
+                let renderedPrompt = renderResult.rendered
+                log.debug("llama.cpp generate: backend=llama.cpp modelID=\(modelID, privacy: .public) template=\(String(describing: renderResult.source), privacy: .public)")
+
                 let started = Date()
                 var tokens = 0
                 var firstTokenDate: Date? = nil
@@ -280,25 +363,29 @@ final class LlamaCppRuntime: LocalLLMRuntime, @unchecked Sendable {
                     }
 
                     let stats = Self.makeStats(tokens: tokens, started: started)
+                    // Single-line per-generation summary, aligned with the
+                    // MLX backend so log queries can grep both.
                     log.info(
-                        "Done: \(stats.tokensGenerated) tokens @ \(String(format: "%.1f", stats.tokensPerSecond), privacy: .public) t/s"
+                        "llama.cpp generation: backend=llama.cpp modelID=\(modelID, privacy: .public) tokens=\(stats.tokensGenerated, privacy: .public) durationMs=\(stats.totalDurationMs, privacy: .public) tps=\(String(format: "%.1f", stats.tokensPerSecond), privacy: .public) reason=stop"
                     )
-                    #if DEBUG
-                    print(
-                        "[LlamaCppRuntime] \(stats.tokensGenerated) tokens " +
-                        "@ \(String(format: "%.1f", stats.tokensPerSecond)) t/s " +
-                        "(\(stats.totalDurationMs)ms)"
-                    )
-                    #endif
                     await telemetry.emit(.generationFinished(
                         requestID: requestID, stats: stats, reason: .stop
                     ))
+                    setError(nil)  // clear any prior failure on success
                     continuation.yield(.finished(reason: .stop, stats: stats))
                     continuation.finish()
 
                 } catch is CancellationError {
+                    setError(GenerationFailure.classify(
+                        CancellationError(), modelID: modelID, backend: "llama.cpp"
+                    ))
                     continuation.finish()
                 } catch {
+                    let failure = GenerationFailure.classify(
+                        error, modelID: modelID, backend: "llama.cpp"
+                    )
+                    setError(failure)
+                    log.error("llama.cpp generation: backend=llama.cpp modelID=\(modelID, privacy: .public) failed kind=\(String(describing: failure.kind), privacy: .public) error=\(error.localizedDescription, privacy: .public)")
                     continuation.finish(throwing: error)
                 }
             }
@@ -355,9 +442,11 @@ final class LlamaCppRuntime: LocalLLMRuntime, @unchecked Sendable {
 
         await runtimeActor.unload()
         _loadedModel = nil
+        _loadedMetadata = nil
+        errorLock.withLock { _lastGenerationError = nil }
 
         await telemetry.emit(.modelUnloaded(handle: handle, reason: reason))
-        log.info("Model unloaded. Reason: \(reason.description, privacy: .public)")
+        log.info("llama.cpp runtime unload: backend=llama.cpp modelID=\(currentModel.id, privacy: .public) reason=\(reason.description, privacy: .public)")
     }
 
     private static func makeStats(tokens: Int, started: Date) -> RuntimeStats {

@@ -145,4 +145,19 @@ final class RoutingRuntime: LocalLLMRuntime, @unchecked Sendable {
     func invalidateSession(for conversationID: UUID) async {
         await activeBackend?.invalidateSession(for: conversationID)
     }
+
+    // MARK: - Diagnostics passthroughs
+
+    /// Forwards the active backend's last failure. Returns `nil` while no
+    /// model is loaded — there's nothing to report yet.
+    var lastGenerationError: GenerationFailure? {
+        activeBackend?.lastGenerationError
+    }
+
+    /// Forwards the active backend's throughput sample for `modelID`.
+    /// Returns `nil` when no backend is loaded or when the backend has
+    /// no samples for that model.
+    func averageThroughput(for modelID: String) -> (tps: Double, samples: Int)? {
+        activeBackend?.averageThroughput(for: modelID)
+    }
 }

@@ -35,6 +35,7 @@ struct DeveloperDiagnosticsView: View {
         List {
             runtimeSection
             buildSection
+            hardwareSection
             catalogSection
             activeModelSection
             deviceEventsSection
@@ -89,6 +90,54 @@ struct DeveloperDiagnosticsView: View {
             }
         } header: {
             Text("Build Configuration")
+        }
+    }
+
+    // MARK: - Hardware
+
+    /// Surfaces the SoC family, safe-mode state, and the memory-safety
+    /// factor used by `RuntimeManager.memoryCheck`. This is the panel users
+    /// (and field-debug sessions) check first when a load is rejected or
+    /// generation behaves oddly on older hardware.
+    private var hardwareSection: some View {
+        let hw    = HardwareCapabilities.shared
+        let mem   = DeviceMemoryProvider.shared.profile
+        let cacheBytes = min(mem.mlxGPUCacheLimitBytes, hw.safeGPUCacheLimitBytes)
+        let cacheMB = Int(cacheBytes / 1024 / 1024)
+        let profile = settings.current.performanceProfile
+        let factor  = RuntimeManager.memorySafetyFactor(for: profile)
+        return Section {
+            LabeledContent("SoC", value: hw.soc.label)
+            LabeledContent("Machine ID", value: hw.machineIdentifier)
+                .font(.caption.monospaced())
+            LabeledContent(
+                "Flash Attention",
+                value: hw.flashAttentionEnabled ? "Enabled" : "Disabled (safe mode)"
+            )
+            LabeledContent("MLX GPU cache", value: "\(cacheMB) MB")
+            LabeledContent("Performance profile", value: profile.label)
+            LabeledContent(
+                "Memory safety factor",
+                value: String(format: "×%.2f", factor)
+            )
+            LabeledContent("Memory tier", value: mem.tier.label)
+            if hw.safeAttentionMode {
+                Label(
+                    "Safe-mode is active for this SoC — Flash Attention disabled, GPU cache clamped. Correctness over speed.",
+                    systemImage: "shield.lefthalf.filled"
+                )
+                .font(.caption)
+                .foregroundStyle(.orange)
+            }
+        } header: {
+            Text("Hardware & Safe Mode")
+        } footer: {
+            Text(
+                "Older A-series chips (A11–A14) have documented Metal SDPA " +
+                "regressions. The runtime falls back to safer paths automatically. " +
+                "Memory factor depends on the Performance profile chosen in " +
+                "Settings → Generation Engine; the next load will use this value."
+            )
         }
     }
 
@@ -192,10 +241,37 @@ struct DeveloperDiagnosticsView: View {
                     .font(.caption)
             }
             if let tps = lastThroughput {
-                LabeledContent("Throughput", value: String(format: "%.1f t/s", tps))
+                LabeledContent("Throughput (last)", value: String(format: "%.1f t/s", tps))
             }
             if let dur = lastDurationMs {
                 LabeledContent("Total duration", value: "\(dur) ms")
+            }
+            // Rolling average for the currently-active model — survives
+            // single-generation noise that the "last TTFT / throughput"
+            // row above is susceptible to.
+            if let modelID = runtime.activeModel?.id,
+               let avg = runtime.averageThroughput(for: modelID) {
+                LabeledContent(
+                    "Throughput (avg, n=\(avg.samples))",
+                    value: String(format: "%.1f t/s", avg.tps)
+                )
+            }
+            // Most recent user-facing failure, if any. Surfaced here as
+            // well as on the Model Info sheet so power users debugging
+            // multi-turn issues don't have to leave Settings.
+            if let failure = runtime.lastGenerationError {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Last failure")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text("\(failure.backend) · \(failure.modelID)")
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                    Text(failure.message)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .textSelection(.enabled)
+                }
             }
         } header: {
             Text("Generation Performance")
@@ -203,7 +279,8 @@ struct DeveloperDiagnosticsView: View {
             Text(
                 "TTFT (time-to-first-token) measures prompt evaluation latency. " +
                 "Target: < 4 s on iPhone 15 Pro for a 500-token prompt. " +
-                "Throughput reflects decode speed after the first token."
+                "Throughput reflects decode speed after the first token. " +
+                "Average is a Welford-style rolling mean over completed generations."
             )
         }
     }

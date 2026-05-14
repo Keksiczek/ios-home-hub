@@ -56,6 +56,11 @@ struct AppSettings: Codable, Equatable {
     /// single model pass. Default: 120 s.
     var generationTimeoutSeconds: Int
 
+    /// Trade-off between memory headroom and freedom to load larger models.
+    /// Drives `RuntimeManager.memorySafetyFactor(for:)` on the next load.
+    /// See `PerformanceProfile` for the exact factor mapping.
+    var performanceProfile: PerformanceProfile
+
     static let `default` = AppSettings(
         memoryEnabled: true,
         autoExtractMemory: true,
@@ -78,7 +83,8 @@ struct AppSettings: Codable, Equatable {
         enabledTools: AppSettings.defaultEnabledTools,
         locationHint: "Nymburk, CZ",
         guardrailsConfig: .default,
-        generationTimeoutSeconds: 120
+        generationTimeoutSeconds: 120,
+        performanceProfile: .balanced
     )
 
     /// Tools registered in `SkillManager` by default. Kept in sync with
@@ -103,6 +109,7 @@ struct AppSettings: Codable, Equatable {
         case language, answerLength, enabledTools, locationHint
         case guardrailsConfig
         case generationTimeoutSeconds
+        case performanceProfile
         // Retained only for migration from the previous schema.
         case responseStyle
     }
@@ -129,7 +136,8 @@ struct AppSettings: Codable, Equatable {
         enabledTools: Set<String>,
         locationHint: String,
         guardrailsConfig: GuardrailsConfig = .default,
-        generationTimeoutSeconds: Int = 120
+        generationTimeoutSeconds: Int = 120,
+        performanceProfile: PerformanceProfile = .balanced
     ) {
         self.memoryEnabled = memoryEnabled
         self.autoExtractMemory = autoExtractMemory
@@ -153,6 +161,7 @@ struct AppSettings: Codable, Equatable {
         self.locationHint = locationHint
         self.guardrailsConfig = guardrailsConfig
         self.generationTimeoutSeconds = generationTimeoutSeconds
+        self.performanceProfile = performanceProfile
     }
 
     init(from decoder: Decoder) throws {
@@ -192,6 +201,7 @@ struct AppSettings: Codable, Equatable {
         self.locationHint     = try c.decodeIfPresent(String.self,        forKey: .locationHint)     ?? fallback.locationHint
         self.guardrailsConfig = try c.decodeIfPresent(GuardrailsConfig.self, forKey: .guardrailsConfig) ?? fallback.guardrailsConfig
         self.generationTimeoutSeconds = try c.decodeIfPresent(Int.self, forKey: .generationTimeoutSeconds) ?? fallback.generationTimeoutSeconds
+        self.performanceProfile = try c.decodeIfPresent(PerformanceProfile.self, forKey: .performanceProfile) ?? fallback.performanceProfile
 
         // Migration path for installs that persisted the previous
         // `responseStyle: "leanCI" | "casual"` field. Map leanCI→concise
@@ -233,6 +243,7 @@ struct AppSettings: Codable, Equatable {
         try c.encode(locationHint, forKey: .locationHint)
         try c.encode(guardrailsConfig, forKey: .guardrailsConfig)
         try c.encode(generationTimeoutSeconds, forKey: .generationTimeoutSeconds)
+        try c.encode(performanceProfile, forKey: .performanceProfile)
     }
 
 }
@@ -327,6 +338,40 @@ enum AnswerLength: String, Codable, CaseIterable, Identifiable {
         case .concise:  return "1–3 sentences. No preamble."
         case .balanced: return "A short answer with a line or two of supporting detail."
         case .detailed: return "Full answer with headings and examples where useful."
+        }
+    }
+}
+
+/// Memory-pressure ↔ headroom trade-off chosen by the user. Mapped to a
+/// `memorySafetyFactor` inside `RuntimeManager.memorySafetyFactor(for:)`.
+///
+/// The current safe values are:
+///   - `.conservative` → 1.8× model size required free (rejects more, OOMs less)
+///   - `.balanced`     → 1.5× (the historical default)
+///   - `.aggressive`   → 1.3× (accepts more loads, leaves less headroom)
+///
+/// The factor is consulted on every load attempt and logged, so flipping the
+/// profile is observable in `DeveloperDiagnostics` without a restart.
+enum PerformanceProfile: String, Codable, CaseIterable, Identifiable, Sendable {
+    case conservative
+    case balanced
+    case aggressive
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .conservative: return "Conservative"
+        case .balanced:     return "Balanced"
+        case .aggressive:   return "Aggressive"
+        }
+    }
+
+    var blurb: String {
+        switch self {
+        case .conservative: return "Strict memory headroom. Rejects loads that might OOM. Best on older / 4 GB devices."
+        case .balanced:     return "Default. 1.5× headroom over weights — same as previous builds."
+        case .aggressive:   return "Accept tight loads. Try this only on iPhone 16 Pro / M-series iPad."
         }
     }
 }

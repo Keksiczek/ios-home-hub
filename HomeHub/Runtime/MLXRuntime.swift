@@ -81,6 +81,12 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
     private struct ActiveSession: @unchecked Sendable {
         let conversationID: UUID
         let systemPrompt: String
+        /// Canonical history snapshot: messages *excluding* the in-flight
+        /// user turn. Used as both the seed history for `ChatSession` AND
+        /// the comparison key for "is the cached prefix still valid?".
+        /// Keeping a single canonical form on both sides removes the risk
+        /// of constructing a session from one shape and verifying with
+        /// another.
         var messages: [RuntimeMessage]
         let session: ChatSession
     }
@@ -92,15 +98,56 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
     /// they appear only once per model load rather than on every generation.
     private var hasLoggedSamplerWarnings = false
 
+    // MARK: - Telemetry / diagnostics
+
+    /// Rolling mean tokens-per-second per model ID, weighted Welford-style
+    /// average. Read by `DeveloperDiagnosticsView` for the throughput
+    /// readout. Protected by `sessionLock`.
+    private var tpsAverage: [String: (mean: Double, n: Int)] = [:]
+
+    /// Last generation that failed for a user-actionable reason.
+    /// Surfaced in Model Info + DeveloperDiagnostics. Cleared on the next
+    /// successful generation. Protected by `sessionLock`.
+    private var _lastGenerationError: GenerationFailure?
+
+    /// User-facing snapshot of the last generation failure. Read-only
+    /// from any thread (uses the same lock as the writer).
+    var lastGenerationError: GenerationFailure? {
+        sessionLock.withLock { _lastGenerationError }
+    }
+
+    /// Snapshot the rolling throughput so diagnostics can render it.
+    func averageThroughput(for modelID: String) -> (tps: Double, samples: Int)? {
+        sessionLock.withLock {
+            guard let entry = tpsAverage[modelID], entry.n > 0 else { return nil }
+            return (entry.mean, entry.n)
+        }
+    }
+
     init(loader: any MLXLoader = DefaultMLXLoader()) {
         self.loader = loader
-        // Configure MLX GPU memory cache limit based on device memory tier.
-        // Prevents unbounded GPU buffer accumulation during multi-turn conversations.
-        // Tight devices (iPhone SE): 25 MB — preserve stability above all.
-        // Moderate devices (iPhone 13–15): 50 MB — balance caching + safety.
-        // Generous devices (iPhone 16 Pro, iPad): 128 MB — maximize cache benefit.
-        let cacheLimitBytes = DeviceMemoryProvider.shared.profile.mlxGPUCacheLimitBytes
+        // Configure MLX GPU memory cache limit using the *minimum* of two budgets:
+        //   1. DeviceMemoryProvider — how much RAM the sandbox actually has.
+        //   2. HardwareCapabilities  — how much we trust this SoC's Metal stack.
+        //
+        // The two budgets are orthogonal: an 8 GB iPad Pro M2 (memory-generous,
+        // no SDPA regression) and a 4 GB iPhone 11 (memory-tight, A13 regression)
+        // need very different ceilings. Taking `min` ensures the smaller of the
+        // two constraints always wins.
+        let memoryBudget   = DeviceMemoryProvider.shared.profile.mlxGPUCacheLimitBytes
+        let hardwareBudget = HardwareCapabilities.shared.safeGPUCacheLimitBytes
+        let cacheLimitBytes = min(memoryBudget, hardwareBudget)
         MLX.Memory.cacheLimit = Int(cacheLimitBytes)
+
+        if HardwareCapabilities.shared.safeAttentionMode {
+            // Safe-mode is purely advisory for MLX-Swift today — the framework
+            // does not expose a "disable Flash Attention" toggle. We surface it
+            // via DeveloperDiagnostics + log it here so users on flagged SoCs
+            // can correlate slow / garbled output with the device.
+            log.notice(
+                "MLX: safe-attention mode active for SoC \(HardwareCapabilities.shared.soc.label, privacy: .public) — GPU cache clamped to \(Int(cacheLimitBytes / 1024 / 1024), privacy: .public) MB"
+            )
+        }
     }
 
     // MARK: - LocalLLMRuntime
@@ -208,16 +255,34 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
     }
 
     func unload() async {
-        self.log.info("MLX: Unloading model (manual or policy-driven)")
+        // Snapshot what we're releasing for the structured log line.
+        let droppedModelID = loadedModel?.id ?? "(none)"
+        let hadSession: Bool = sessionLock.withLock { activeSession != nil }
+        let hadContainer: Bool = sessionLock.withLock { container != nil }
+        let safeMode = HardwareCapabilities.shared.safeAttentionMode
+
         sessionLock.withLock {
             activeTask?.cancel()
             activeTask = nil
             activeGenerationID = nil
             isGenerating = false
+            // Dropping `activeSession` first releases the `ChatSession`'s
+            // strong reference to the container; dropping `container`
+            // second lets ARC free the model weights and KV cache buffers
+            // in one wave instead of leaving them anchored by the session.
             activeSession = nil
             container = nil
+            _lastGenerationError = nil
         }
         loadedModel = nil
+
+        // Structured unload log — surfaced in DeveloperDiagnostics.
+        // We don't have a portable "bytes released" API on MLX-Swift, so
+        // we log what we actually called (drop session, drop container)
+        // and the SoC safe-mode flag for post-hoc correlation.
+        self.log.info(
+            "MLX runtime unload: modelID=\(droppedModelID, privacy: .public) safeMode=\(safeMode, privacy: .public) droppedSession=\(hadSession, privacy: .public) droppedContainer=\(hadContainer, privacy: .public)"
+        )
     }
 
     func invalidateSession(for conversationID: UUID) async {
@@ -306,58 +371,77 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                 var hitMaxTokens = false
 
                 if let nativeContainer = self.container as? ModelContainer {
+                    // Build the canonical history once. Both the reuse
+                    // check and the rebuild path consume the same value
+                    // so they cannot drift.
+                    let canonicalHistory = MLXChatInput.history(from: prompt)
+
                     let session: ChatSession = self.sessionLock.withLock {
                         let currentActive = self.activeSession
 
-                        if let existing = currentActive,
-                           existing.conversationID == conversationID,
-                           existing.systemPrompt == prompt.systemPrompt,
-                           prompt.messages.count >= existing.messages.count,
-                           prompt.messages.prefix(existing.messages.count).elementsEqual(existing.messages, by: { $0.content == $1.content && $0.role == $1.role }) {
-                            self.log.debug("MLX: Reusing existing session for \(conversationID, privacy: .public)")
-                            return existing.session
+                        // Decide reuse vs rebuild. Log exactly one line per
+                        // generation so multi-turn issues can be traced to
+                        // the specific mismatch reason.
+                        let discardReason: String?
+                        if parameters.forceStateless {
+                            discardReason = "forceStateless == true"
+                        } else if let existing = currentActive {
+                            if existing.conversationID != conversationID {
+                                discardReason = "different conversationID"
+                            } else if existing.systemPrompt != prompt.systemPrompt {
+                                discardReason = "different systemPrompt"
+                            } else if !MLXChatInput.cachedPrefixMatches(
+                                cached: existing.messages,
+                                incoming: canonicalHistory
+                            ) {
+                                discardReason = canonicalHistory.count < existing.messages.count
+                                    ? "history shorter than cached prefix"
+                                    : "history token mismatch (formatting changed?)"
+                            } else {
+                                discardReason = nil
+                            }
                         } else {
-                            if currentActive != nil {
-                                self.log.info("MLX: Session mismatch or reset — starting fresh for \(conversationID, privacy: .public)")
-                            }
+                            discardReason = "no cached session"
+                        }
 
-                            let toNativeMessage: (RuntimeMessage) -> Chat.Message = { msg in
-                                switch msg.role {
-                                case .system: return .system(msg.content)
-                                case .user: return .user(msg.content)
-                                case .assistant: return .assistant(msg.content)
-                                }
-                            }
+                        if discardReason == nil, let existing = currentActive {
+                            self.log.info("MLX: KV cache reused — prefix match OK for \(conversationID, privacy: .public)")
+                            return existing.session
+                        }
 
-                            let history: [Chat.Message] = prompt.messages.dropLast().map(toNativeMessage)
-                            let newSession = ChatSession(
-                                nativeContainer,
-                                instructions: prompt.systemPrompt.isEmpty ? nil : prompt.systemPrompt,
-                                history: history
-                            )
+                        // Rebuild path.
+                        let reason = discardReason ?? "unknown"
+                        self.log.info("MLX: KV cache discarded — mismatch (reason: \(reason, privacy: .public)) for \(conversationID, privacy: .public)")
 
+                        let history: [Chat.Message] = canonicalHistory.map(MLXChatInput.toNative)
+                        let newSession = ChatSession(
+                            nativeContainer,
+                            instructions: prompt.systemPrompt.isEmpty ? nil : prompt.systemPrompt,
+                            history: history
+                        )
+
+                        // Stateless mode keeps the cached session field nil so
+                        // the next turn also rebuilds; non-stateless caches it
+                        // for prefix-reuse on the following turn.
+                        if parameters.forceStateless {
+                            self.activeSession = nil
+                        } else {
                             self.activeSession = ActiveSession(
                                 conversationID: conversationID,
                                 systemPrompt: prompt.systemPrompt,
-                                messages: Array(prompt.messages.dropLast()),
+                                messages: canonicalHistory,
                                 session: newSession
                             )
-                            return newSession
                         }
+                        return newSession
                     }
 
-                    let lastMessage = prompt.messages.last
-                    let lastContent = lastMessage?.content ?? ""
-                    let lastRole: Chat.Message.Role = switch lastMessage?.role {
-                    case .system: .system
-                    case .user: .user
-                    case .assistant, .none: .assistant
-                    }
+                    let lastTurn = MLXChatInput.lastTurn(from: prompt)
 
                     session.generateParameters = generateParameters
                     let responseStream = session.streamResponse(
-                        to: lastContent,
-                        role: lastRole,
+                        to: lastTurn.content,
+                        role: lastTurn.role,
                         images: [],
                         videos: []
                     )
@@ -501,14 +585,26 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                     hitMaxTokens = fallbackResult.2
                 }
 
+                let durationMs = Int(Date().timeIntervalSince(start) * 1000)
+                let tps = durationMs > 0 ? (Double(tokensGenerated) / Double(durationMs)) * 1000.0 : 0.0
+
+                // Update rolling tps + clear any prior failure now that
+                // a successful generation has completed. Folded into one
+                // lock acquisition with the busy-flag reset to keep the
+                // critical section short.
+                let modelID = self.loadedModel?.id ?? "(none)"
                 self.sessionLock.withLock {
                     self.activeTask = nil
                     self.activeGenerationID = nil
                     self.isGenerating = false
+                    self._lastGenerationError = nil
+                    if tokensGenerated > 0 {
+                        let prev = self.tpsAverage[modelID] ?? (mean: 0, n: 0)
+                        let n = prev.n + 1
+                        let mean = prev.mean + (tps - prev.mean) / Double(n)
+                        self.tpsAverage[modelID] = (mean: mean, n: n)
+                    }
                 }
-
-                let durationMs = Int(Date().timeIntervalSince(start) * 1000)
-                let tps = durationMs > 0 ? (Double(tokensGenerated) / Double(durationMs)) * 1000.0 : 0.0
 
                 let stats = RuntimeStats(
                     tokensGenerated: tokensGenerated,
@@ -518,16 +614,27 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
 
                 let finishReason: RuntimeEvent.FinishReason =
                     Task.isCancelled ? .cancelled : (hitMaxTokens ? .length : .stop)
+
+                // Single concise per-generation summary line. Aligned with
+                // the llama.cpp side so log queries can grep both backends.
+                let safeMode = HardwareCapabilities.shared.safeAttentionMode
+                self.log.info(
+                    "MLX generation: backend=mlx modelID=\(modelID, privacy: .public) tokens=\(tokensGenerated, privacy: .public) durationMs=\(durationMs, privacy: .public) tps=\(String(format: "%.1f", tps), privacy: .public) safeMode=\(safeMode, privacy: .public) reason=\(String(describing: finishReason), privacy: .public)"
+                )
+
                 continuation.yield(.finished(reason: finishReason, stats: stats))
                 continuation.finish()
 
             } catch {
+                let modelID = self.loadedModel?.id ?? "(none)"
+                let failure = GenerationFailure.classify(error, modelID: modelID, backend: "mlx")
                 self.sessionLock.withLock {
                     self.activeTask = nil
                     self.activeGenerationID = nil
                     self.isGenerating = false
+                    self._lastGenerationError = failure
                 }
-                self.log.error("MLX: Generation failed: \(error.localizedDescription, privacy: .public)")
+                self.log.error("MLX generation: backend=mlx modelID=\(modelID, privacy: .public) failed kind=\(String(describing: failure.kind), privacy: .public) error=\(error.localizedDescription, privacy: .public)")
                 continuation.finish(throwing: error)
             }
         }
@@ -549,7 +656,13 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
     }
 
     func handleBackground() async {
-        self.log.info("MLX: App backgrounded")
+        // Policy: MLX keeps weights resident across background transitions.
+        // Re-warming MLX after a background→foreground takes 10–60 s on
+        // iPhone (Metal pipeline compile + tokenizer reload), which is
+        // worse for the user than the OS occasionally re-claiming the
+        // suspended app. Memory-pressure / thermal-critical paths *do*
+        // unload via `handleMemoryPressure` / `RuntimeManager`.
+        self.log.info("MLX runtime: backgrounded — keeping weights resident (policy)")
     }
 }
 
@@ -561,5 +674,124 @@ private extension Error {
     /// use String(describing:) which includes the type name and associated values.
     var mlxDescriptiveMessage: String {
         String(describing: self)
+    }
+}
+
+// MARK: - GenerationFailure
+
+/// User-facing snapshot of the last failed generation. Captured by both
+/// MLX and llama.cpp runtimes so the Model Info sheet can show a short,
+/// human-readable explanation without leaking low-level symbols.
+struct GenerationFailure: Sendable, Equatable {
+    /// Coarse-grained category so the UI can group / colour reasons.
+    enum Kind: Sendable, Equatable {
+        case outOfMemory
+        case cancelled
+        case templateError
+        case backendError
+        case other
+    }
+    let modelID: String
+    let backend: String          // "mlx" / "llama.cpp"
+    let kind: Kind
+    /// Already-localised, single sentence. Safe to show in UI.
+    let message: String
+    let occurredAt: Date
+
+    /// Classify an arbitrary error into a `GenerationFailure`.
+    /// Used by both runtimes — kept in MLX file to share the implementation
+    /// (Swift modules; no separate file needed for two call sites).
+    static func classify(
+        _ error: Error,
+        modelID: String,
+        backend: String
+    ) -> GenerationFailure {
+        let raw = error.localizedDescription
+        let kind: Kind
+        let message: String
+        let lower = raw.lowercased()
+        if (error as? RuntimeError) == .outOfMemory || lower.contains("out of memory") || lower.contains("oom") {
+            kind = .outOfMemory
+            message = "Out of memory while running this model. Try a smaller / more aggressively quantised model, or switch the performance profile to Conservative."
+        } else if error is CancellationError || lower.contains("cancel") {
+            kind = .cancelled
+            message = "Generation was cancelled before it finished."
+        } else if lower.contains("template") || lower.contains("tokenizer") {
+            kind = .templateError
+            message = "The model's chat template could not be applied. Re-download the model or pick a different one."
+        } else if lower.contains("llama_decode") || lower.contains("metal") || lower.contains("mlx") {
+            kind = .backendError
+            message = "Runtime error in the inference engine: \(raw)"
+        } else {
+            kind = .other
+            message = raw
+        }
+        return GenerationFailure(
+            modelID: modelID,
+            backend: backend,
+            kind: kind,
+            message: message,
+            occurredAt: Date()
+        )
+    }
+}
+
+// MARK: - Canonical MLX chat-input helper
+
+/// Single source of truth for converting a `RuntimePrompt` into the
+/// `(systemPrompt, history, lastUserContent, lastRole)` quadruple
+/// consumed by `MLXLLM.ChatSession`.
+///
+/// **Why this exists**: the KV-cache reuse decision and the new-session
+/// constructor both need the same canonical view of "what is the history
+/// for this turn?". Earlier versions of the runtime duplicated that
+/// logic in two places — drift between the two manifested as KV cache
+/// invalidation that looked like "history token mismatch" even when
+/// nothing had actually changed.
+enum MLXChatInput {
+
+    /// History = everything except the last message. The last message is
+    /// fed to `ChatSession.streamResponse(to:role:)` separately.
+    static func history(from prompt: RuntimePrompt) -> [RuntimeMessage] {
+        Array(prompt.messages.dropLast())
+    }
+
+    /// The (content, role) tuple driven into `streamResponse`. When the
+    /// prompt has no messages we fall back to an empty assistant turn so
+    /// the call site can still finish a stream cleanly.
+    static func lastTurn(from prompt: RuntimePrompt) -> (content: String, role: Chat.Message.Role) {
+        guard let last = prompt.messages.last else { return ("", .assistant) }
+        switch last.role {
+        case .system:    return (last.content, .system)
+        case .user:      return (last.content, .user)
+        case .assistant: return (last.content, .assistant)
+        }
+    }
+
+    /// Maps a single canonical `RuntimeMessage` into `Chat.Message`.
+    /// Used to seed `ChatSession.history`. The mapping is intentionally
+    /// 1:1 — any normalisation (e.g. trimming) must happen upstream in
+    /// the prompt-assembly service so reuse equality checks see the same
+    /// strings on both sides.
+    static func toNative(_ msg: RuntimeMessage) -> Chat.Message {
+        switch msg.role {
+        case .system:    return .system(msg.content)
+        case .user:      return .user(msg.content)
+        case .assistant: return .assistant(msg.content)
+        }
+    }
+
+    /// Strict equality used by the KV-cache reuse check. Compares **both**
+    /// role and content, in order. The cached prefix must be a strict
+    /// prefix of the incoming history — `cached.count` ≤ `incoming.count`
+    /// and every position equal — otherwise the KV cache is invalid.
+    static func cachedPrefixMatches(
+        cached: [RuntimeMessage],
+        incoming: [RuntimeMessage]
+    ) -> Bool {
+        guard cached.count <= incoming.count else { return false }
+        return incoming.prefix(cached.count).elementsEqual(cached) {
+            $0.role == $1.role && $0.content == $1.content
+        }
     }
 }

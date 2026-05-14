@@ -119,11 +119,16 @@ actor LlamaRuntimeActor {
     /// token is always installed, even on load failure — so a retry always
     /// gets a non-cancelled token.
     ///
+    /// - Parameter contextLength: Effective context window to allocate.
+    ///   Defaults to `model.contextLength`. The caller is expected to have
+    ///   already clamped this against GGUF native context length so the
+    ///   actor never has to consult metadata.
+    ///
     /// - Throws: `RuntimeError.incompatibleModel`, `.outOfMemory`, or
     ///   `.underlying` as forwarded from `LlamaContextHandle.load`.
     ///
     /// Safe: actor ensures no concurrent mutation of state.
-    func load(model: LocalModel, path: String) throws {
+    func load(model: LocalModel, path: String, contextLength: Int? = nil) throws {
         // Signal any active generation Tasks to stop.
         // They hold a reference to the old token and will see isCancelled = true
         // on their next iteration, before decoding another token from the old context.
@@ -147,9 +152,10 @@ actor LlamaRuntimeActor {
         // If this throws, all state stays nil and the fresh token is non-cancelled —
         // correct for a subsequent retry.
         let capabilities = ModelCapabilityProfile.resolve(family: model.family)
+        let effectiveCtx = contextLength ?? model.contextLength
         let ctx = try LlamaContextHandle.load(
             modelPath: path,
-            contextLength: model.contextLength,
+            contextLength: effectiveCtx,
             gpuLayers: .maximum,
             capabilities: capabilities
         )

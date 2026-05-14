@@ -87,6 +87,9 @@
 		770206C6CAE60084E18533D6 /* HHLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF97DC7E6219D59675C938A3 /* HHLogger.swift */; };
 		77A2BFE7029339AF67FC04EA /* DocumentReaderService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A5B1A379B37297E9D0E7F31 /* DocumentReaderService.swift */; };
 		CC4D5E6F7A8B9C0D1E2F3A4B /* DeviceMemoryProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD4D5E6F7A8B9C0D1E2F3A4B /* DeviceMemoryProvider.swift */; };
+		CCA0B1C2D3E4F50617283940 /* HardwareCapabilities.swift in Sources */ = {isa = PBXBuildFile; fileRef = DDA0B1C2D3E4F50617283940 /* HardwareCapabilities.swift */; };
+		CCB0C1D2E3F40516273849A0 /* GGUFMetadata.swift in Sources */ = {isa = PBXBuildFile; fileRef = DDB0C1D2E3F40516273849A0 /* GGUFMetadata.swift */; };
+		CCC0D1E2F30415263748590A /* GGUFModelMetadata.swift in Sources */ = {isa = PBXBuildFile; fileRef = DDC0D1E2F30415263748590A /* GGUFModelMetadata.swift */; };
 		AA1B2C3D4E5F6A7B8C9D0E1F /* ManifestStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB1B2C3D4E5F6A7B8C9D0E1F /* ManifestStore.swift */; };
 		CC2A3B4C5D6E7F8A9B0C1D2E /* DownloadManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD2A3B4C5D6E7F8A9B0C1D2E /* DownloadManager.swift */; };
 		788064224F0340D1E4C2CE46 /* MemoryService.swift in Sources */ = {isa = PBXBuildFile; fileRef = FDFE66596111A6FF50BB05B4 /* MemoryService.swift */; };
@@ -243,6 +246,9 @@
 		1911D715424CCA8F05E5837E /* AppIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppIntents.swift; sourceTree = "<group>"; };
 		1A5B1A379B37297E9D0E7F31 /* DocumentReaderService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentReaderService.swift; sourceTree = "<group>"; };
 		DD4D5E6F7A8B9C0D1E2F3A4B /* DeviceMemoryProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceMemoryProvider.swift; sourceTree = "<group>"; };
+		DDA0B1C2D3E4F50617283940 /* HardwareCapabilities.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HardwareCapabilities.swift; sourceTree = "<group>"; };
+		DDB0C1D2E3F40516273849A0 /* GGUFMetadata.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GGUFMetadata.swift; sourceTree = "<group>"; };
+		DDC0D1E2F30415263748590A /* GGUFModelMetadata.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GGUFModelMetadata.swift; sourceTree = "<group>"; };
 		BB1B2C3D4E5F6A7B8C9D0E1F /* ManifestStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManifestStore.swift; sourceTree = "<group>"; };
 		DD2A3B4C5D6E7F8A9B0C1D2E /* DownloadManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DownloadManager.swift; sourceTree = "<group>"; };
 		1BD39745EA094616811F82E7 /* SidebarMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarMenu.swift; sourceTree = "<group>"; };
@@ -703,6 +709,8 @@
 				51C028E2DB46A4B748E32CD6 /* ConversationRuntimeSession.swift */,
 				CD656281D090BED11DFE190B /* FakeMLXLoader.swift */,
 				606952DBB9DD41D260655A29 /* HubIntegration.swift */,
+				DDB0C1D2E3F40516273849A0 /* GGUFMetadata.swift */,
+				DDC0D1E2F30415263748590A /* GGUFModelMetadata.swift */,
 				4F4CAE62CBBB91CE28C79FB1 /* ChatTemplate.swift */,
 				8C4E8723CCF07089EABDEDC9 /* LlamaContextHandle.swift */,
 				369CFA371BDA4EB069C38349 /* LlamaCppRuntime.swift */,
@@ -727,6 +735,7 @@
 				737FF123586BC755A3623CE5 /* BackgroundDownloadProgressing.swift */,
 				AE8824F44274F1BFCA74AB43 /* ConversationService.swift */,
 				DD4D5E6F7A8B9C0D1E2F3A4B /* DeviceMemoryProvider.swift */,
+				DDA0B1C2D3E4F50617283940 /* HardwareCapabilities.swift */,
 				BB1B2C3D4E5F6A7B8C9D0E1F /* ManifestStore.swift */,
 				DD2A3B4C5D6E7F8A9B0C1D2E /* DownloadManager.swift */,
 				1A5B1A379B37297E9D0E7F31 /* DocumentReaderService.swift */,
@@ -983,6 +992,9 @@
 				14FAEF7AA8F9766C17935525 /* DeveloperDiagnosticsView.swift in Sources */,
 				9D8EF2A40D6F76632956FC04 /* DeviceInfoSkill.swift in Sources */,
 				CC4D5E6F7A8B9C0D1E2F3A4B /* DeviceMemoryProvider.swift in Sources */,
+				CCA0B1C2D3E4F50617283940 /* HardwareCapabilities.swift in Sources */,
+				CCB0C1D2E3F40516273849A0 /* GGUFMetadata.swift in Sources */,
+				CCC0D1E2F30415263748590A /* GGUFModelMetadata.swift in Sources */,
 				AA1B2C3D4E5F6A7B8C9D0E1F /* ManifestStore.swift in Sources */,
 				CC2A3B4C5D6E7F8A9B0C1D2E /* DownloadManager.swift in Sources */,
 				C4D9903500DFAF96469749FA /* DiagnosticReport.swift in Sources */,

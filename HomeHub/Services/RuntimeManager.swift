@@ -67,16 +67,23 @@ final class RuntimeManager: ObservableObject {
 
     // MARK: - Memory gate configuration
 
-    /// Safety factor applied to `model.sizeBytes` in the memory preflight.
-    ///
-    /// The 1.5× multiplier accounts for deserialization working buffers and
-    /// Metal pipeline compilation temporaries that briefly live alongside the
-    /// loaded weights during model initialisation.
-    ///
-    /// This is a static `let` so it can be referenced in `memoryCheck(for:)`
-    /// without capturing `self` and can be overridden at the call site when
-    /// needed (e.g. tests, or a future user-configurable setting).
+    /// Safety factor applied to `model.sizeBytes` in the memory preflight,
+    /// for the **balanced** profile. Retained as a constant for code that
+    /// reads it directly (e.g. DeveloperDiagnostics defaults). Live callers
+    /// should prefer `memorySafetyFactor(for:)` so the user's chosen
+    /// `PerformanceProfile` is respected.
     static let memorySafetyFactor: Double = 1.5
+
+    /// Profile → safety-factor mapping. Conservative trades a chance of
+    /// being told "no" against a chance of getting OOM-killed mid-load;
+    /// aggressive does the opposite.
+    static func memorySafetyFactor(for profile: PerformanceProfile) -> Double {
+        switch profile {
+        case .conservative: return 1.8
+        case .balanced:     return 1.5
+        case .aggressive:   return 1.3
+        }
+    }
 
     // MARK: - Concurrency handles
 
@@ -104,10 +111,44 @@ final class RuntimeManager: ObservableObject {
     /// new task.
     private var operationTask: Task<Void, Never>?
 
+    // MARK: - Metadata provider
+
+    /// Optional hook used to look up cached GGUF metadata for a model when
+    /// `_performLoad` logs the template source and effective context.
+    /// Wired by `AppContainer` to `modelCatalogService.metadata(for:)`.
+    /// Stays optional so previews / unit tests don't need the full graph.
+    /// `@MainActor`-isolated because the only caller runs on the main actor
+    /// (the surrounding class is `@MainActor`) and the catalog service is
+    /// itself `@MainActor`.
+    var ggufMetadataProvider: (@MainActor (String) -> GGUFModelMetadata?)?
+
+    /// Active performance profile — drives `memorySafetyFactor` selection
+    /// inside `memoryCheck(for:)`. Changing this only affects *future*
+    /// load calls; an already-loaded model keeps the factor it loaded
+    /// under until the next `load()` / `unload()` cycle.
+    var performanceProfile: PerformanceProfile = .balanced
+
     // MARK: - Telemetry
 
     /// Structured telemetry channel for the active runtime.
     var telemetry: RuntimeTelemetry { runtime.telemetry }
+
+    /// Last user-facing generation failure, surfaced by the active
+    /// runtime. `nil` while no generation has failed since the most
+    /// recent successful one. Backend-agnostic — both MLX and llama.cpp
+    /// store the value through this protocol so views never branch on
+    /// the concrete runtime type. See `LocalLLMRuntime+lastError`.
+    var lastGenerationError: GenerationFailure? {
+        runtime.lastGenerationError
+    }
+
+    /// Rolling mean tokens/sec for `modelID`, or `nil` if the active
+    /// runtime hasn't generated for that model yet. Used by
+    /// `DeveloperDiagnostics`. Returns `nil` for runtimes that don't
+    /// track per-model throughput (e.g. the mock runtime in previews).
+    func averageThroughput(for modelID: String) -> (tps: Double, samples: Int)? {
+        runtime.averageThroughput(for: modelID)
+    }
 
     private let log = Logger(subsystem: "com.homehub.app", category: "RuntimeManager")
 
@@ -163,13 +204,20 @@ final class RuntimeManager: ObservableObject {
         state = .loading(modelID: model.id)
         mlxLoadProgress = nil
 
+        // Per-load decision log — one line per load() call. Logs the
+        // template source (GGUF metadata vs built-in family fallback) and
+        // the effective context length so multi-turn issues can be
+        // correlated to template + context without reattaching Xcode.
+        logLoadDecision(for: model)
+
         // Memory preflight — abort before allocating anything.
-        if let check = memoryCheck(for: model) {
+        let factor = Self.memorySafetyFactor(for: performanceProfile)
+        if let check = memoryCheck(for: model, safetyFactor: factor) {
             if !check.canLoad {
                 let fmt = ByteCountFormatter()
                 fmt.allowedUnits = [.useMB, .useGB]
                 fmt.countStyle = .file
-                log.warning("Runtime: Memory gate FAIL for '\(model.id, privacy: .public)' — need \(check.required) B, have \(check.available) B (×\(Self.memorySafetyFactor))")
+                log.warning("Runtime: Memory gate FAIL for '\(model.id, privacy: .public)' — need \(check.required) B, have \(check.available) B (profile=\(self.performanceProfile.rawValue, privacy: .public) ×\(factor))")
                 state = .failed(
                     modelID: model.id,
                     reason: "Nedostatek paměti: model potřebuje ≈\(fmt.string(fromByteCount: check.required)), " +
@@ -177,7 +225,7 @@ final class RuntimeManager: ObservableObject {
                 )
                 return
             }
-            log.info("Runtime: Memory gate OK for '\(model.id, privacy: .public)' — need \(check.required) B, have \(check.available) B")
+            log.info("Runtime: Memory gate OK for '\(model.id, privacy: .public)' — need \(check.required) B, have \(check.available) B (profile=\(self.performanceProfile.rawValue, privacy: .public) ×\(factor))")
         }
 
         // Phase 3: Load off @MainActor. Task.detached moves Metal pipeline
@@ -250,17 +298,42 @@ final class RuntimeManager: ObservableObject {
     /// - Parameters:
     ///   - model: The model to evaluate.
     ///   - safetyFactor: Multiplier applied to `model.sizeBytes`. Defaults
-    ///     to `RuntimeManager.memorySafetyFactor` (1.5).
+    ///     to the value for the current `performanceProfile`.
     /// - Returns: `(required, available, canLoad)`, or `nil` if the check is
     ///   not applicable (unknown model size, or `os_proc_available_memory`
     ///   returned zero).
     private func memoryCheck(
         for model: LocalModel,
-        safetyFactor: Double = RuntimeManager.memorySafetyFactor
+        safetyFactor: Double? = nil
     ) -> (required: Int64, available: Int64, canLoad: Bool)? {
         guard model.sizeBytes > 0, let available = Self.availableMemoryBytes() else { return nil }
-        let required = Int64(Double(model.sizeBytes) * safetyFactor)
+        let factor = safetyFactor ?? Self.memorySafetyFactor(for: performanceProfile)
+        let required = Int64(Double(model.sizeBytes) * factor)
         return (required: required, available: available, canLoad: available >= required)
+    }
+
+    /// One-line per-load decision log. Captures the things we wish we
+    /// could see when debugging "why does this model behave differently"
+    /// without attaching Xcode:
+    ///   - performance profile in effect
+    ///   - template source (GGUF metadata vs built-in family fallback)
+    ///   - effective context length (min of catalog and metadata)
+    private func logLoadDecision(for model: LocalModel) {
+        let meta = ggufMetadataProvider?(model.id)
+        let templateSource: String = {
+            switch model.format {
+            case .mlx:  return "tokenizer snapshot (MLX ChatSession)"
+            case .gguf:
+                if meta?.chatTemplate != nil { return "GGUF metadata" }
+                return "built-in template for family '\(model.family)'"
+            }
+        }()
+        let effectiveCtx: Int = {
+            if let metaCtx = meta?.contextLength { return min(model.contextLength, metaCtx) }
+            return model.contextLength
+        }()
+        let arch = meta?.architecture ?? "(unknown)"
+        log.info("Runtime: Load decision for '\(model.id, privacy: .public)' — profile=\(self.performanceProfile.rawValue, privacy: .public) template=\(templateSource, privacy: .public) ctx=\(effectiveCtx) arch=\(arch, privacy: .public)")
     }
 
     /// Returns the number of bytes the OS considers available for this process
