@@ -140,9 +140,18 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
             )
         }
 
-        let config = ModelConfiguration(id: repoId)
-        let downloader = HubApiDownloader()
-        let tokenizerLoader = SwiftTransformersTokenizerLoader(modelFamily: model.family)
+        // autoreleasepool drains Objective-C temporaries created during synchronous
+        // setup (NSString, NSDictionary, intermediate JSON slices for model config
+        // and tokenizer metadata). These objects accumulate before the first async
+        // suspension point; draining them here minimises the peak Unified Memory
+        // footprint at the start of the load sequence.
+        let (config, downloader, tokenizerLoader) = autoreleasepool {
+            (
+                ModelConfiguration(id: repoId),
+                HubApiDownloader(),
+                SwiftTransformersTokenizerLoader(modelFamily: model.family)
+            )
+        }
 
         // Emit .preparing when download fraction hits 1.0 (download done,
         // Metal compilation begins). For warm-cache loads where no progress
@@ -247,7 +256,14 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
         self.activeGenerationID = conversationID
         self.sessionLock.unlock()
 
-        let task = Task {
+        // [weak self] breaks the retain cycle: self.activeTask → Task → self.
+        // The cycle is temporary (resolves when the task finishes), but without
+        // weak capture it keeps the runtime alive indefinitely on cancellation.
+        let task = Task { [weak self] in
+            guard let self else {
+                continuation.finish(throwing: RuntimeError.cancelled)
+                return
+            }
             do {
                 guard let container = self.container else {
                     continuation.finish(throwing: RuntimeError.noModelLoaded)

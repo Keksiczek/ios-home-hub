@@ -1,4 +1,5 @@
 import UIKit
+import os
 
 /// Minimal UIApplicationDelegate. Two responsibilities:
 ///
@@ -23,6 +24,8 @@ import UIKit
 /// Wired into the app via `@UIApplicationDelegateAdaptor` in `HomeHubApp`.
 final class AppDelegate: NSObject, UIApplicationDelegate {
 
+    private let log = Logger(subsystem: "com.homehub.app", category: "AppDelegate")
+
     func application(
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
@@ -46,17 +49,19 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         handleEventsForBackgroundURLSession identifier: String,
         completionHandler: @escaping () -> Void
     ) {
-        // Routing through `BackgroundDownloadRouting` instead of a
-        // hard-coded switch keeps this delegate honest as new
-        // download stacks are added — they just conform to
-        // `BackgroundDownloadProgressing` and append to
-        // `BackgroundDownloadRouting.all`. If no downloader claims
-        // the identifier we still call the handler so the system
-        // watchdog doesn't terminate the app.
+        // Routing through `BackgroundDownloadRouting` instead of a hard-coded
+        // switch keeps this delegate honest as new stacks are added.
+        // Known session IDs: BackgroundDownloadCoordinator.sessionID (GGUF),
+        // MLXBackgroundDownloader.sessionID (MLX file shards).
+        // If no downloader claims the identifier we still call the handler so
+        // the system watchdog doesn't terminate the app.
         MainActor.assumeIsolated {
             let dispatched = BackgroundDownloadRouting
                 .dispatchSystemCompletionHandler(for: identifier, completionHandler)
-            if !dispatched {
+            if dispatched {
+                log.info("AppDelegate: background-session events for '\(identifier, privacy: .public)' — dispatched to coordinator")
+            } else {
+                log.warning("AppDelegate: background-session events for '\(identifier, privacy: .public)' — no matching coordinator; calling completion handler immediately")
                 completionHandler()
             }
         }

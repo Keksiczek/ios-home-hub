@@ -204,19 +204,21 @@ private struct RuntimeBadge: View {
 
     private var color: Color {
         switch state {
-        case .idle: return .gray
-        case .loading: return HHTheme.warning
-        case .ready: return HHTheme.success
-        case .failed: return HHTheme.danger
+        case .idle:      return .gray
+        case .unloading: return HHTheme.warning
+        case .loading:   return HHTheme.warning
+        case .ready:     return HHTheme.success
+        case .failed:    return HHTheme.danger
         }
     }
 
     private var label: String {
         switch state {
-        case .idle: return "No model"
-        case .loading: return "Loading"
-        case .ready: return "Ready"
-        case .failed: return "Error"
+        case .idle:      return "No model"
+        case .unloading: return "Unloading"
+        case .loading:   return "Loading"
+        case .ready:     return "Ready"
+        case .failed:    return "Error"
         }
     }
 }
