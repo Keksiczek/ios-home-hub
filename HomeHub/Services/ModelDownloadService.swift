@@ -95,6 +95,18 @@ final class ModelDownloadService: ObservableObject {
     func start(_ model: LocalModel) {
         guard active[model.id] == nil else { return }
 
+        // A background URLSession task can still be in-flight after an OS
+        // relaunch even though the in-memory `active` map is empty. Re-
+        // entering `start()` in that state would enqueue a duplicate task
+        // pointing at the same destination file — both writers would race
+        // through `completeInstall()` and trample each other's output.
+        // Reconcile observable state instead and bail.
+        if DownloadManager.shared.isActive(model.id) {
+            log.notice("start(): '\(model.id, privacy: .public)' already has an in-flight background task — reattaching, not enqueuing a duplicate")
+            active[model.id] = DownloadState(modelID: model.id, progress: 0, isCancelled: false, phase: .downloading)
+            return
+        }
+
         // Disk-space preflight — catch the "user tries to download a 4 GB
         // model onto a full phone" case before the URLSession task starts
         // and silently fails mid-stream with a cryptic NSPOSIXErrorDomain.
@@ -275,6 +287,15 @@ final class ModelDownloadService: ObservableObject {
                 size = parsed
             }
 
+            // Some CDNs respond 200 with an HTML error / login page when the
+            // request gets misrouted. The first-4-bytes check usually catches
+            // it, but surfacing the Content-Type explicitly makes the failure
+            // legible to the user.
+            if let ct = http.value(forHTTPHeaderField: "Content-Type")?.lowercased(),
+               ct.contains("text/html") || ct.contains("application/xhtml") {
+                detail = "URL serves an HTML page, not a model file. The link may be a model card or a login redirect — copy the direct download URL instead."
+            }
+
             switch http.statusCode {
             case 200, 206: break    // OK
             case 401, 403:
@@ -419,8 +440,16 @@ final class ModelDownloadService: ObservableObject {
                 "Open the .gguf file on Hugging Face and copy its 'Download' link."
             )
         }
-        // Sidecar metadata. We can't run inference on a .json or a tokenizer.
-        let badSuffixes = [".json", ".md", ".txt", ".html", ".bin", ".safetensors"]
+        // Sidecar metadata, archives, or non-GGUF weight formats. We can't
+        // run inference on any of these. The unsupported list is broader
+        // than what the GGUF magic check rejects — the goal is to fail fast
+        // with a clear message before burning bytes.
+        let badSuffixes = [
+            ".json", ".md", ".txt", ".html", ".htm",
+            ".bin", ".safetensors", ".pt", ".onnx",
+            ".zip", ".tar", ".gz", ".7z",
+            ".py", ".ipynb", ".sh", ".yaml", ".yml"
+        ]
         if let suffix = badSuffixes.first(where: { path.hasSuffix($0) }) {
             throw URLImportError.unsupportedURL(
                 "Model files must be GGUF — \(suffix) files aren't supported here."
@@ -505,11 +534,39 @@ final class ModelDownloadService: ObservableObject {
             return
         }
 
-        // Validate the resulting file is a plausible GGUF before declaring success.
-        // This catches e.g. HuggingFace gated-model HTML error pages being saved
-        // with a .gguf extension by `URLSession.downloadTask`.
+        // Validate the resulting file before declaring success. Three guards:
+        //   1. The destination file actually exists at the path we just
+        //      moved into. `moveItem` could (in theory) succeed and a
+        //      sandbox quirk leave nothing behind.
+        //   2. The file is non-trivial in size. The probe step has a 1 KB
+        //      threshold for the temp file; we re-check here on the final
+        //      path so a future code-path change can't bypass it.
+        //   3. GGUF magic header — catches HTML error pages saved with a
+        //      .gguf extension by `URLSession.downloadTask`.
+        guard FileManager.default.fileExists(atPath: localURL.path) else {
+            log.error("Install finalize failed for '\(modelID, privacy: .public)': destination missing after move at \(localURL.path, privacy: .public)")
+            catalog.setInstallState(
+                .failed(reason: "Installed file is missing on disk. Try downloading again."),
+                for: modelID
+            )
+            active[modelID] = nil
+            tasks[modelID] = nil
+            return
+        }
+        let installedSize = (try? FileManager.default.attributesOfItem(atPath: localURL.path)[.size] as? NSNumber)?.int64Value ?? -1
+        if installedSize <= 0 {
+            log.error("Install finalize failed for '\(modelID, privacy: .public)': zero-byte file at \(localURL.path, privacy: .public)")
+            try? FileManager.default.removeItem(at: localURL)
+            catalog.setInstallState(
+                .failed(reason: "Installed file is empty. The download may have been interrupted — try again."),
+                for: modelID
+            )
+            active[modelID] = nil
+            tasks[modelID] = nil
+            return
+        }
         if !Self.isValidGGUFHeader(at: localURL) {
-            log.error("GGUF magic check failed for '\(modelID, privacy: .public)' at \(localURL.path, privacy: .public)")
+            log.error("GGUF magic check failed for '\(modelID, privacy: .public)' size=\(installedSize, privacy: .public) at \(localURL.path, privacy: .public)")
             try? FileManager.default.removeItem(at: localURL)
             catalog.setInstallState(
                 .failed(reason: "Downloaded file is not a valid GGUF model. The URL may be gated, require authentication, or point to an error page."),
@@ -520,6 +577,28 @@ final class ModelDownloadService: ObservableObject {
             return
         }
 
+        // Parse the GGUF header before flipping install state. Two reasons:
+        //   1. A file with a valid magic but a truncated metadata section
+        //      will fail to load anyway — better to surface the failure
+        //      now while the user is on the install spinner than 30 s
+        //      later when they tap "Load".
+        //   2. Successful parse populates the catalog cache so the next
+        //      load() can log template source + effective context without
+        //      paying the parse cost on the @MainActor.
+        let parsedMeta = GGUFModelMetadata.read(at: localURL)
+        if parsedMeta == nil {
+            log.error("GGUF metadata parse failed for '\(modelID, privacy: .public)' size=\(installedSize, privacy: .public) at \(localURL.path, privacy: .public)")
+            try? FileManager.default.removeItem(at: localURL)
+            catalog.setInstallState(
+                .failed(reason: "Downloaded file has a valid GGUF magic header but its metadata is unreadable. The file may be partially corrupted — try again."),
+                for: modelID
+            )
+            active[modelID] = nil
+            tasks[modelID] = nil
+            return
+        }
+
+        log.info("Installed '\(modelID, privacy: .public)' size=\(installedSize, privacy: .public) bytes at \(localURL.path, privacy: .public)")
         catalog.setInstallState(.installed(localURL: localURL), for: modelID)
         // Read GGUF header now while the file is fresh on disk and the user
         // is already waiting on the install spinner — pushes the parse cost

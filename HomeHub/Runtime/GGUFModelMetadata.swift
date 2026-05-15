@@ -64,12 +64,19 @@ struct GGUFModelMetadata: Sendable, Equatable {
         let log = Logger(subsystem: "HomeHub", category: "GGUFModelMetadata")
         do {
             let raw = try GGUFMetadata.read(at: url)
-            return GGUFModelMetadata(
+            let meta = GGUFModelMetadata(
                 architecture: emptyToNil(raw.architecture),
                 displayName:  emptyToNil(raw.modelName),
                 chatTemplate: emptyToNil(raw.chatTemplate),
                 contextLength: (raw.nativeContextLength ?? 0) > 0 ? raw.nativeContextLength : nil
             )
+            // One line per successful parse so the install / reconcile flow
+            // surfaces *which* model authored a template and what context
+            // length it declared. Helps diagnose "garbage prompt" reports.
+            log.info(
+                "GGUF metadata parsed for \(url.lastPathComponent, privacy: .public): arch=\(meta.architecture ?? "(none)", privacy: .public) ctx=\(meta.contextLength.map(String.init) ?? "(none)", privacy: .public) chatTemplate=\(meta.chatTemplate != nil ? "present" : "absent", privacy: .public)"
+            )
+            return meta
         } catch {
             log.notice("GGUF metadata read failed at \(url.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public) — falling back to catalog defaults")
             return nil

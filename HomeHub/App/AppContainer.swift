@@ -318,6 +318,32 @@ final class AppContainer: ObservableObject {
         //    a model that was downloaded in a previous session.
         await modelCatalogService.reconcileInstallStates(localModels: localModelService)
 
+        // 2b. Project still-alive background transports onto the catalog
+        //     installState. After an OS-driven relaunch the URLSession task
+        //     can survive in nsurlsessiond, but the catalog reconcile above
+        //     just set the model to `.notInstalled` because no file is on
+        //     disk yet. Without this step the UI would offer a "Download"
+        //     button that immediately bails (DownloadManager.isActive
+        //     short-circuits start()), and the user would be stuck looking
+        //     at a stale state until the first delegate progress callback
+        //     fires — which can take seconds on a slow link. Seeding
+        //     `.downloading(progress: 0)` here lets ModelBrowserViewModel
+        //     render the `.reconnecting` row immediately.
+        let liveTransports = DownloadManager.shared.activeModelIDs
+        if !liveTransports.isEmpty {
+            for id in liveTransports {
+                if let model = modelCatalogService.model(withID: id),
+                   case .installed = model.installState {
+                    // File already on disk; the transport is a stale survivor.
+                    // Leave the catalog state at `.installed` and let the
+                    // download manager clean itself up via reconnect orphan
+                    // recovery on the next event.
+                    continue
+                }
+                modelCatalogService.setInstallState(.downloading(progress: 0), for: id)
+            }
+        }
+
         // 3. Drop resume data that's either too old to be useful or
         //    attached to models that no longer exist in the catalog.
         //    Has to run AFTER user-models load + disk reconciliation so

@@ -188,6 +188,10 @@ final class BackgroundDownloadCoordinator: NSObject, BackgroundDownloadProgressi
             // Remove the reverse mapping entries for this model.
             let staleKeys = taskModelMap.compactMap { k, v -> Int? in v == modelID ? k : nil }
             for k in staleKeys { taskModelMap.removeValue(forKey: k) }
+            // Drop the throttle timestamp too — otherwise the dict
+            // grows monotonically with the number of distinct model
+            // IDs the process has ever downloaded.
+            lastProgressYield.removeValue(forKey: modelID)
             return activeTasks.removeValue(forKey: modelID)
         }
         persistState()
@@ -292,6 +296,7 @@ extension BackgroundDownloadCoordinator: URLSessionDownloadDelegate {
         mapQueue.sync {
             taskModelMap.removeValue(forKey: downloadTask.taskIdentifier)
             activeTasks.removeValue(forKey: modelID)
+            lastProgressYield.removeValue(forKey: modelID)
         }
         persistState()
 
@@ -343,6 +348,7 @@ extension BackgroundDownloadCoordinator: URLSessionDownloadDelegate {
         mapQueue.sync {
             taskModelMap.removeValue(forKey: task.taskIdentifier)
             activeTasks.removeValue(forKey: modelID)
+            lastProgressYield.removeValue(forKey: modelID)
         }
         persistState()
 

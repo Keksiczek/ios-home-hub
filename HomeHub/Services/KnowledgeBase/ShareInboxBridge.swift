@@ -53,7 +53,7 @@ struct ShareInboxBridge {
                     )
                     continue
                 }
-                let job = try makeIngestJob(payload: payload, request: request)
+                let job = try await makeIngestJob(payload: payload, request: request)
                 try await jobStore.upsert(job)
                 try await payloadStore.updateRequest(
                     id: request.id,
@@ -79,7 +79,7 @@ struct ShareInboxBridge {
     private func makeIngestJob(
         payload: SharePayload,
         request: ShareRequest
-    ) throws -> IngestJob {
+    ) async throws -> IngestJob {
         let action: IngestAction
         switch request.action {
         case ShareAction.saveToKnowledgeBase: action = .saveToKnowledgeBase
@@ -147,15 +147,35 @@ struct ShareInboxBridge {
             )
 
         case .url:
-            // URLs become a single-line `.txt` "URL: <…>" record.
-            // Real reader-mode HTML extraction is out of scope for
-            // Epic 2 — keep the pipeline working for URLs and let
-            // a future task replace the inline materialisation
-            // with an HTML→text reader pass.
+            // URL shares run through `WebContentExtractor` — a fetch
+            // pass + HTML→text extraction. Failure paths (404, gated
+            // content, JS-only SPA, non-HTML content-type) propagate
+            // as typed errors so the request is marked `.failed` with
+            // a real reason instead of producing a placeholder doc.
             guard let url = payload.originalURL else {
                 throw makeError("URL share neobsahuje URL.")
             }
-            let body = "URL: \(url.absoluteString)\n\nTitle: \(payload.title ?? "")"
+            HHLog.kb.info("ingest: URL share start for \(url.absoluteString, privacy: .public)")
+            let page: WebContentExtractor.Page
+            do {
+                page = try await WebContentExtractor.fetch(url)
+            } catch {
+                HHLog.kb.error("ingest: URL extract failed for \(url.absoluteString, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                throw error
+            }
+            let title = page.title ?? payload.title ?? url.absoluteString
+            // Header lines preserve provenance — the source URL, the
+            // page title, and the fetched-bytes count — so downstream
+            // retrieval can quote them and the user can audit the
+            // record's origin in the document detail sheet.
+            let body = """
+            Source URL: \(page.finalURL.absoluteString)
+            Title: \(title)
+            Fetched bytes: \(page.fetchedBytes)
+
+            \(page.plainText)
+            """
+            HHLog.kb.info("ingest: URL extract ok for \(page.finalURL.absoluteString, privacy: .public) chars=\(page.plainText.count, privacy: .public)")
             let dest = storage.filesURL.appendingPathComponent(
                 "\(payload.id.uuidString).url.txt"
             )
@@ -169,9 +189,9 @@ struct ShareInboxBridge {
                 workspaceID: request.workspaceID,
                 action: action,
                 status: .queued,
-                title: payload.title ?? url.absoluteString,
+                title: title,
                 sourceAppBundleID: payload.sourceAppBundleID,
-                originalURL: url,
+                originalURL: page.finalURL,
                 localPayloadRelativePath: relPath,
                 mimeType: "text/plain",
                 contentHash: payload.contentHash,

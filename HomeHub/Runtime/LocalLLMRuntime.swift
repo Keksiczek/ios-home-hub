@@ -228,7 +228,7 @@ struct RuntimeStats: Sendable {
     var totalDurationMs: Int
 }
 
-enum RuntimeError: LocalizedError {
+enum RuntimeError: LocalizedError, Equatable {
     case noModelLoaded
     case modelNotInstalled
     case outOfMemory

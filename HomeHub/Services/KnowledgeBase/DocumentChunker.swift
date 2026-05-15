@@ -24,6 +24,37 @@ enum DocumentChunker {
     static let defaultChunkSize = 1000
     static let defaultOverlap = 200
 
+    /// Minimum useful chunk length (after whitespace normalisation).
+    /// Below this the chunk is almost certainly junk (page footer
+    /// fragment, lone bullet, single navigation word) and embedding
+    /// it just pollutes retrieval ranking. 40 chars ≈ a short
+    /// sentence; cuts trash without dropping legitimate slide-deck
+    /// content.
+    static let minChunkChars = 40
+
+    /// Collapses runs of whitespace into single spaces and trims the
+    /// edges. Stable, deterministic — same input → same output.
+    /// Applied per chunk before persistence so the embedding sees
+    /// the same string the UI will display, and so two chunks that
+    /// differ only in HTML whitespace artefacts hash identically.
+    static func normaliseWhitespace(_ raw: String) -> String {
+        var s = raw
+        // Tabs and non-breaking-space → regular space.
+        s = s.replacingOccurrences(of: "\t", with: " ")
+        s = s.replacingOccurrences(of: "\u{00A0}", with: " ")
+        // Multiple newlines → at most two (paragraph break).
+        if let r = try? NSRegularExpression(pattern: "(?:[ ]*\n[ ]*){3,}", options: []) {
+            let range = NSRange(location: 0, length: (s as NSString).length)
+            s = r.stringByReplacingMatches(in: s, range: range, withTemplate: "\n\n")
+        }
+        // Runs of spaces → single space.
+        if let r = try? NSRegularExpression(pattern: "[ ]{2,}", options: []) {
+            let range = NSRange(location: 0, length: (s as NSString).length)
+            s = r.stringByReplacingMatches(in: s, range: range, withTemplate: " ")
+        }
+        return s.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     /// Returns the list of chunks for a document. The chunker does
     /// NOT trim or normalise input beyond collapsing pure-whitespace
     /// gaps — keeping the original text means `startOffset`/
@@ -52,7 +83,21 @@ enum DocumentChunker {
 
         while start < chars.count {
             let end = min(start + chunkSize, chars.count)
-            let slice = String(chars[start..<end])
+            let rawSlice = String(chars[start..<end])
+            let slice = normaliseWhitespace(rawSlice)
+
+            // Skip near-empty chunks (e.g. PDF pages with just a page
+            // number, or trailing whitespace at the end of a doc).
+            // Increment ordinal anyway so chunk IDs across reindexes
+            // line up with the original sliding window — re-running
+            // the chunker on the same source must produce the same
+            // IDs, even for the chunks we now drop.
+            if slice.count < minChunkChars {
+                ordinal += 1
+                if end == chars.count { break }
+                start += stride
+                continue
+            }
 
             // Hash the (text, ordinal) pair so the chunk ID is
             // deterministic across reindexes. Same document → same
@@ -117,7 +162,19 @@ enum DocumentChunker {
             var start = 0
             while start < chars.count {
                 let end = min(start + chunkSize, chars.count)
-                let slice = String(chars[start..<end])
+                let rawSlice = String(chars[start..<end])
+                let slice = normaliseWhitespace(rawSlice)
+
+                // Drop near-empty chunks; keep globalOrdinal moving
+                // so subsequent re-runs hash to the same IDs even
+                // when whitespace-only chunks are skipped (same
+                // contract as the single-string overload above).
+                if slice.count < minChunkChars {
+                    globalOrdinal += 1
+                    if end == chars.count { break }
+                    start += stride
+                    continue
+                }
 
                 // Same deterministic-ID strategy as the legacy
                 // single-string overload — folding `globalOrdinal`

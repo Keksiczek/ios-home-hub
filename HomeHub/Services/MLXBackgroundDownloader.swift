@@ -310,6 +310,9 @@ final class MLXBackgroundDownloader: NSObject, ObservableObject, BackgroundDownl
             let ids = Set(taskMap.filter { $0.value.modelID == modelID }.keys)
             for id in ids { taskMap.removeValue(forKey: id) }
             jobMap.removeValue(forKey: modelID)
+            // Drop the throttle entry along with the rest — without this
+            // the dict grows unbounded across distinct model IDs.
+            lastProgressYield.removeValue(forKey: modelID)
             return ids
         }
         persistState()
@@ -503,7 +506,10 @@ extension MLXBackgroundDownloader: URLSessionDownloadDelegate {
                 // `removeValue` returns the evicted value, which we don't
                 // need — explicit `_ =` keeps Swift 6 strict-concurrency
                 // unused-result warnings quiet.
-                _ = self.serialQueue.sync { self.jobMap.removeValue(forKey: modelID) }
+                self.serialQueue.sync {
+                    self.jobMap.removeValue(forKey: modelID)
+                    self.lastProgressYield.removeValue(forKey: modelID)
+                }
                 self.persistState()
                 self.activeDownloads.remove(modelID)
                 self.downloadProgress.removeValue(forKey: modelID)
@@ -545,6 +551,7 @@ extension MLXBackgroundDownloader: URLSessionDownloadDelegate {
             let stale = taskMap.filter { $0.value.modelID == modelID }.map(\.key)
             for k in stale { taskMap.removeValue(forKey: k) }
             jobMap.removeValue(forKey: modelID)
+            lastProgressYield.removeValue(forKey: modelID)
         }
         persistState()
         Task { @MainActor [weak self] in
