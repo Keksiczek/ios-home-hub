@@ -77,6 +77,12 @@ final class ChatTextSanitizerTests: XCTestCase {
     }
 
     // MARK: - UTF-8 prefix helper (LlamaContextHandle)
+    //
+    // These tests exercise a helper that lives behind the optional
+    // `#if HOMEHUB_LLAMA_RUNTIME` compile flag. Without the flag the
+    // symbol doesn't exist, so we gate the entire block on the same
+    // flag to keep the default (MLX-only) test build compiling.
+    #if HOMEHUB_LLAMA_RUNTIME
 
     func testDrainValidUTF8PrefixSplitsMidCodepoint() {
         // "č" is 0xC4 0x8D in UTF-8. Slicing after the lead byte should
@@ -103,4 +109,6 @@ final class ChatTextSanitizerTests: XCTestCase {
         XCTAssertEqual(decoded, "")
         XCTAssertEqual(leftover, [0xF0, 0x9F])
     }
+
+    #endif // HOMEHUB_LLAMA_RUNTIME
 }

@@ -25,6 +25,12 @@ struct ModelsView: View {
     @State private var showAddFromURL  = false
     @State private var availableBytes: Int64 = 0
     @State private var searchText      = ""
+    /// Coarse "this device looks comfortable for LLM work right now"
+    /// signal. Recomputed off-main on appearance + pull-to-refresh. We
+    /// keep `nil` until the first compute completes so the strip can
+    /// show a placeholder instead of misleading "vysoká" before we've
+    /// actually queried the system.
+    @State private var memoryHeadroom: RuntimeManager.MemoryHeadroom?
 
     // MARK: - Disk stats
 
@@ -34,9 +40,133 @@ struct ModelsView: View {
         availableBytes = v?.volumeAvailableCapacityForImportantUsage.map { Int64($0) } ?? 0
     }
 
+    /// Async refresh of the memory-headroom strip. Runs the sysctl off
+    /// the main actor — fast in practice, but the detached Task keeps
+    /// the contract uniform with the production load gate and makes
+    /// the off-main intent explicit.
+    private func refreshMemoryHeadroom() async {
+        let profileSnapshot = settings.current.performanceProfile
+        let result = await Task.detached(priority: .userInitiated) {
+            RuntimeManager.currentHeadroom(profile: profileSnapshot)
+        }.value
+        await MainActor.run {
+            memoryHeadroom = result
+        }
+    }
+
     private func hasSufficientSpace(for model: LocalModel) -> Bool {
         guard model.sizeBytes > 0 else { return true }
         return availableBytes >= Int64(Double(model.sizeBytes) * 1.1)
+    }
+
+    // MARK: - Memory headroom strip
+
+    /// Compact "Paměťová rezerva pro LLM: vysoká/střední/nízká" row
+    /// shown above the model list. Defensive against `nil` headroom
+    /// (initial state before the first compute) — renders a quiet
+    /// placeholder rather than guessing.
+    @ViewBuilder
+    private var memoryHeadroomRow: some View {
+        let headroom = memoryHeadroom
+        HStack(spacing: HHTheme.spaceS) {
+            Image(systemName: headroomIcon(for: headroom))
+                .foregroundStyle(headroomColor(for: headroom))
+                .imageScale(.medium)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Paměťová rezerva pro LLM: \(headroomLabel(for: headroom))")
+                    .font(HHTheme.footnote.weight(.medium))
+                    .foregroundStyle(HHTheme.textPrimary)
+                Text("Snímek paměti zařízení v této chvíli — uvolnění jiných aplikací může číslo zlepšit.")
+                    .font(HHTheme.caption)
+                    .foregroundStyle(HHTheme.textSecondary)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(HHTheme.spaceM)
+        .background(
+            RoundedRectangle(cornerRadius: HHTheme.cornerLarge, style: .continuous)
+                .fill(headroomColor(for: headroom).opacity(0.10))
+        )
+    }
+
+    private func headroomLabel(for h: RuntimeManager.MemoryHeadroom?) -> String {
+        guard let h else { return "počítá se…" }
+        return h.localizedLabel
+    }
+
+    private func headroomIcon(for h: RuntimeManager.MemoryHeadroom?) -> String {
+        guard let h else { return "hourglass" }
+        switch h {
+        case .high:    return "memorychip"
+        case .medium:  return "memorychip.fill"
+        case .low:     return "exclamationmark.triangle.fill"
+        case .unknown: return "questionmark.circle"
+        }
+    }
+
+    private func headroomColor(for h: RuntimeManager.MemoryHeadroom?) -> Color {
+        guard let h else { return HHTheme.textSecondary }
+        switch h {
+        case .high:    return HHTheme.success
+        case .medium:  return HHTheme.accent
+        case .low:     return HHTheme.warning
+        case .unknown: return HHTheme.textSecondary
+        }
+    }
+
+    /// `true` for catalog entries recommended for iPad-only that the
+    /// user is browsing on an iPhone. Maps to compatibility category 2
+    /// (risky / experimental) — the download is **allowed** but the
+    /// confirm sheet adds an explicit memory-risk warning so the user
+    /// can opt in knowingly instead of getting a confusing failure on
+    /// first load. This is intentionally NOT a download block: heavy
+    /// models like Gemma 3n stay reachable as a baseline for users
+    /// who want to experiment.
+    private func isRiskyOnPhone(_ model: LocalModel) -> Bool {
+        isRunningOnPhone && !model.recommendedFor.contains(.iPhone)
+    }
+
+    /// Compose the download confirm sheet's body text from the static
+    /// recommendation plus a snapshot of the memory oracle's verdict for
+    /// **this device, right now**, plus the coarse device-wide headroom.
+    /// Three buckets blended:
+    ///   - `cannotLoad` → strong "load se na toto zařízení nevejde"
+    ///   - `risky` (or oracle unavailable) → "běh nejistý"; if headroom
+    ///     is `low` we explicitly say "velmi pravděpodobně selže"
+    ///   - `safe` (oracle says fits with margin) → mildest copy; if
+    ///     headroom is `high` we drop the warning tone further
+    private func downloadDialogRiskMessage(for model: LocalModel) -> String {
+        let verdict = RuntimeManager.evaluateFeasibility(
+            for: model,
+            profile: settings.current.performanceProfile
+        )
+        let base = "\(model.sizeFormatted) – doporučeno pro iPad."
+        let headroomTail: String = {
+            switch memoryHeadroom {
+            case .low?:    return " Vaše aktuální paměťová rezerva je nízká."
+            case .high?:   return " Vaše aktuální paměťová rezerva je dostatečná."
+            default:       return ""
+            }
+        }()
+        switch verdict {
+        case .cannotLoad?:
+            return base
+                + " V aktuálním stavu paměti by se model na toto zařízení nevešel."
+                + headroomTail
+                + " Stáhnout můžete, ale načtení skoro jistě selže."
+        case .risky?, .none:
+            if memoryHeadroom == .low {
+                return base
+                    + " Vaše aktuální paměťová rezerva je nízká — tento model velmi pravděpodobně selže při načtení nebo generování."
+            }
+            return base + " Stažení je možné, ale načtení nebo generování na tomto zařízení může selhat kvůli paměti." + headroomTail
+        case .safe?:
+            if memoryHeadroom == .high {
+                return base + " Aktuálně by se model do paměti měl vejít, ale na iPhonu zůstává experimentální."
+            }
+            return base + " Aktuálně by se model do paměti měl vejít, ale na iPhonu zůstává experimentální." + headroomTail
+        }
     }
 
     // MARK: - Section helpers
@@ -70,6 +200,17 @@ struct ModelsView: View {
     var body: some View {
         NavigationStack {
             List {
+                // Memory-headroom strip — always rendered (with placeholder
+                // before the first compute) so the layout doesn't jump
+                // when the result lands. Coarse three-bucket signal:
+                // not real-time accuracy, just a "device feels …" reading.
+                Section {
+                    memoryHeadroomRow
+                        .listRowBackground(Color.clear)
+                        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                }
+                .listSectionSpacing(.compact)
+
                 ForEach(filteredSections) { section in
                     Section {
                         ForEach(section.items) { item in
@@ -125,12 +266,20 @@ struct ModelsView: View {
             .searchable(text: $searchText, prompt: "Search models")
             .refreshable {
                 refreshAvailableBytes()
+                await refreshMemoryHeadroom()
                 await downloads.reconcileInstallStates()
             }
             .onAppear {
                 // Connect the view-model once; idempotent on subsequent appearances.
                 vm.connect(catalog: catalog, downloads: downloads, runtime: runtime)
                 refreshAvailableBytes()
+            }
+            .task {
+                // Headroom compute lives on `.task` (not `.onAppear`) so
+                // the structured-concurrency cancellation behavior kicks
+                // in if the user navigates away mid-compute. Idempotent
+                // on re-appearance — re-runs whenever the view comes back.
+                await refreshMemoryHeadroom()
             }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -157,7 +306,23 @@ struct ModelsView: View {
                 )
             ) {
                 if let model = downloadTarget {
-                    if hasSufficientSpace(for: model) {
+                    if !hasSufficientSpace(for: model) {
+                        // Disk space is a hard block — no Download action.
+                        Button("Cancel", role: .cancel) { downloadTarget = nil }
+                    } else if isRiskyOnPhone(model) {
+                        // Soft gate: download proceeds, but the action label
+                        // ("Stáhnout přesto") signals the user is opting in
+                        // to a non-guaranteed run.
+                        Button("Stáhnout přesto") {
+                            if model.format == .mlx {
+                                Task { await downloads.startMLXDownload(model) }
+                            } else {
+                                downloads.start(model)
+                            }
+                            downloadTarget = nil
+                        }
+                        Button("Zrušit", role: .cancel) { downloadTarget = nil }
+                    } else {
                         let label = model.sizeBytes > 0 ? "Download \(model.sizeFormatted)" : "Download"
                         Button(label) {
                             if model.format == .mlx {
@@ -167,12 +332,25 @@ struct ModelsView: View {
                             }
                             downloadTarget = nil
                         }
+                        Button("Cancel", role: .cancel) { downloadTarget = nil }
                     }
-                    Button("Cancel", role: .cancel) { downloadTarget = nil }
                 }
             } message: {
                 if let model = downloadTarget {
-                    if hasSufficientSpace(for: model) {
+                    if !hasSufficientSpace(for: model) {
+                        let needed = ByteCountFormatter.string(fromByteCount: model.sizeBytes,  countStyle: .file)
+                        let free   = ByteCountFormatter.string(fromByteCount: availableBytes,   countStyle: .file)
+                        Text("Not enough storage. Need \(needed) but only \(free) available. Free up space and try again.")
+                    } else if isRiskyOnPhone(model) {
+                        // Static catalog + dynamic oracle both inform this
+                        // text. The static side (iPad-recommended on iPhone)
+                        // anchors the wording; if the dynamic oracle says
+                        // `cannotLoad` we sharpen it with a "load se nepovede"
+                        // note. Download is still permitted because the user
+                        // may free memory before they tap Load — the load
+                        // gate itself remains the source of truth.
+                        Text(downloadDialogRiskMessage(for: model))
+                    } else {
                         let suffix = model.format == .mlx
                             ? " Downloads continue in the background when the screen is off."
                             : ""
@@ -181,10 +359,6 @@ struct ModelsView: View {
                         } else {
                             Text("The model will be downloaded and stored on this device.\(suffix)")
                         }
-                    } else {
-                        let needed = ByteCountFormatter.string(fromByteCount: model.sizeBytes,  countStyle: .file)
-                        let free   = ByteCountFormatter.string(fromByteCount: availableBytes,   countStyle: .file)
-                        Text("Not enough storage. Need \(needed) but only \(free) available. Free up space and try again.")
                     }
                 }
             }
@@ -245,10 +419,13 @@ private struct ModelBrowserRow: View {
                         Text(model.displayName)
                             .font(HHTheme.headline)
                         backendBadge
+                        // Soft compatibility badge. Replaces the prior
+                        // "Vyžaduje iPad" hard block — the model is still
+                        // downloadable and visible; the badge just makes
+                        // the risk legible at a glance instead of relying
+                        // on the long subtitle below.
                         if isRunningOnPhone && isIPadOnly {
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .foregroundStyle(HHTheme.warning)
-                                .imageScale(.small)
+                            experimentalBadge
                         }
                         if model.isUserAdded {
                             Text("Custom")
@@ -262,9 +439,10 @@ private struct ModelBrowserRow: View {
                     }
                     modelSubtitle
                     if isRunningOnPhone && isIPadOnly {
-                        Text("iPad-only — likely to OOM on iPhone")
+                        Text("Doporučeno pro iPad — na tomto zařízení může selhat kvůli paměti.")
                             .font(HHTheme.caption)
                             .foregroundStyle(HHTheme.warning)
+                            .lineLimit(2)
                     }
                 }
                 Spacer()
@@ -295,6 +473,20 @@ private struct ModelBrowserRow: View {
             .padding(.vertical, 2)
             .background(badgeBg, in: Capsule())
             .foregroundStyle(badgeFg)
+    }
+
+    /// Orange "Experimentální" pill shown next to the backend badge when
+    /// the catalog entry is recommended for iPad-class hardware only and
+    /// we're running on iPhone. Compatibility category 2 in the model
+    /// policy — the model is downloadable, but the run is not guaranteed.
+    private var experimentalBadge: some View {
+        Text("Experimentální")
+            .font(.system(size: 10, weight: .semibold))
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(HHTheme.warning.opacity(0.18), in: Capsule())
+            .foregroundStyle(HHTheme.warning)
+            .accessibilityLabel("Experimentální na iPhonu, doporučeno pro iPad")
     }
 
     private var badgeFg: Color {
@@ -360,7 +552,12 @@ private struct ModelBrowserRow: View {
                         .buttonStyle(HHSecondaryButtonStyle())
                         .disabled(!item.actions.canDownload)
                         .accessibilityIdentifier("mlx_download_button")
-                    Text("Background transfer · \(model.sizeFormatted) · tap Load after")
+                    // Footer text differs for risky models so the user
+                    // understands the download is permitted but the run
+                    // is not guaranteed on this hardware.
+                    Text(isRunningOnPhone && isIPadOnly
+                         ? "Stažení možné · běh nejistý · \(model.sizeFormatted)"
+                         : "Background transfer · \(model.sizeFormatted) · tap Load after")
                         .font(HHTheme.caption)
                         .foregroundStyle(HHTheme.textSecondary)
                 }

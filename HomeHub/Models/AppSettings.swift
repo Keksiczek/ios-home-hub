@@ -361,17 +361,17 @@ enum PerformanceProfile: String, Codable, CaseIterable, Identifiable, Sendable {
 
     var label: String {
         switch self {
-        case .conservative: return "Conservative"
-        case .balanced:     return "Balanced"
-        case .aggressive:   return "Aggressive"
+        case .conservative: return "Konzervativní"
+        case .balanced:     return "Vyvážené"
+        case .aggressive:   return "Výkonné"
         }
     }
 
     var blurb: String {
         switch self {
-        case .conservative: return "Strict memory headroom. Rejects loads that might OOM. Best on older / 4 GB devices."
-        case .balanced:     return "Default. 1.5× headroom over weights — same as previous builds."
-        case .aggressive:   return "Accept tight loads. Try this only on iPhone 16 Pro / M-series iPad."
+        case .conservative: return "Bezpečné. Striktní rezerva paměti, odmítá rizikové loady. Doporučeno pro starší / 4GB zařízení."
+        case .balanced:     return "Doporučeno. 1,5× rezerva nad váhami modelu — stejné jako dosavadní výchozí chování."
+        case .aggressive:   return "Může být nestabilní na starších zařízeních. Zkoušejte pouze na iPhone 16 Pro / iPadu M-series."
         }
     }
 }

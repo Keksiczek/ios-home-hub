@@ -129,15 +129,60 @@ struct DeveloperDiagnosticsView: View {
                 .font(.caption)
                 .foregroundStyle(.orange)
             }
+            // Memory oracle: surfaces the verdict from the last preflight
+            // so field debug sessions can correlate odd post-load behavior
+            // with a tight-fit warning that proceeded under user opt-in.
+            if let verdict = runtime.lastFeasibilityVerdict {
+                LabeledContent("Last preflight", value: verdictLabel(verdict))
+                    .foregroundStyle(verdictColor(verdict))
+            }
         } header: {
             Text("Hardware & Safe Mode")
         } footer: {
-            Text(
-                "Older A-series chips (A11–A14) have documented Metal SDPA " +
-                "regressions. The runtime falls back to safer paths automatically. " +
-                "Memory factor depends on the Performance profile chosen in " +
-                "Settings → Generation Engine; the next load will use this value."
-            )
+            VStack(alignment: .leading, spacing: 6) {
+                Text(
+                    "Older A-series chips (A11–A14) have documented Metal SDPA " +
+                    "regressions. The runtime falls back to safer paths automatically. " +
+                    "Memory factor depends on the Performance profile chosen in " +
+                    "Settings → Generation Engine; the next load will use this value."
+                )
+                // Tooltip-style microcopy for the verdict row. Kept in the
+                // footer so it's discoverable without adding popovers.
+                if runtime.lastFeasibilityVerdict != nil {
+                    Text(
+                        "Last preflight: snímek paměti při posledním pokusu o " +
+                        "load, ne trvalý verdikt zařízení.  " +
+                        "**Safe** — model + rezerva se vejdou.  " +
+                        "**Risky** — vejde se model, ale ne plná rezerva — load proběhne, generování může selhat pod tlakem.  " +
+                        "**Cannot load** — i samotné váhy překračují volnou paměť — load je zablokován."
+                    )
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    /// Compact one-liner for the tri-state oracle verdict.
+    private func verdictLabel(_ verdict: RuntimeManager.LoadFeasibility) -> String {
+        let fmt = ByteCountFormatter()
+        fmt.allowedUnits = [.useMB, .useGB]
+        fmt.countStyle = .file
+        switch verdict {
+        case .safe(let headroom):
+            return "Safe (+\(fmt.string(fromByteCount: headroom)))"
+        case .risky(let required, let available):
+            return "Risky (need \(fmt.string(fromByteCount: required)), have \(fmt.string(fromByteCount: available)))"
+        case .cannotLoad(let required, let available):
+            return "Cannot load (need \(fmt.string(fromByteCount: required)), have \(fmt.string(fromByteCount: available)))"
+        }
+    }
+
+    private func verdictColor(_ verdict: RuntimeManager.LoadFeasibility) -> Color {
+        switch verdict {
+        case .safe:       return .secondary
+        case .risky:      return .orange
+        case .cannotLoad: return .red
         }
     }
 

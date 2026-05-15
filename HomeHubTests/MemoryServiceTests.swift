@@ -55,9 +55,14 @@ final class MemoryServiceTests: XCTestCase {
         let store = InMemoryStore.empty()
         let settings = SettingsService(store: store)
         let runtime = ExtractionStubRuntime()
-        await runtime.load(model: stubModel)
+        try? await runtime.load(model: stubModel)
         runtime.responseText = responseJSON
-        let extractor = MemoryExtractionService(runtime: runtime)
+        // `MemoryExtractionService` was refactored to take the
+        // `RuntimeManager` facade rather than a raw `LocalLLMRuntime`
+        // so it can observe load/unload state. Wrap the stub here
+        // so the test setup matches production wiring.
+        let runtimeManager = RuntimeManager(runtime: runtime)
+        let extractor = MemoryExtractionService(runtime: runtimeManager)
         let service = MemoryService(store: store, settings: settings, extractor: extractor)
         return (service, store)
     }

@@ -76,8 +76,9 @@ final class RuntimeManager: ObservableObject {
 
     /// Profile → safety-factor mapping. Conservative trades a chance of
     /// being told "no" against a chance of getting OOM-killed mid-load;
-    /// aggressive does the opposite.
-    static func memorySafetyFactor(for profile: PerformanceProfile) -> Double {
+    /// aggressive does the opposite. `nonisolated` so `evaluateFeasibility`
+    /// can call it from off-actor code paths.
+    nonisolated static func memorySafetyFactor(for profile: PerformanceProfile) -> Double {
         switch profile {
         case .conservative: return 1.8
         case .balanced:     return 1.5
@@ -211,21 +212,49 @@ final class RuntimeManager: ObservableObject {
         logLoadDecision(for: model)
 
         // Memory preflight — abort before allocating anything.
-        let factor = Self.memorySafetyFactor(for: performanceProfile)
-        if let check = memoryCheck(for: model, safetyFactor: factor) {
-            if !check.canLoad {
-                let fmt = ByteCountFormatter()
-                fmt.allowedUnits = [.useMB, .useGB]
-                fmt.countStyle = .file
-                log.warning("Runtime: Memory gate FAIL for '\(model.id, privacy: .public)' — need \(check.required) B, have \(check.available) B (profile=\(self.performanceProfile.rawValue, privacy: .public) ×\(factor))")
+        //
+        // Run the oracle off the main actor: `os_proc_available_memory()`
+        // is a fast sysctl call, but doing it via `Task.detached` is the
+        // documented way to keep heavier future variants (e.g.
+        // `mach_host_statistics` fallback) off the UI watchdog, and it
+        // keeps the contract honest — the user explicitly asked for the
+        // preflight to run off main thread.
+        let currentProfile = performanceProfile
+        let modelForOracle = model
+        let verdict: LoadFeasibility? = await Task.detached(priority: .userInitiated) {
+            Self.evaluateFeasibility(for: modelForOracle, profile: currentProfile)
+        }.value
+        lastFeasibilityVerdict = verdict
+
+        if let verdict {
+            let fmt = ByteCountFormatter()
+            fmt.allowedUnits = [.useMB, .useGB]
+            fmt.countStyle = .file
+            switch verdict {
+            case .cannotLoad(let requiredBytes, let availableBytes):
+                let needBytes = fmt.string(fromByteCount: requiredBytes)
+                let haveBytes = fmt.string(fromByteCount: availableBytes)
+                let hint: String
+                switch currentProfile {
+                case .aggressive, .balanced:
+                    hint = "Zkuste menší model nebo přepněte profil výkonu na Konzervativní v Nastavení."
+                case .conservative:
+                    hint = "Zkuste menší model — tento se na toto zařízení nevejde ani s konzervativní rezervou."
+                }
+                log.warning("Runtime: Memory oracle CANNOT_LOAD '\(model.id, privacy: .public)' — need \(requiredBytes) B raw, have \(availableBytes) B (profile=\(currentProfile.rawValue, privacy: .public))")
                 state = .failed(
                     modelID: model.id,
-                    reason: "Nedostatek paměti: model potřebuje ≈\(fmt.string(fromByteCount: check.required)), " +
-                            "systém hlásí pouze \(fmt.string(fromByteCount: check.available)) volných."
+                    reason: "Model se na toto zařízení v aktuálním stavu nevejde: potřebuje ≈\(needBytes), volných je jen \(haveBytes). \(hint)"
                 )
                 return
+            case .risky(let requiredBytes, let availableBytes):
+                // Load proceeds — the user opted in. The verdict stays
+                // on `lastFeasibilityVerdict` so DeveloperDiagnostics +
+                // any future "tight fit" UI surface can read it.
+                log.notice("Runtime: Memory oracle RISKY '\(model.id, privacy: .public)' — safe-margin requires \(requiredBytes) B, have \(availableBytes) B — proceeding under user opt-in")
+            case .safe(let headroomBytes):
+                log.info("Runtime: Memory oracle SAFE '\(model.id, privacy: .public)' — headroom \(headroomBytes) B (profile=\(currentProfile.rawValue, privacy: .public))")
             }
-            log.info("Runtime: Memory gate OK for '\(model.id, privacy: .public)' — need \(check.required) B, have \(check.available) B (profile=\(self.performanceProfile.rawValue, privacy: .public) ×\(factor))")
         }
 
         // Phase 3: Load off @MainActor. Task.detached moves Metal pipeline
@@ -245,6 +274,12 @@ final class RuntimeManager: ObservableObject {
             mlxLoadProgress = nil
             activeModel = model
             state = .ready(modelID: model.id)
+            // Clear the risky-verdict crumb only if the load actually
+            // succeeded — `.risky` stays on the manager when the load
+            // failed (Diagnostics needs the verdict to correlate).
+            if case .safe = lastFeasibilityVerdict {
+                lastFeasibilityVerdict = nil
+            }
             log.info("Runtime: '\(model.id, privacy: .public)' loaded successfully")
         } catch is CancellationError {
             mlxLoadProgress = nil
@@ -289,27 +324,177 @@ final class RuntimeManager: ObservableObject {
         await runtime.unload()
         activeModel = nil
         state = .idle
+        // Drop any stale verdict from the previous load. The next load
+        // will repopulate it via the oracle.
+        lastFeasibilityVerdict = nil
     }
 
-    // MARK: - Memory check
+    // MARK: - Memory oracle
 
-    /// Central memory preflight for loading a model.
+    /// Tri-state preflight verdict for loading a model on the current
+    /// device + memory state. Single source of truth for "is it safe to
+    /// load this right now?" — consumed by `_performLoad` (gates load)
+    /// and exposed via `Self.evaluateFeasibility(...)` for UI consumers
+    /// that want to anticipate the outcome (e.g. download confirm
+    /// dialog).
+    enum LoadFeasibility: Equatable, Sendable {
+        /// Available memory comfortably covers the model weights plus
+        /// the profile's safety margin. Proceed silently.
+        case safe(headroomBytes: Int64)
+        /// Weights fit raw RAM, but the profile's safety margin would
+        /// be eaten. Load may succeed but is one Jetsam ping away
+        /// from being killed. UI should surface a "Může selhat kvůli
+        /// paměti" warning; the load itself is allowed to proceed
+        /// because the user explicitly chose this model.
+        case risky(requiredBytes: Int64, availableBytes: Int64)
+        /// Even raw model weights exceed available memory. Loading
+        /// would almost certainly trigger an immediate OOM. Block.
+        case cannotLoad(requiredBytes: Int64, availableBytes: Int64)
+
+        /// `true` for `.safe` and `.risky` — i.e. the load should be
+        /// attempted. `.cannotLoad` is the only veto.
+        var permitsLoad: Bool {
+            if case .cannotLoad = self { return false }
+            return true
+        }
+    }
+
+    /// Memory oracle — pure function over `(model, profile, available)`.
+    /// Exposed as a static so callers without a `RuntimeManager` (UI
+    /// preview, tests, alternate entry points) can evaluate the same
+    /// verdict the load gate will see. Pass `nil` for `available` to
+    /// have the oracle query `os_proc_available_memory()` itself.
     ///
-    /// - Parameters:
-    ///   - model: The model to evaluate.
-    ///   - safetyFactor: Multiplier applied to `model.sizeBytes`. Defaults
-    ///     to the value for the current `performanceProfile`.
-    /// - Returns: `(required, available, canLoad)`, or `nil` if the check is
-    ///   not applicable (unknown model size, or `os_proc_available_memory`
-    ///   returned zero).
-    private func memoryCheck(
+    /// `nonisolated` so the load gate can invoke it from a detached
+    /// Task without bouncing back onto the `@MainActor` — the function
+    /// is a pure read of `model.sizeBytes` + the immutable safety table
+    /// + a sysctl call.
+    ///
+    /// Sizing model: the safety factor (profile-dependent: 1.3 / 1.5 /
+    /// 1.8) is the "comfortable" multiplier — it accounts for KV cache,
+    /// Metal buffers, and headroom for the rest of the app. The raw
+    /// `model.sizeBytes` is the absolute floor below which the model
+    /// cannot even be mapped.
+    nonisolated static func evaluateFeasibility(
         for model: LocalModel,
-        safetyFactor: Double? = nil
-    ) -> (required: Int64, available: Int64, canLoad: Bool)? {
-        guard model.sizeBytes > 0, let available = Self.availableMemoryBytes() else { return nil }
-        let factor = safetyFactor ?? Self.memorySafetyFactor(for: performanceProfile)
-        let required = Int64(Double(model.sizeBytes) * factor)
-        return (required: required, available: available, canLoad: available >= required)
+        profile: PerformanceProfile,
+        available: Int64? = nil
+    ) -> LoadFeasibility? {
+        guard model.sizeBytes > 0 else { return nil }
+        guard let avail = available ?? availableMemoryBytes() else { return nil }
+        let raw = model.sizeBytes
+        let safe = Int64(Double(model.sizeBytes) * memorySafetyFactor(for: profile))
+        if avail >= safe {
+            return .safe(headroomBytes: avail - safe)
+        } else if avail >= raw {
+            return .risky(requiredBytes: safe, availableBytes: avail)
+        } else {
+            return .cannotLoad(requiredBytes: raw, availableBytes: avail)
+        }
+    }
+
+    /// Convenience for instance call sites — same as
+    /// `Self.evaluateFeasibility(for:profile:available:)` with the
+    /// instance's current `performanceProfile`.
+    func feasibility(for model: LocalModel) -> LoadFeasibility? {
+        Self.evaluateFeasibility(for: model, profile: performanceProfile)
+    }
+
+    /// Last preflight verdict from the most recent `load()` call.
+    /// Cleared on successful load completion (so a once-risky load
+    /// that actually finished doesn't keep flashing the warning).
+    /// Read by `DeveloperDiagnosticsView`.
+    @Published private(set) var lastFeasibilityVerdict: LoadFeasibility?
+
+    // MARK: - Memory estimates (UI side)
+
+    /// Coarse-grained KV cache size estimate.
+    ///
+    /// We don't have access to the model's per-layer dimensions until
+    /// after it's loaded, and even then MLX-Swift doesn't expose them
+    /// uniformly. A pragmatic proxy: KV bytes-per-token scales roughly
+    /// with model weight size. Empirically, for 4-bit quantised models
+    /// in the 0.5 GB – 5 GB range, the per-token cost lands near
+    /// `model.sizeBytes × 5 × 10⁻⁵`:
+    ///   - 700 MB Llama-3.2-1B → ~35 KB/token → ~70 MB @ 2k context
+    ///   - 1.9 GB Llama-3.2-3B → ~95 KB/token → ~190 MB @ 2k context
+    ///   - 4.5 GB Llama-3.1-8B → ~225 KB/token → ~460 MB @ 2k context
+    ///
+    /// Errs on the high side so the "total memory" estimate shown in
+    /// the model detail sheet doesn't undersell the load cost. Returns
+    /// 0 if `model.sizeBytes` is unknown.
+    nonisolated static func estimatedKVCacheBytes(
+        for model: LocalModel,
+        contextLength: Int? = nil
+    ) -> Int64 {
+        guard model.sizeBytes > 0 else { return 0 }
+        let ctx = contextLength ?? model.contextLength
+        guard ctx > 0 else { return 0 }
+        let bytesPerToken = Int64(Double(model.sizeBytes) * 5e-5)
+        return bytesPerToken * Int64(ctx)
+    }
+
+    /// Total estimated resident memory required to actually generate
+    /// with this model at the given context: weights + KV cache.
+    /// **Does not** include the profile's safety margin — that's
+    /// applied separately by the oracle.
+    nonisolated static func estimatedTotalMemoryBytes(
+        for model: LocalModel,
+        contextLength: Int? = nil
+    ) -> Int64 {
+        model.sizeBytes + estimatedKVCacheBytes(for: model, contextLength: contextLength)
+    }
+
+    // MARK: - Memory headroom (coarse device-wide signal)
+
+    /// Coarse "how comfortable is this device with LLM work right now"
+    /// signal. Drives the `ModelsView` headroom strip and feeds into
+    /// the risk dialog wording.
+    ///
+    /// Computed against a **reference model** (typical iPhone-safe 4-bit
+    /// 3B, ≈ 2 GB) rather than any specific catalog entry, so the strip
+    /// stays stable as the user scrolls the catalog and isn't biased by
+    /// whichever model happens to be in view.
+    enum MemoryHeadroom: Equatable, Sendable {
+        case high      // available ≥ reference × 1.5 — comfortable
+        case medium    // available ≥ reference × 1.0
+        case low       // available < reference
+        case unknown   // os_proc_available_memory returned 0 / not on device
+
+        var localizedLabel: String {
+            switch self {
+            case .high:    return "vysoká"
+            case .medium:  return "střední"
+            case .low:     return "nízká"
+            case .unknown: return "neznámá"
+            }
+        }
+    }
+
+    /// Reference model footprint the headroom strip compares against.
+    /// Picked as "the smallest model we'd actually recommend on iPhone"
+    /// — ≈ 2 GB (Llama-3.2-3B class). Tweaking this changes how lenient
+    /// the headroom buckets are.
+    nonisolated static let headroomReferenceBytes: Int64 = 2_000_000_000
+
+    /// Snapshot of the device's current memory headroom. Pure function
+    /// modulo `availableMemoryBytes()`, which is a single sysctl call —
+    /// callers should still run this off `@MainActor` (the UI does that
+    /// via `Task.detached`).
+    nonisolated static func currentHeadroom(
+        profile: PerformanceProfile,
+        available: Int64? = nil
+    ) -> MemoryHeadroom {
+        guard let avail = available ?? availableMemoryBytes() else { return .unknown }
+        let factor = memorySafetyFactor(for: profile)
+        let reference = Int64(Double(headroomReferenceBytes) * factor)
+        if avail >= reference + reference / 2 {  // reference × 1.5
+            return .high
+        } else if avail >= reference {
+            return .medium
+        } else {
+            return .low
+        }
     }
 
     /// One-line per-load decision log. Captures the things we wish we
@@ -338,7 +523,10 @@ final class RuntimeManager: ObservableObject {
 
     /// Returns the number of bytes the OS considers available for this process
     /// via `os_proc_available_memory()` (iOS 14+). Returns `nil` on error.
-    private static func availableMemoryBytes() -> Int64? {
+    /// Public so the memory oracle (`Self.evaluateFeasibility`) and any
+    /// future fallback path can share a single implementation. `nonisolated`
+    /// so it's callable from off-actor code paths.
+    nonisolated static func availableMemoryBytes() -> Int64? {
         let bytes = _os_proc_available_memory()
         guard bytes > 0 else { return nil }
         return Int64(min(bytes, UInt(Int64.max)))

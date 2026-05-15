@@ -29,6 +29,23 @@ final class ConversationService: ObservableObject {
     /// inline hint rather than silently dropping the message.
     @Published private(set) var sendFeedback: [UUID: String] = [:]
 
+    /// Per-conversation generation phase, observed by the chat UI so
+    /// it can distinguish "reading context" (compute-heavy prefill, no
+    /// tokens yet) from "typing" (decode streaming tokens). Without
+    /// this signal, long RAG/attachment prefills (5–15 s on iPhone)
+    /// look indistinguishable from a frozen app.
+    ///
+    /// Transitions:
+    ///   - `performSend` start  → `.prefill` (entry written when streaming begins)
+    ///   - First `.token` event → `.decoding`
+    ///   - Stream end / cancel  → entry removed
+    @Published private(set) var generationPhase: [UUID: GenerationPhase] = [:]
+
+    enum GenerationPhase: Equatable, Sendable {
+        case prefill
+        case decoding
+    }
+
     /// True when any conversation is currently streaming.
     var isAnyStreaming: Bool { !streamingConversationIDs.isEmpty }
 
@@ -137,11 +154,13 @@ final class ConversationService: ObservableObject {
     }
 
     func deleteConversation(_ id: UUID) async {
-        activeStreams[id]?.cancel()
-        activeStreams[id] = nil
+        // Single teardown for the four streaming-state slots. After
+        // this call the deleted conversation is guaranteed to be
+        // absent from every lifecycle dictionary — no orphan windows
+        // while the cancelled Task unwinds.
+        endGenerationLifecycle(for: id, cancellingTask: true)
         conversations.removeAll { $0.id == id }
         messagesByConversation[id] = nil
-        streamingConversationIDs.remove(id)
         summaryByConversation[id] = nil
         await runtime.invalidateSession(for: id)
         try? await store.delete(conversationID: id)
@@ -168,10 +187,11 @@ final class ConversationService: ObservableObject {
             return
         }
 
-        activeStreams[conversationID] = Task { [weak self] in
+        let task = Task<Void, Never> { [weak self] in
             guard let self else { return }
             await self.performSend(userInput: trimmed, in: conversationID, attachments: attachments, isWebSearchEnabled: isWebSearchEnabled)
         }
+        beginGenerationLifecycle(task, for: conversationID)
     }
 
     private func showSendFeedback(_ message: String, for conversationID: UUID) {
@@ -209,19 +229,17 @@ final class ConversationService: ObservableObject {
         guard activeStreams[conversationID] == nil else { return .blockedSameConversation }
         guard activeStreams.isEmpty else { return .blockedOtherConversation }
 
-        let task = Task { [weak self] in
+        let task = Task<Void, Never> { [weak self] in
             guard let self else { return }
             await self.performSend(userInput: trimmed, in: conversationID, attachments: attachments, isWebSearchEnabled: isWebSearchEnabled)
         }
-        activeStreams[conversationID] = task
+        beginGenerationLifecycle(task, for: conversationID)
         await task.value
         return .sent
     }
 
     func cancelStream(in conversationID: UUID) {
-        activeStreams[conversationID]?.cancel()
-        activeStreams[conversationID] = nil
-        streamingConversationIDs.remove(conversationID)
+        endGenerationLifecycle(for: conversationID, cancellingTask: true)
     }
 
     /// Removes a single message from the in-memory list and backing store.
@@ -249,6 +267,45 @@ final class ConversationService: ObservableObject {
         // Dropping arbitrary messages invalidates any prefix the runtime
         // has cached for this conversation — force a fresh KV-cache build
         // on the next turn so we don't feed the model an inconsistent prefix.
+        await runtime.invalidateSession(for: conversationID)
+    }
+
+    /// Keeps the most recent `keepLast` messages and drops the rest.
+    /// Surfaced in the chat UI as the "Vymazat staré zprávy" action when
+    /// the context-fill banner appears (>90% of the context window).
+    ///
+    /// Persists each delete, blanks the conversation-list preview if the
+    /// chat becomes empty, and invalidates the runtime's KV-cache session
+    /// so the next turn rebuilds against the trimmed history.
+    ///
+    /// No-op while a generation is streaming — caller should gate on
+    /// `streamingConversationIDs`.
+    func trimMessages(in conversationID: UUID, keepLast: Int) async {
+        guard keepLast >= 0 else { return }
+        guard activeStreams[conversationID] == nil else { return }
+
+        var list = messagesByConversation[conversationID] ?? []
+        guard list.count > keepLast else { return }
+
+        let droppedCount = list.count - keepLast
+        let droppedIDs = list.prefix(droppedCount).map(\.id)
+        list.removeFirst(droppedCount)
+        messagesByConversation[conversationID] = list
+
+        for did in droppedIDs {
+            try? await store.deleteMessage(id: did, conversationID: conversationID)
+        }
+
+        if let idx = conversations.firstIndex(where: { $0.id == conversationID }) {
+            conversations[idx].lastMessagePreview = list.last?.content ?? ""
+            conversations[idx].updatedAt = .now
+            try? await store.save(conversation: conversations[idx])
+        }
+
+        // Drop any cached summary — the prefix that produced it is gone.
+        summaryByConversation[conversationID] = nil
+
+        // KV cache built against the longer history is no longer valid.
         await runtime.invalidateSession(for: conversationID)
     }
 
@@ -308,7 +365,7 @@ final class ConversationService: ObservableObject {
         // this conversation.
         Task { await runtime.invalidateSession(for: conversationID) }
 
-        activeStreams[conversationID] = Task { [weak self] in
+        let task = Task<Void, Never> { [weak self] in
             guard let self else { return }
             await self.performSend(
                 userInput: trimmed,
@@ -317,6 +374,7 @@ final class ConversationService: ObservableObject {
                 skipUserMessage: true
             )
         }
+        beginGenerationLifecycle(task, for: conversationID)
     }
 
     /// Drops the last assistant reply and re-runs generation from the
@@ -351,7 +409,7 @@ final class ConversationService: ObservableObject {
             await runtime.invalidateSession(for: conversationID)
         }
 
-        activeStreams[conversationID] = Task { [weak self] in
+        let task = Task<Void, Never> { [weak self] in
             guard let self else { return }
             await self.performSend(
                 userInput: userInput,
@@ -360,7 +418,86 @@ final class ConversationService: ObservableObject {
                 skipUserMessage: true
             )
         }
+        beginGenerationLifecycle(task, for: conversationID)
     }
+
+    // MARK: - Generation lifecycle (centralised)
+    //
+    // The chat surface tracks a streaming turn through four observable
+    // slots:
+    //   1. `activeStreams[id]`           — the cancellation handle for the Task
+    //   2. `streamingConversationIDs`    — bool gate the UI reads for isStreaming
+    //   3. `generationPhase[id]`         — prefill/decoding for the UI indicator
+    //   4. `timedOutConversations`       — set by the watchdog before cancel
+    //
+    // **Invariant**: at any quiescent point (i.e. between user-visible
+    // operations) all four slots agree — either all populated for the
+    // same conversationID, or all clear. The helpers below are the only
+    // mutation points so we can't drift between them across cleanup
+    // paths (normal completion, error, cancel, watchdog, unload,
+    // deleteConversation). If you add a new lifecycle path, route it
+    // through these helpers instead of mutating the slots directly.
+
+    /// Registers a freshly-started generation Task and marks the
+    /// conversation as streaming + in prefill phase. The phase is set
+    /// before the runtime is even called so the chat UI shows
+    /// "Čte kontext…" during pre-token work (retrieval, embedding,
+    /// prompt assembly) — those phases are also "compute, no tokens
+    /// yet" from the user's point of view.
+    private func beginGenerationLifecycle(_ task: Task<Void, Never>, for conversationID: UUID) {
+        activeStreams[conversationID] = task
+        streamingConversationIDs.insert(conversationID)
+        generationPhase[conversationID] = .prefill
+    }
+
+    /// Promotes the phase on the first observed token. No-op if the
+    /// conversation isn't actively streaming (defensive: a late event
+    /// after teardown must not re-introduce phase state).
+    private func markDecoding(for conversationID: UUID) {
+        guard streamingConversationIDs.contains(conversationID) else { return }
+        if generationPhase[conversationID] == .prefill {
+            generationPhase[conversationID] = .decoding
+        }
+    }
+
+    /// Clears every lifecycle slot for `conversationID`. The single
+    /// teardown point used by `cancelStream`, the `performSend` defer,
+    /// `deleteConversation`, and any future lifecycle-ending path.
+    ///
+    /// - Parameter cancellingTask: When `true`, also cancels the active
+    ///   Task (used by user-initiated cancel / delete). When `false` the
+    ///   caller has just exited the Task body and only needs the
+    ///   bookkeeping cleanup (used by the `defer`).
+    private func endGenerationLifecycle(for conversationID: UUID, cancellingTask: Bool) {
+        if cancellingTask {
+            activeStreams[conversationID]?.cancel()
+        }
+        activeStreams[conversationID] = nil
+        streamingConversationIDs.remove(conversationID)
+        generationPhase[conversationID] = nil
+    }
+
+    #if DEBUG
+    /// Test-only hooks for the lifecycle helpers above. Marked
+    /// `#if DEBUG` so they aren't part of the release surface — the
+    /// production code path only ever calls the `private` helpers
+    /// directly. Use these from the test target to write contract
+    /// tests without round-tripping through `send()` + a real Task.
+    func _test_beginLifecycle(_ task: Task<Void, Never>, for id: UUID) {
+        beginGenerationLifecycle(task, for: id)
+    }
+    func _test_markDecoding(for id: UUID) {
+        markDecoding(for: id)
+    }
+    func _test_endLifecycle(for id: UUID, cancellingTask: Bool) {
+        endGenerationLifecycle(for: id, cancellingTask: cancellingTask)
+    }
+    /// Read-only probe so tests can assert on `activeStreams` membership
+    /// without exposing the dictionary itself.
+    func _test_hasActiveStream(for id: UUID) -> Bool {
+        activeStreams[id] != nil
+    }
+    #endif
 
     // MARK: - Internals
 
@@ -417,7 +554,10 @@ final class ConversationService: ObservableObject {
             self?.cancelStream(in: conversationID)
         }
 
-        streamingConversationIDs.insert(conversationID)
+        // `beginGenerationLifecycle` was called by the caller (`send` /
+        // `sendAndWait`) before this Task was scheduled, so by the time
+        // we land here the four streaming slots are already populated.
+        // This Task is the body that exits via the `defer` below.
 
         // Timeout watchdog: cancels the stream and marks the message `.failed`
         // if generation hangs beyond `generationTimeoutSeconds`. The watchdog
@@ -439,8 +579,11 @@ final class ConversationService: ObservableObject {
             watchdog.cancel()
             timedOutConversations.remove(conversationID)
             Self.endBackgroundTask(bgTaskID)
-            streamingConversationIDs.remove(conversationID)
-            activeStreams[conversationID] = nil
+            // Single teardown for every streaming-state slot. `cancellingTask: false`
+            // because we're *inside* the Task body — calling cancel on
+            // ourselves at this point would be a no-op anyway, but the
+            // signature is explicit so the read is unambiguous.
+            endGenerationLifecycle(for: conversationID, cancellingTask: false)
         }
 
         var list = messagesByConversation[conversationID] ?? []
@@ -609,6 +752,11 @@ final class ConversationService: ObservableObject {
             HHHaptics.impact(.light, enabled: settings.current.haptics)
 
             do {
+                // Phase was set to `.prefill` by `beginGenerationLifecycle`
+                // at the very start of the turn — that includes retrieval,
+                // embedding, prompt assembly, and now the runtime prefill
+                // itself. The UI shows "Čte kontext…" through all of it
+                // because none of these phases emit tokens.
                 let stream = runtime.generate(prompt: runtimePrompt, parameters: parameters)
                 for try await event in stream {
                     // Cooperative cancellation. The user can pull
@@ -629,6 +777,11 @@ final class ConversationService: ObservableObject {
                     }
                     switch event {
                     case .token(let piece):
+                        // First token marks the prefill→decode transition.
+                        // `markDecoding` is idempotent and skips publishing
+                        // when the phase is already decoding, so calling it
+                        // on every token is safe and cheap.
+                        markDecoding(for: conversationID)
                         assistantMessage.content += piece
                         messagesByConversation[conversationID]?[assistantIndex] = assistantMessage
                     case .finished(let reason, _):

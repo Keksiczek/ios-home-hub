@@ -96,6 +96,16 @@ protocol LocalLLMRuntime: AnyObject, Sendable {
     /// surface consumed by `ModelInfoSheet` and `DeveloperDiagnostics`.
     var lastGenerationError: GenerationFailure? { get }
 
+    /// Conversation ID whose KV-cache session is currently warm inside
+    /// the runtime, or `nil` when nothing is cached. Used by the chat
+    /// developer strip to surface "Reuse cache: ANO/NE" for the active
+    /// conversation. **Read-only** — modifying cache state is the
+    /// runtime's responsibility, not the UI's.
+    ///
+    /// Default implementation: `nil` (mock / minimal runtimes that
+    /// don't track sessions). Concrete runtimes override.
+    var activeSessionConversationID: UUID? { get }
+
     /// Rolling-average tokens/sec for `modelID`, or `nil` if the runtime
     /// doesn't track throughput. Read by diagnostics only.
     func averageThroughput(for modelID: String) -> (tps: Double, samples: Int)?
@@ -129,6 +139,10 @@ extension LocalLLMRuntime {
     /// Default: runtime does not record failures. Concrete runtimes
     /// (MLX, llama.cpp) override.
     var lastGenerationError: GenerationFailure? { nil }
+
+    /// Default: runtime doesn't track cached sessions (mock / preview).
+    /// `MLXRuntime` overrides with the active `ActiveSession.conversationID`.
+    var activeSessionConversationID: UUID? { nil }
 
     /// Default: no throughput tracking. Concrete runtimes override.
     func averageThroughput(for modelID: String) -> (tps: Double, samples: Int)? { nil }
