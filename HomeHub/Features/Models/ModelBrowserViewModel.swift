@@ -265,6 +265,15 @@ final class ModelBrowserViewModel: ObservableObject {
         // Download enablement: only when the file is absent AND no transport
         // is already in-flight for this model. Failure rows present "Retry"
         // through the same affordance, so we keep that path enabled.
+        //
+        // **No hard hardware gate.** Heavy / iPad-only entries (Gemma 3n,
+        // Llama 8B etc.) remain downloadable on iPhone — the user opts in
+        // via the confirm sheet that explicitly warns the load / generation
+        // may fail under memory pressure. The catalog row UI adds a soft
+        // "Experimentální na iPhonu" badge so the risk is visible upfront.
+        // The only true block is `isUsableInThisBuild`, which means the
+        // backend is missing from the build (different concern, handled
+        // separately above).
         let canDownload: Bool = {
             switch status {
             case .notInstalled, .downloadFailed:

@@ -13,10 +13,16 @@ struct ChatDetailView: View {
     @State private var renameText: String = ""
     @State private var editingMessageID: UUID?
     @State private var editingText: String = ""
+    /// User dismissed the context-full banner for the current threshold
+    /// crossing. Reset to `false` once `estimatedContextFill` drops back
+    /// under 90% so the banner reappears on the next overflow rather
+    /// than nagging continuously.
+    @State private var contextBannerDismissed: Bool = false
 
     var body: some View {
         VStack(spacing: 0) {
             unloadBanner
+            contextFullBanner
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: HHTheme.spaceM) {
@@ -37,7 +43,8 @@ struct ChatDetailView: View {
                                 onEdit: canEdit(message) ? {
                                     editingMessageID = message.id
                                     editingText = message.content
-                                } : nil
+                                } : nil,
+                                isPrefill: isPrefillBubble(message)
                             )
                             .id(message.id)
                         }
@@ -79,6 +86,14 @@ struct ChatDetailView: View {
                 }
             }
             .animation(.easeOut(duration: 0.2), value: conversations.sendFeedback[conversationID] != nil)
+
+            // Developer-mode status strip — same toggle that gates the
+            // navigation-bar token-usage badge. Surfaces the data we
+            // already publish (active model, generation phase, KV
+            // cache reuse) so field-debug sessions don't need Xcode.
+            if settings.current.showTokenUsage {
+                developerStatusStrip
+            }
 
             MessageComposerView(
                 draft: $draft,
@@ -246,6 +261,183 @@ struct ChatDetailView: View {
         }
     }
 
+    // MARK: - Developer status strip
+
+    /// Compact 1-line status strip rendered above the composer when
+    /// the developer-mode token-usage toggle is on. Three signals,
+    /// all read from data we already publish elsewhere:
+    ///   - active model (name + size + backend)
+    ///   - generation phase for this conversation (idle/prefill/decoding)
+    ///   - KV-cache reuse status for this conversation
+    ///
+    /// Stays compact (10 pt font, single line where possible) so it
+    /// doesn't compete with the chat content for attention.
+    @ViewBuilder
+    private var developerStatusStrip: some View {
+        let model = runtime.activeModel
+        let phase = conversations.generationPhase[conversationID]
+        let cacheConvID = runtime.runtime.activeSessionConversationID
+        let cachePrimed = cacheConvID == conversationID
+
+        HStack(spacing: HHTheme.spaceM) {
+            // Model chip — name + backend + size. "—" when no model
+            // is loaded so the strip layout doesn't jump.
+            HStack(spacing: 4) {
+                Image(systemName: "cpu")
+                    .imageScale(.small)
+                Text(model?.displayName ?? "—")
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if let m = model {
+                    Text("\(m.backend.displayName) · \(m.sizeFormatted)")
+                        .foregroundStyle(HHTheme.textSecondary)
+                }
+            }
+
+            Divider().frame(height: 10)
+
+            // Phase chip — colour-coded so prefill (orange) reads
+            // distinctly from decoding (green) at a glance.
+            HStack(spacing: 4) {
+                Image(systemName: phaseIcon(phase))
+                    .imageScale(.small)
+                    .foregroundStyle(phaseColor(phase))
+                Text(phaseLabel(phase))
+                    .foregroundStyle(phaseColor(phase))
+            }
+
+            Divider().frame(height: 10)
+
+            // KV-cache chip — "Reuse" when this conversation's prefix
+            // is warm inside the runtime, "Cold" otherwise.
+            HStack(spacing: 4) {
+                Image(systemName: cachePrimed ? "memorychip" : "snowflake")
+                    .imageScale(.small)
+                Text(cachePrimed ? "Reuse cache: ANO" : "Cold start")
+                    .foregroundStyle(cachePrimed ? HHTheme.success : HHTheme.textSecondary)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .font(.system(size: 10, weight: .medium).monospacedDigit())
+        .foregroundStyle(HHTheme.textPrimary)
+        .padding(.horizontal, HHTheme.spaceL)
+        .padding(.vertical, 4)
+        .background(HHTheme.surface.opacity(0.6))
+        .overlay(alignment: .top) {
+            Rectangle()
+                .fill(HHTheme.stroke)
+                .frame(height: 0.5)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private func phaseLabel(_ phase: ConversationService.GenerationPhase?) -> String {
+        switch phase {
+        case .prefill?:  return "prefill"
+        case .decoding?: return "decoding"
+        case nil:        return "idle"
+        }
+    }
+
+    private func phaseIcon(_ phase: ConversationService.GenerationPhase?) -> String {
+        switch phase {
+        case .prefill?:  return "brain.head.profile"
+        case .decoding?: return "waveform"
+        case nil:        return "pause.circle"
+        }
+    }
+
+    private func phaseColor(_ phase: ConversationService.GenerationPhase?) -> Color {
+        switch phase {
+        case .prefill?:  return HHTheme.warning
+        case .decoding?: return HHTheme.success
+        case nil:        return HHTheme.textSecondary
+        }
+    }
+
+    // MARK: - Context-full banner
+
+    /// Threshold at which the chat starts visibly warning that older
+    /// messages may be dropped to fit the context window. Single source
+    /// of truth so the dismiss-reset logic can compare against the same
+    /// number that drives visibility.
+    private static let contextFullThreshold: Double = 0.9
+
+    /// Conservative number of recent messages to keep when the user
+    /// taps "Vymazat staré zprávy". Ten turns is enough to preserve
+    /// the immediate conversation flow while reclaiming most of the
+    /// context budget on a typical chat.
+    private static let trimKeepLast: Int = 10
+
+    /// Banner shown when the running context-fill estimate crosses
+    /// `contextFullThreshold`. Lets the user explicitly trim the
+    /// history (visible action) rather than relying on silent
+    /// auto-trim by `PromptTokenBudgeter`. Dismissable per-threshold
+    /// so it doesn't reappear after the user has acknowledged it.
+    @ViewBuilder
+    private var contextFullBanner: some View {
+        if estimatedContextFill >= Self.contextFullThreshold,
+           !contextBannerDismissed,
+           !isStreaming {
+            let percent = Int((estimatedContextFill * 100).rounded())
+            HStack(spacing: HHTheme.spaceM) {
+                Image(systemName: "exclamationmark.bubble")
+                    .font(.system(size: 18))
+                    .foregroundStyle(HHTheme.warning)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Kontext je téměř plný (\(percent) %)")
+                        .font(HHTheme.subheadline.weight(.semibold))
+                    Text("Starší zprávy se mohou automaticky vynechat.")
+                        .font(HHTheme.caption)
+                        .foregroundStyle(HHTheme.textSecondary)
+                        .lineLimit(2)
+                }
+                Spacer(minLength: 0)
+                Button("Vymazat staré") {
+                    Task {
+                        await conversations.trimMessages(
+                            in: conversationID,
+                            keepLast: Self.trimKeepLast
+                        )
+                        contextBannerDismissed = true
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .tint(HHTheme.warning)
+
+                Button {
+                    contextBannerDismissed = true
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(HHTheme.textSecondary)
+                        .padding(6)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Ignorovat")
+            }
+            .padding(.horizontal, HHTheme.spaceL)
+            .padding(.vertical, HHTheme.spaceM)
+            .background(HHTheme.warning.opacity(0.12))
+            .overlay(alignment: .bottom) {
+                Rectangle()
+                    .fill(HHTheme.warning.opacity(0.35))
+                    .frame(height: 1)
+            }
+            .transition(.move(edge: .top).combined(with: .opacity))
+            // Reset the dismiss flag once the user drops back below the
+            // threshold (e.g. after a trim) so the banner is ready to
+            // reappear on the next overflow without an app restart.
+            .onChange(of: estimatedContextFill) { _, newValue in
+                if newValue < Self.contextFullThreshold - 0.05 {
+                    contextBannerDismissed = false
+                }
+            }
+        }
+    }
+
     // MARK: - Derived state
 
     private var messages: [Message] {
@@ -286,6 +478,16 @@ struct ChatDetailView: View {
     private func canEdit(_ message: Message) -> Bool {
         guard message.role == .user, !isStreaming else { return false }
         return messages.last(where: { $0.role == .user })?.id == message.id
+    }
+
+    /// `true` for the placeholder assistant bubble that is currently in
+    /// the prefill phase (runtime is processing the prompt, no tokens
+    /// yet). Matches by status + content emptiness so we only swap the
+    /// indicator on the bubble that's actually waiting on a first token.
+    private func isPrefillBubble(_ message: Message) -> Bool {
+        guard conversations.generationPhase[conversationID] == .prefill else { return false }
+        guard message.role == .assistant, message.status == .streaming else { return false }
+        return message.content.isEmpty
     }
 
     /// Estimated fraction of the context window used (0.0–1.0).

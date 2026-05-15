@@ -23,7 +23,7 @@ final class MLXCacheTests: XCTestCase {
     
     func testCacheState_Missing() async {
         let state = await service.mlxCacheStates(catalogModels: [.mockMLX])
-        XCTAssertEqual(state[.mockMLX.id], .missing, "Empty directory should be .missing")
+        XCTAssertEqual(state[LocalModel.mockMLX.id], .missing, "Empty directory should be .missing")
     }
     
     func testCacheState_Partial_MissingWeights() async throws {
@@ -36,7 +36,7 @@ final class MLXCacheTests: XCTestCase {
         try "{}".write(to: configURL, atomically: true, encoding: .utf8)
         
         let state = await service.mlxCacheStates(catalogModels: [.mockMLX])
-        XCTAssertEqual(state[.mockMLX.id], .partial, "Should be .partial if metadata exists but weights do not")
+        XCTAssertEqual(state[LocalModel.mockMLX.id], .partial, "Should be .partial if metadata exists but weights do not")
     }
     
     func testCacheState_Partial_TrivialWeights() async throws {
@@ -51,7 +51,7 @@ final class MLXCacheTests: XCTestCase {
         try tinyData.write(to: cacheDir.appendingPathComponent("model.safetensors"))
         
         let state = await service.mlxCacheStates(catalogModels: [.mockMLX])
-        XCTAssertEqual(state[.mockMLX.id], .partial, "Should be .partial if weights are suspiciously small")
+        XCTAssertEqual(state[LocalModel.mockMLX.id], .partial, "Should be .partial if weights are suspiciously small")
     }
     
     func testCacheState_Ready() async throws {
@@ -66,7 +66,7 @@ final class MLXCacheTests: XCTestCase {
         try weightsData.write(to: cacheDir.appendingPathComponent("model.safetensors"))
         
         let state = await service.mlxCacheStates(catalogModels: [.mockMLX])
-        XCTAssertEqual(state[.mockMLX.id], .ready, "Should be .ready if metadata and weights >= 1MB exist")
+        XCTAssertEqual(state[LocalModel.mockMLX.id], .ready, "Should be .ready if metadata and weights >= 1MB exist")
     }
     
     func testGGUFReconciliation_RemainsUnchanged() async throws {

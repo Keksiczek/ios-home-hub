@@ -12,6 +12,11 @@ struct MessageBubbleView: View {
     /// The handler is responsible for showing an editor, then invoking
     /// `ConversationService.editAndResend(...)` with the new text.
     var onEdit: (() -> Void)? = nil
+    /// `true` for the currently-streaming assistant bubble while the
+    /// runtime is still in the prefill phase (no tokens yet). When
+    /// `true`, the typing indicator is replaced by a "Čte kontext…"
+    /// label so long RAG prefills don't read as a frozen app.
+    var isPrefill: Bool = false
 
     /// Content with chat-template control tokens (`<start_of_turn>`,
     /// `<|eot_id|>`, `</s>` …) removed. Applied at render time so the raw
@@ -48,7 +53,17 @@ struct MessageBubbleView: View {
                 header
 
                 if displayContent.isEmpty && message.status == .streaming {
-                    TypingIndicator()
+                    if isPrefill {
+                        PrefillIndicator()
+                    } else {
+                        // Decoding phase but no content has streamed yet —
+                        // the gap between "first token decoded" and "first
+                        // token rendered in this bubble". Pair the typing
+                        // dots with a tiny label so the prefill→decode
+                        // transition reads as a visible state change, not
+                        // an animation glitch.
+                        DecodingIndicator()
+                    }
                 } else if message.role == .assistant {
                     // Generative UI support — intercepts <Widget:...> and falls back to markdown
                     WidgetRenderer(rawContent: displayContent)
@@ -203,6 +218,49 @@ struct MessageBubbleView: View {
 
     private var textColor: Color {
         message.role == .user ? .white : HHTheme.textPrimary
+    }
+}
+
+/// Prefill-phase indicator: pulsing brain glyph + "Čte kontext…" label.
+/// Shown in place of the typing dots while the runtime is processing the
+/// prompt and no tokens have been emitted yet. Visually distinct so users
+/// don't mistake a slow prefill for a frozen app.
+private struct PrefillIndicator: View {
+    @State private var pulse = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "brain.head.profile")
+                .font(.system(size: 14, weight: .regular))
+                .foregroundStyle(HHTheme.textSecondary)
+                .opacity(pulse ? 1.0 : 0.4)
+            Text("Čte kontext…")
+                .font(HHTheme.caption)
+                .foregroundStyle(HHTheme.textSecondary)
+        }
+        .animation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: pulse)
+        .task {
+            pulse = true
+        }
+        .accessibilityLabel("Reading context")
+    }
+}
+
+/// Decoding-phase indicator: typing dots + small "Generuje odpověď…"
+/// label. Sits in the brief window between the prefill ending and the
+/// first decoded token actually rendering into the bubble. Distinct from
+/// `PrefillIndicator` (brain icon, "Čte kontext…") so the user can see
+/// the phase change instead of guessing whether the app is still alive.
+private struct DecodingIndicator: View {
+    var body: some View {
+        HStack(spacing: 8) {
+            TypingIndicator()
+            Text("Generuje odpověď…")
+                .font(HHTheme.caption)
+                .foregroundStyle(HHTheme.textSecondary)
+                .transition(.opacity)
+        }
+        .accessibilityLabel("Generating reply")
     }
 }
 

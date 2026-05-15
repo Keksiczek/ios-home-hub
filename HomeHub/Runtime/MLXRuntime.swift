@@ -63,12 +63,21 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
         set { _loadedModel = newValue }
     }
 
-    #if DEBUG
-    var internalActiveSessionConversationID: UUID? {
+    /// `LocalLLMRuntime` conformance. Returns the conversation whose
+    /// `ChatSession` is currently held in the prefix-reuse cache, or
+    /// `nil` if nothing is cached. Read under `sessionLock` so the
+    /// answer is consistent with `activeSession` itself.
+    var activeSessionConversationID: UUID? {
         sessionLock.lock()
         defer { sessionLock.unlock() }
         return activeSession?.conversationID
     }
+
+    #if DEBUG
+    /// Pre-existing debug alias kept for backward-compat with any
+    /// internal call site that referenced it. New code should use
+    /// `activeSessionConversationID` (now always available).
+    var internalActiveSessionConversationID: UUID? { activeSessionConversationID }
     #endif
 
     private var container: (any MLXModelContainer)?
@@ -488,9 +497,22 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                     for try await piece in responseStream {
                         if Task.isCancelled { break }
 
-                        tokensGenerated += 1
-                        currentText += piece
-                        buffer += piece
+                        // Per-token autoreleasepool drains the ObjC temporaries
+                        // (MLXArray wrappers, intermediate NSString views) that
+                        // MLX-Swift's C++ bridge creates for each decode step.
+                        // Without this, the pool only drains when the run loop
+                        // iterates — during a tight streaming await it may not
+                        // get the chance for several hundred tokens, causing
+                        // measurable memory creep on long replies.
+                        //
+                        // Buffer / yield logic stays OUTSIDE the pool so the
+                        // 100 ms flush cadence and stop-sequence semantics are
+                        // unchanged from before.
+                        autoreleasepool {
+                            tokensGenerated += 1
+                            currentText += piece
+                            buffer += piece
+                        }
 
                         let now = Date()
                         if now.timeIntervalSince(lastYieldTime) >= 0.1 {
@@ -572,9 +594,16 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                             if Task.isCancelled { break }
                             switch generation {
                             case .chunk(let text):
-                                localTokens += 1
-                                localText += text
-                                buffer += text
+                                // Mirror the ChatSession path: per-token
+                                // autoreleasepool to drain MLX C++ bridge
+                                // temporaries. Buffer flush / stop checks
+                                // stay outside the pool so cadence and
+                                // stop-sequence behaviour are unchanged.
+                                autoreleasepool {
+                                    localTokens += 1
+                                    localText += text
+                                    buffer += text
+                                }
 
                                 let now = Date()
                                 if now.timeIntervalSince(lastYieldTime) >= 0.1 {

@@ -13,7 +13,16 @@ struct ModelInfoSheet: View {
     @EnvironmentObject private var downloads: ModelDownloadService
     @EnvironmentObject private var runtime:   RuntimeManager
     @EnvironmentObject private var catalog:   ModelCatalogService
+    @EnvironmentObject private var settings:  SettingsService
     @Environment(\.dismiss) private var dismiss
+
+    /// On-demand snapshot of the memory oracle's verdict for **this**
+    /// model evaluated **right now**. Computed off-main on `.task`
+    /// to avoid a blocking sysctl on view open and to stay honest about
+    /// the "snapshot in time" nature of the verdict — see the footer
+    /// note next to the verdict row for the user-facing version.
+    @State private var liveVerdict: RuntimeManager.LoadFeasibility?
+    @State private var isComputingVerdict = false
 
     var body: some View {
         NavigationStack {
@@ -66,6 +75,9 @@ struct ModelInfoSheet: View {
                     row("Context",      "\(model.contextLength) tokens")
                 }
 
+                // ── Memory estimate + oracle verdict ────────────────────────
+                memoryEstimateSection
+
                 // ── Source ───────────────────────────────────────────────────
                 Section("Source") {
                     row("License", model.license)
@@ -87,7 +99,139 @@ struct ModelInfoSheet: View {
                     Button("Done") { dismiss() }
                 }
             }
+            .task(id: model.id) {
+                await refreshLiveVerdict()
+            }
         }
+    }
+
+    // MARK: - Memory estimate section
+
+    /// Surfaces the three numbers users actually care about when
+    /// deciding whether a model fits:
+    ///   1. The model's intrinsic memory footprint (weights + KV cache).
+    ///   2. The safety multiplier the active profile demands on top.
+    ///   3. A snapshot oracle verdict for "right now on this device".
+    ///
+    /// All three are derived from pure helpers on `RuntimeManager`;
+    /// no blocking work happens on view open beyond a single sysctl
+    /// in a detached Task.
+    @ViewBuilder
+    private var memoryEstimateSection: some View {
+        Section {
+            // Memory footprint at the catalog-declared context length.
+            let kvBytes = RuntimeManager.estimatedKVCacheBytes(for: model)
+            let totalBytes = RuntimeManager.estimatedTotalMemoryBytes(for: model)
+            LabeledContent(
+                "Odhad paměti",
+                value: "≈ \(byteString(totalBytes)) při \(contextLabel(model.contextLength)) kontextu"
+            )
+            // Break down KV cache separately so the user can see why a
+            // long-context profile costs more than the raw weight file
+            // would suggest.
+            if kvBytes > 0 {
+                LabeledContent(
+                    "z toho KV cache",
+                    value: "≈ \(byteString(kvBytes)) (\(model.contextLength) tokenů)"
+                )
+                .foregroundStyle(.secondary)
+                .font(.caption)
+            }
+
+            // Profile multiplier — explains how the oracle decides
+            // whether to gate.
+            let profile = settings.current.performanceProfile
+            let factor = RuntimeManager.memorySafetyFactor(for: profile)
+            LabeledContent(
+                "Bezpečná rezerva (\(profile.label))",
+                value: String(format: "× %.2f → ≈ %@", factor, byteString(Int64(Double(totalBytes) * factor)))
+            )
+
+            // Verdict row — async snapshot. The placeholder text
+            // covers (a) view just opened (computing) and (b) device
+            // didn't return a usable available-memory number.
+            verdictRow
+        } header: {
+            Text("Odhad paměti")
+        } footer: {
+            // Educate the user that this is a snapshot, not a permanent
+            // property of the device — verdicts shift with whatever
+            // other apps are doing.
+            Text("Odhady jsou orientační. Verdikt je snímek paměti v okamžiku otevření tohoto detailu, ne trvalý výrok o zařízení — uvolnění paměti jinde (zavření safari, fotek …) může změnit `risky` na `safe`.")
+        }
+    }
+
+    private var verdictRow: some View {
+        // Compute label + color outside of @ViewBuilder context. Using a
+        // tuple-returning helper keeps the SwiftUI body shape simple
+        // (one expression) and avoids the `let` assignment / statement
+        // pattern that @ViewBuilder can't fold into a view tree.
+        let (label, color) = verdictCopy()
+        return LabeledContent("Aktuální verdict") {
+            HStack(spacing: 6) {
+                if isComputingVerdict {
+                    ProgressView().controlSize(.mini)
+                }
+                Text(label).foregroundStyle(color)
+            }
+        }
+    }
+
+    /// Maps the current oracle/loading state into a localised label
+    /// + accent colour used by `verdictRow`. Pulled into its own
+    /// function so the row body stays a single SwiftUI expression.
+    private func verdictCopy() -> (String, Color) {
+        if let verdict = liveVerdict {
+            switch verdict {
+            case .safe(let headroom):
+                return ("Safe (rezerva ≈ \(byteString(headroom)))", .green)
+            case .risky(let required, let available):
+                return ("Risky — potřeba \(byteString(required)), volných \(byteString(available))", .orange)
+            case .cannotLoad(let required, let available):
+                return ("Cannot load — potřeba \(byteString(required)), volných \(byteString(available))", .red)
+            }
+        } else if isComputingVerdict {
+            return ("Odhad paměti…", .secondary)
+        } else {
+            return ("Preflight zatím neproběhl", .secondary)
+        }
+    }
+
+    /// Async re-evaluate the oracle for this model + active profile.
+    /// Runs `evaluateFeasibility` off-main; the sysctl is fast but the
+    /// detached Task documents intent and keeps the contract uniform
+    /// with the production load gate. Idempotent — safe to call from
+    /// `.task` which fires on every view appearance for the model ID.
+    private func refreshLiveVerdict() async {
+        isComputingVerdict = true
+        let profileSnapshot = settings.current.performanceProfile
+        let modelSnapshot = model
+        let verdict = await Task.detached(priority: .userInitiated) {
+            RuntimeManager.evaluateFeasibility(for: modelSnapshot, profile: profileSnapshot)
+        }.value
+        // Guard against the view dismissing while the Task was in flight.
+        await MainActor.run {
+            liveVerdict = verdict
+            isComputingVerdict = false
+        }
+    }
+
+    /// Common byte → "1.9 GB" / "190 MB" formatter so all rows in the
+    /// estimate section render consistently.
+    private func byteString(_ bytes: Int64) -> String {
+        let fmt = ByteCountFormatter()
+        fmt.allowedUnits = [.useMB, .useGB]
+        fmt.countStyle = .file
+        return fmt.string(fromByteCount: bytes)
+    }
+
+    /// Compact "2k" / "4k" rendering of a token count. Falls back to
+    /// the raw integer for non-round values.
+    private func contextLabel(_ tokens: Int) -> String {
+        if tokens >= 1000, tokens % 1024 == 0 {
+            return "\(tokens / 1024)k"
+        }
+        return "\(tokens)"
     }
 
     // MARK: - Hardware cue

@@ -53,12 +53,15 @@ final class AppContainer: ObservableObject {
             case appBackground
 
             /// User-facing one-liner. Localised informally because this
-            /// shows up in the chat surface, not Settings.
+            /// shows up in the chat surface, not Settings. The wording
+            /// names the cause explicitly so the user can correlate the
+            /// banner with what they just did (open a heavy app, leave
+            /// the phone in the sun, etc.) rather than blaming the chat.
             var label: String {
                 switch self {
-                case .memoryPressure:  return "Low memory — model unloaded."
-                case .thermalCritical: return "Device too hot — model unloaded."
-                case .appBackground:   return "App was backgrounded — model unloaded."
+                case .memoryPressure:  return "Model byl uvolněn kvůli nízké paměti."
+                case .thermalCritical: return "Model byl uvolněn kvůli přehřátí zařízení."
+                case .appBackground:   return "Model byl uvolněn po přechodu na pozadí."
                 }
             }
         }

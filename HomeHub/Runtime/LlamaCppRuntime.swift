@@ -348,7 +348,21 @@ final class LlamaCppRuntime: LocalLLMRuntime, @unchecked Sendable {
                             #endif
                         }
 
-                        tokens += 1
+                        // Per-token autoreleasepool — symmetric with the MLX
+                        // runtime patch. `ctx.stream(...)` bridges through
+                        // the llama.xcframework, which builds NSString/Data
+                        // wrappers around the decoded UTF-8 piece on its way
+                        // to Swift. Without an explicit drain those temporaries
+                        // sit in the parent pool until the run loop iterates
+                        // — across a long reply that's hundreds of objects.
+                        // The token mutation is the only ObjC-touching line;
+                        // cancellation, telemetry, and continuation yield
+                        // stay outside the pool so their semantics are
+                        // unchanged (yield does its own work on the continuation
+                        // queue, not in this scope).
+                        autoreleasepool {
+                            tokens += 1
+                        }
                         continuation.yield(.token(piece))
                     }
 

@@ -20,7 +20,8 @@ import XCTest
 @MainActor
 final class PromptModeAssemblyTests: XCTestCase {
 
-    private let service = PromptAssemblyService()
+    private let reporter = PromptBudgetReporter()
+    private lazy var service = PromptAssemblyService(reporter: reporter)
 
     // MARK: - Chat mode
 
@@ -50,7 +51,7 @@ final class PromptModeAssemblyTests: XCTestCase {
     func testChatBudgetReportHasChatMode() {
         let package = makePackage(mode: .chat)
         _ = service.build(from: package)
-        XCTAssertEqual(service.lastReport?.mode, .chat)
+        XCTAssertEqual(reporter.lastReport?.mode, .chat)
     }
 
     // MARK: - Tool followup mode
@@ -84,7 +85,7 @@ final class PromptModeAssemblyTests: XCTestCase {
     func testToolFollowupBudgetReport() {
         let package = makePackage(mode: .toolFollowup)
         _ = service.build(from: package)
-        XCTAssertEqual(service.lastReport?.mode, .toolFollowup)
+        XCTAssertEqual(reporter.lastReport?.mode, .toolFollowup)
     }
 
     // MARK: - Summarization mode
@@ -114,14 +115,14 @@ final class PromptModeAssemblyTests: XCTestCase {
         let prompt = service.build(from: package)
         // Only the user input message, no history
         XCTAssertEqual(prompt.messages.count, 1)
-        XCTAssertEqual(service.lastReport?.historyMessagesKept, 0)
-        XCTAssertEqual(service.lastReport?.historyMessagesDropped, 0)
+        XCTAssertEqual(reporter.lastReport?.historyMessagesKept, 0)
+        XCTAssertEqual(reporter.lastReport?.historyMessagesDropped, 0)
     }
 
     func testSummarizationBudgetReport() {
         let package = makePackage(mode: .summarization)
         _ = service.build(from: package)
-        XCTAssertEqual(service.lastReport?.mode, .summarization)
+        XCTAssertEqual(reporter.lastReport?.mode, .summarization)
     }
 
     // MARK: - Memory extraction mode
@@ -149,13 +150,13 @@ final class PromptModeAssemblyTests: XCTestCase {
 
         let prompt = service.build(from: package)
         XCTAssertEqual(prompt.messages.count, 1)
-        XCTAssertEqual(service.lastReport?.historyMessagesKept, 0)
+        XCTAssertEqual(reporter.lastReport?.historyMessagesKept, 0)
     }
 
     func testMemoryExtractionBudgetReport() {
         let package = makePackage(mode: .memoryExtraction)
         _ = service.build(from: package)
-        XCTAssertEqual(service.lastReport?.mode, .memoryExtraction)
+        XCTAssertEqual(reporter.lastReport?.mode, .memoryExtraction)
     }
 
     // MARK: - PromptMode.defaultParameters
