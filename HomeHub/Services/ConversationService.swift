@@ -499,6 +499,10 @@ final class ConversationService: ObservableObject {
         if let attachments = attachments, !attachments.isEmpty {
             for attachment in attachments {
                 let chunks = DocumentReaderService.chunk(text: attachment.extractedText)
+                if chunks.isEmpty {
+                    HHLog.kb.notice("attachment yielded no usable chunks — skipping context injection for this attachment")
+                    continue
+                }
                 if chunks.count <= 3 {
                     topExcerpts.append(contentsOf: chunks)
                 } else if let scores = await embeddingService.batchSimilarity(query: userInput, candidates: chunks) {
@@ -510,10 +514,28 @@ final class ConversationService: ObservableObject {
                 }
             }
         }
-        
-        // Web Search processing
-        if isWebSearchEnabled, let webSnippet = try? await WebSearchService.search(query: userInput) {
-            topExcerpts.append(webSnippet)
+
+        // Web Search processing.
+        //
+        // `WebSearchService.search` returns a literal Czech "no results"
+        // string when the upstream finds nothing — appending that as an
+        // excerpt would pollute the L3 context block with prose that
+        // looks like retrieved evidence. Filter it out here; the model
+        // already has the "no network access / use WebSearch tool"
+        // guardrail and can respond without a fake snippet.
+        if isWebSearchEnabled {
+            do {
+                let webSnippet = try await WebSearchService.search(query: userInput)
+                let trimmed = webSnippet.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty,
+                   !trimmed.hasPrefix("Nebyly nalezeny") {
+                    topExcerpts.append(trimmed)
+                } else {
+                    HHLog.kb.notice("web search: no results for query — omitting from context")
+                }
+            } catch {
+                HHLog.kb.error("web search failed: \(error.localizedDescription, privacy: .public) — omitting from context")
+            }
         }
         
         // Intersect "registered" and "user-enabled" to get the allow-list

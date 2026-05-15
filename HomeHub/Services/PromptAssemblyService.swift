@@ -362,11 +362,36 @@ final class PromptAssemblyService {
     }
 
     private func appendFileExcerpts(from package: PromptContextPackage, to chunks: inout [String]) {
-        guard !package.fileExcerpts.isEmpty else { return }
-        let fileLines = package.fileExcerpts.map { "--- FILE EXCERPT ---\n\($0)\n--- END EXCERPT ---" }
+        // Drop empty / whitespace-only excerpts. Without this filter
+        // a failed extraction (e.g. URL ingest that produced a
+        // marker-only stub, or a chunker that survived an all-noise
+        // page) would still surface as "the user attached …" — the
+        // model would then either hallucinate or apologise. Both
+        // are worse than not advertising context that doesn't exist.
+        let usable = package.fileExcerpts.compactMap { excerpt -> String? in
+            let trimmed = excerpt.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        guard !usable.isEmpty else { return }
+        // Explicit, numbered delimiters so the model never confuses
+        // an excerpt body with the user's actual prompt. The
+        // boundary phrasing is intentionally tight: "do not invent",
+        // "cite by number", "if absent say so" — all three failure
+        // modes we've actually seen in chat logs.
+        let blocks = usable.enumerated().map { idx, body in
+            """
+            === RETRIEVED CONTEXT [\(idx + 1)] ===
+            \(body)
+            === END CONTEXT [\(idx + 1)] ===
+            """
+        }
         chunks.append("""
-        The user attached the following file contents to their message. Use this provided information to answer their prompt, but do not fabricate information if the answer is not in the text:
-        \(fileLines.joined(separator: "\n\n"))
+        The user attached the following retrieved context to their message. \
+        It comes from documents or web pages they imported earlier — treat \
+        it as a primary source, but do NOT invent details not present in it. \
+        If the answer is not in any block, say so explicitly. When citing, \
+        reference the block number (e.g. "per context [2]").
+        \(blocks.joined(separator: "\n\n"))
         """)
     }
 

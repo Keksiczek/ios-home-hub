@@ -16,14 +16,18 @@ enum DocumentReaderService {
 
     enum DocumentError: Error, LocalizedError {
         case fileNotReadable
-        case unknownFormat
+        case unknownFormat(String)
         case extractionFailed
 
         var errorDescription: String? {
             switch self {
-            case .fileNotReadable: return "Soubor nelze přečíst nebo k němu není přístup."
-            case .unknownFormat: return "Tento formát souboru zatím není podporován."
-            case .extractionFailed: return "Z dokumentu se nepodařilo extrahovat žádný text."
+            case .fileNotReadable:
+                return "Soubor nelze přečíst nebo k němu není přístup."
+            case .unknownFormat(let ext):
+                let hint = ext.isEmpty ? "Soubor nemá příponu." : ".\(ext) není podporován."
+                return "Tento formát souboru zatím není podporován. \(hint) Podporované formáty: PDF, TXT, MD, CSV, JSON."
+            case .extractionFailed:
+                return "Z dokumentu se nepodařilo extrahovat žádný text. Nejspíš jde o naskenovaný PDF bez textové vrstvy — zatím nepodporujeme OCR."
             }
         }
     }
@@ -68,7 +72,7 @@ enum DocumentReaderService {
             return final
             
         default:
-            throw DocumentError.unknownFormat
+            throw DocumentError.unknownFormat(fileExtension)
         }
     }
     
@@ -119,22 +123,31 @@ enum DocumentReaderService {
             return pages
 
         default:
-            throw DocumentError.unknownFormat
+            throw DocumentError.unknownFormat(fileExtension)
         }
     }
 
     /// Chunks large text into ~1000 character overlapping blocks.
+    /// Drops trailing chunks shorter than `minChunkChars` so the
+    /// in-line attachment path doesn't push junk fragments (single
+    /// nav word, page-footer remnant) into the prompt's context
+    /// budget — same hygiene `DocumentChunker` applies on the KB
+    /// ingest path.
     static func chunk(text: String, chunkSize: Int = 1000, overlap: Int = 200) -> [String] {
+        let minChunkChars = 40
         let words = text.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }
         var chunks: [String] = []
         var currentChunk: [String] = []
         var currentLength = 0
-        
+
         for word in words {
             currentChunk.append(word)
             currentLength += word.count + 1
             if currentLength >= chunkSize {
-                chunks.append(currentChunk.joined(separator: " "))
+                let joined = currentChunk.joined(separator: " ")
+                if joined.count >= minChunkChars {
+                    chunks.append(joined)
+                }
                 // Keep the last few words for overlap
                 let overlapCount = max(1, currentChunk.count / 5)
                 currentChunk = Array(currentChunk.suffix(overlapCount))
@@ -142,7 +155,8 @@ enum DocumentReaderService {
             }
         }
         if !currentChunk.isEmpty {
-            chunks.append(currentChunk.joined(separator: " "))
+            let tail = currentChunk.joined(separator: " ")
+            if tail.count >= minChunkChars { chunks.append(tail) }
         }
         return chunks
     }

@@ -79,6 +79,11 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
     private let sessionLock = NSLock()
 
     private struct ActiveSession: @unchecked Sendable {
+        /// The model the session was constructed under. The reuse check
+        /// also gates on this — same conversationID but different model
+        /// ID must invalidate the KV cache, since the cached prefix is
+        /// tokenised against a different vocab.
+        let modelID: String
         let conversationID: UUID
         let systemPrompt: String
         /// Canonical history snapshot: messages *excluding* the in-flight
@@ -244,12 +249,27 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
             await telemetry.emit(.modelLoaded(handle: ModelHandle(from: model), durationMs: duration))
             self.log.info("MLX: Model '\(model.displayName, privacy: .public)' loaded in \(duration)ms")
         } catch is CancellationError {
+            // Defensive cleanup. RuntimeManager.unload() already cleared
+            // these before the load began, but the loader can also be
+            // cancelled mid-init after a partial container assignment in
+            // future MLX revisions — keep the runtime observably empty so
+            // a subsequent generate() doesn't see a half-constructed state.
+            sessionLock.withLock {
+                self.container = nil
+                self.activeSession = nil
+            }
+            self.loadedModel = nil
             self.log.info("MLX: Load cancelled for '\(repoId, privacy: .public)'")
             throw CancellationError()
         } catch {
+            sessionLock.withLock {
+                self.container = nil
+                self.activeSession = nil
+            }
+            self.loadedModel = nil
             let descriptiveError = error.mlxDescriptiveMessage
             self.log.error("MLX: Failed to load model '\(repoId, privacy: .public)': \(descriptiveError, privacy: .public)")
-            
+
             throw RuntimeError.initializationFailed("Failed to load MLX model: \(descriptiveError)")
         }
     }
@@ -333,6 +353,15 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                 guard let container = self.container else {
                     continuation.finish(throwing: RuntimeError.noModelLoaded)
                     self.sessionLock.withLock {
+                        // Mirror the success/catch branches: clear the task
+                        // handle on every exit so a later `unload()` doesn't
+                        // call `.cancel()` on a stale completed Task. There's
+                        // a benign race with the outer `self.activeTask = task`
+                        // assignment below (which can run after this exit and
+                        // re-store a stale ref) — but it's overwritten on the
+                        // next generate() and `.cancel()` on a finished Task
+                        // is a no-op, so the worst case is one dead reference.
+                        self.activeTask = nil
                         self.isGenerating = false
                         self.activeGenerationID = nil
                     }
@@ -376,6 +405,7 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                     // so they cannot drift.
                     let canonicalHistory = MLXChatInput.history(from: prompt)
 
+                    let currentModelID = self.loadedModel?.id ?? "(none)"
                     let session: ChatSession = self.sessionLock.withLock {
                         let currentActive = self.activeSession
 
@@ -386,7 +416,12 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                         if parameters.forceStateless {
                             discardReason = "forceStateless == true"
                         } else if let existing = currentActive {
-                            if existing.conversationID != conversationID {
+                            if existing.modelID != currentModelID {
+                                // Cached prefix was tokenised against a
+                                // different vocab — never safe to reuse
+                                // even on a matching conversationID.
+                                discardReason = "different modelID (\(existing.modelID) → \(currentModelID))"
+                            } else if existing.conversationID != conversationID {
                                 discardReason = "different conversationID"
                             } else if existing.systemPrompt != prompt.systemPrompt {
                                 discardReason = "different systemPrompt"
@@ -427,6 +462,7 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                             self.activeSession = nil
                         } else {
                             self.activeSession = ActiveSession(
+                                modelID: currentModelID,
                                 conversationID: conversationID,
                                 systemPrompt: prompt.systemPrompt,
                                 messages: canonicalHistory,
