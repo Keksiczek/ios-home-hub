@@ -1,6 +1,9 @@
 import SwiftUI
 import UniformTypeIdentifiers
 import PhotosUI
+import os
+
+private let composerLog = Logger(subsystem: "HomeHub", category: "MessageComposerView")
 
 struct MessageComposerView: View {
     @EnvironmentObject private var settings: SettingsService
@@ -201,14 +204,26 @@ struct MessageComposerView: View {
                     }
                 }
             case .failure(let error):
-                print("File picking failed: \(error.localizedDescription)")
+                composerLog.error("File picking failed: \(error.localizedDescription, privacy: .public)")
             }
         }
         .onChange(of: selectedPhotos) { _, newItems in
             Task {
                 for item in newItems {
                     if let data = try? await item.loadTransferable(type: Data.self),
-                       let image = UIImage(data: data) {
+                       let original = UIImage(data: data) {
+                        // Downscale before handing to Vision. A 4K
+                        // screenshot is ~12 MP and Vision converts it
+                        // to a CIImage internally, briefly tripling
+                        // memory; downscaling to 1024 px on the long
+                        // edge keeps the peak under ~5 MB while
+                        // preserving OCR accuracy (Vision's text
+                        // recogniser internally normalises to a
+                        // similar scale anyway). Originals never enter
+                        // SwiftData — only the OCR'd text does — so
+                        // there's no quality argument for keeping the
+                        // full-resolution UIImage past this point.
+                        let image = Self.downscaledForVision(original)
                         do {
                             let extractedText = try await ImageVisionService.extractText(from: image)
                             let newAttachment = Message.Attachment(
@@ -237,5 +252,36 @@ struct MessageComposerView: View {
         if tokenFill > 0.9 { return HHTheme.danger }
         if tokenFill > 0.75 { return HHTheme.warning }
         return HHTheme.accent.opacity(0.6)
+    }
+
+    /// Maximum dimension the resulting `UIImage` should have on its
+    /// longest edge. Picked to comfortably exceed the resolution at
+    /// which Vision's text recogniser starts to lose accuracy on
+    /// fine print (~700 px on most fonts), with headroom for
+    /// downstream consumers that may want pixel-accurate crops.
+    private static let visionMaxDimension: CGFloat = 1024
+
+    /// Aspect-ratio-preserving downscale using UIGraphicsImageRenderer
+    /// (bridges to the modern, color-space-aware bitmap path under
+    /// the hood). Returns the original image untouched when it
+    /// already fits — avoids paying the bitmap allocation cost on
+    /// thumbnails or screen-shot snippets that came in small.
+    static func downscaledForVision(_ image: UIImage) -> UIImage {
+        let size = image.size
+        let longestEdge = max(size.width, size.height)
+        guard longestEdge > visionMaxDimension else { return image }
+        let scale = visionMaxDimension / longestEdge
+        let target = CGSize(width: size.width * scale, height: size.height * scale)
+        let format = UIGraphicsImageRendererFormat.default()
+        // `scale = 1` produces pixel-accurate target dimensions
+        // regardless of @2x / @3x display scale — the resulting
+        // bitmap is the right size for both Vision and any future
+        // disk-serialised representation.
+        format.scale = 1
+        format.opaque = false
+        let renderer = UIGraphicsImageRenderer(size: target, format: format)
+        return renderer.image { _ in
+            image.draw(in: CGRect(origin: .zero, size: target))
+        }
     }
 }

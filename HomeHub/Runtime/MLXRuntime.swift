@@ -119,6 +119,16 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
     /// readout. Protected by `sessionLock`.
     private var tpsAverage: [String: (mean: Double, n: Int)] = [:]
 
+    /// Rolling per-model sample history (most-recent first) for
+    /// percentile reporting. Capped at `tpsSampleCap` per model so the
+    /// memory footprint stays bounded over a long session even on
+    /// heavy power users. p50 catches typical performance; p95 surfaces
+    /// the worst-case tail that mean averaging hides — a model with
+    /// mean 30 t/s and p95-of-2 t/s is functionally unusable even
+    /// though the mean looks fine. Protected by `sessionLock`.
+    private var tpsSamples: [String: [Double]] = [:]
+    private static let tpsSampleCap = 128
+
     /// Last generation that failed for a user-actionable reason.
     /// Surfaced in Model Info + DeveloperDiagnostics. Cleared on the next
     /// successful generation. Protected by `sessionLock`.
@@ -136,6 +146,37 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
             guard let entry = tpsAverage[modelID], entry.n > 0 else { return nil }
             return (entry.mean, entry.n)
         }
+    }
+
+    /// Snapshot of the throughput distribution. Returns `(p50, p95)` of
+    /// the rolling per-model sample buffer along with the sample count.
+    /// `nil` when no samples are available yet. p50/p95 chosen over
+    /// p99 because the buffer is capped at 128 (one p99 sample = noise).
+    func throughputPercentiles(for modelID: String) -> (p50: Double, p95: Double, samples: Int)? {
+        sessionLock.withLock {
+            guard let samples = tpsSamples[modelID], !samples.isEmpty else { return nil }
+            let sorted = samples.sorted()
+            let p50 = percentile(sorted, fraction: 0.5)
+            let p95 = percentile(sorted, fraction: 0.95)
+            return (p50, p95, sorted.count)
+        }
+    }
+
+    /// Nearest-rank percentile. Input MUST be sorted ascending. For
+    /// fraction 0.95 with 10 samples returns sorted[9] (the 10th value);
+    /// for fraction 0.50 with 10 samples returns sorted[5] (the upper
+    /// of the two middle values — matches NumPy `nearest` semantics).
+    nonisolated static func percentile(_ sorted: [Double], fraction: Double) -> Double {
+        guard !sorted.isEmpty else { return 0 }
+        let clamped = max(0.0, min(1.0, fraction))
+        let rank = Int((clamped * Double(sorted.count - 1)).rounded())
+        return sorted[rank]
+    }
+
+    /// Instance-visible bridge — keeps the call-site short while
+    /// preserving the pure static algorithm above for testability.
+    private func percentile(_ sorted: [Double], fraction: Double) -> Double {
+        Self.percentile(sorted, fraction: fraction)
     }
 
     init(loader: any MLXLoader = DefaultMLXLoader()) {
@@ -199,6 +240,50 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
             throw RuntimeError.incompatibleModel(
                 "MLX models must be hosted on Hugging Face. Invalid URL: \(model.downloadURL.absoluteString)"
             )
+        }
+
+        // Pre-flight: if the model is already on disk, fail fast with a
+        // typed, user-readable error rather than letting the MLX loader
+        // throw an opaque tokeniser / safetensors message. We only
+        // pre-flight when the cache directory exists at all — first-load
+        // (cold cache) is handled by the loader's own progress flow.
+        let preflight = LocalModelService.inspectMLXCache(repoId: repoId)
+        if preflight.directoryExists, preflight.state != .ready {
+            let reason = preflight.failureReason ?? "Model directory is incomplete."
+            self.log.error("MLX: Pre-flight failed for '\(repoId, privacy: .public)' — \(reason, privacy: .public)")
+            if !preflight.missingItems.isEmpty {
+                throw RuntimeError.missingFiles(
+                    modelName: model.displayName,
+                    missing: preflight.missingItems
+                )
+            }
+            throw RuntimeError.invalidModelDirectory(
+                modelName: model.displayName,
+                detail: reason
+            )
+        }
+
+        // Pre-load memory check: compare estimated footprint (weights ×
+        // 1.35 to cover KV cache + Metal scratch + temporary buffers
+        // during de-quantisation) against `os_proc_available_memory()`,
+        // which returns the headroom in the per-process EVA sandbox.
+        // Failing fast here turns the classic "app silently jetsam'd
+        // mid-load" symptom into an actionable typed error.
+        //
+        // Skipped when we don't yet know the size (cold cache, no
+        // weights downloaded) — the loader's own progress path covers
+        // that case and the runtime memory-pressure handler unloads if
+        // we get unlucky.
+        if preflight.totalWeightsBytes > 0 {
+            let estimatedFootprint = Int64(Double(preflight.totalWeightsBytes) * 1.35)
+            let available = Int64(os_proc_available_memory())
+            if available > 0, estimatedFootprint > available {
+                let mbEstimated = estimatedFootprint / 1_048_576
+                let mbAvailable = available / 1_048_576
+                self.log.error("MLX: Pre-load memory check failed — model needs ~\(mbEstimated) MB, only \(mbAvailable) MB available")
+                throw RuntimeError.outOfMemory
+            }
+            self.log.info("MLX: Pre-load memory OK — estimated \(estimatedFootprint / 1_048_576) MB, available \(available / 1_048_576) MB")
         }
 
         // autoreleasepool drains Objective-C temporaries created during synchronous
@@ -494,8 +579,22 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                     var buffer = ""
                     var lastYieldTime = Date()
 
+                    // Generation watchdog — fires non-fatal warnings at
+                    // 30 s / 60 s / 120 s of token silence so the UI can
+                    // surface "model is taking longer than usual" without
+                    // disturbing the actual decode. Shared via NSLock
+                    // (Sendable-safe class wrapper) because the watchdog
+                    // task runs concurrently with the for-await loop.
+                    let watchdog = GenerationWatchdog(
+                        log: self.log,
+                        conversationID: conversationID,
+                        continuation: continuation
+                    )
+                    watchdog.start()
+
                     for try await piece in responseStream {
                         if Task.isCancelled { break }
+                        watchdog.recordToken()
 
                         // Per-token autoreleasepool drains the ObjC temporaries
                         // (MLXArray wrappers, intermediate NSString views) that
@@ -536,6 +635,8 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                         if shouldStop { break }
                     }
 
+                    watchdog.stop()
+
                     if !buffer.isEmpty {
                         continuation.yield(.token(buffer))
                     }
@@ -572,7 +673,14 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                     // Immutable let copy — safe to capture in @Sendable closure.
                     // Local tracking vars are returned as a tuple so the outer scope stays mutable-free.
                     let capturedMsgs = msgList
-                    let fallbackResult: (Int, String, Bool) = try await container.perform { context in
+                    let watchdog = GenerationWatchdog(
+                        log: self.log,
+                        conversationID: conversationID,
+                        continuation: continuation
+                    )
+                    watchdog.start()
+                    defer { watchdog.stop() }
+                    let fallbackResult: (Int, String, Bool) = try await container.perform { [watchdog] context in
                         let userInput = UserInput(
                             messages: capturedMsgs.map { $0.mapValues { $0 as any Sendable } }
                         )
@@ -594,6 +702,7 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                             if Task.isCancelled { break }
                             switch generation {
                             case .chunk(let text):
+                                watchdog.recordToken()
                                 // Mirror the ChatSession path: per-token
                                 // autoreleasepool to drain MLX C++ bridge
                                 // temporaries. Buffer flush / stop checks
@@ -668,6 +777,18 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                         let n = prev.n + 1
                         let mean = prev.mean + (tps - prev.mean) / Double(n)
                         self.tpsAverage[modelID] = (mean: mean, n: n)
+
+                        // Maintain ring-buffer-ish sample list for
+                        // percentile reporting. Append + trim from the
+                        // FRONT so newest samples dominate the
+                        // distribution after the cap is reached —
+                        // matches user intuition of "recent performance".
+                        var samples = self.tpsSamples[modelID] ?? []
+                        samples.append(tps)
+                        if samples.count > Self.tpsSampleCap {
+                            samples.removeFirst(samples.count - Self.tpsSampleCap)
+                        }
+                        self.tpsSamples[modelID] = samples
                     }
                 }
 

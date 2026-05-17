@@ -46,15 +46,66 @@ enum WebSearchService {
     /// will eventually fail anyway.
     private static let requestTimeout: TimeInterval = 6.0
 
+    /// In-process response cache. DDG results for the same query don't
+    /// meaningfully change minute-to-minute; caching dodges the round
+    /// trip when the user re-asks the same question, the agent loops
+    /// back over a query it already issued in the same turn, or two
+    /// concurrent chats happen to need the same lookup. Capped both by
+    /// count and by per-entry TTL so a long session doesn't accrete
+    /// stale results indefinitely.
+    private static let cacheTTL: TimeInterval = 5 * 60
+    private static let cacheCap = 64
+    private final class CacheEntry {
+        let hits: [Hit]
+        let storedAt: Date
+        let limit: Int
+        init(hits: [Hit], limit: Int) {
+            self.hits = hits
+            self.storedAt = Date()
+            self.limit = limit
+        }
+    }
+    nonisolated(unsafe) private static let cache: NSCache<NSString, CacheEntry> = {
+        let c = NSCache<NSString, CacheEntry>()
+        c.countLimit = cacheCap
+        return c
+    }()
+
+    private static func cacheKey(query: String, limit: Int) -> NSString {
+        return "\(limit):\(query.lowercased())" as NSString
+    }
+
+    private static func cachedHits(query: String, limit: Int) -> [Hit]? {
+        let key = cacheKey(query: query, limit: limit)
+        guard let entry = cache.object(forKey: key) else { return nil }
+        if Date().timeIntervalSince(entry.storedAt) > cacheTTL {
+            cache.removeObject(forKey: key)
+            return nil
+        }
+        return entry.hits
+    }
+
+    private static func storeHits(_ hits: [Hit], query: String, limit: Int) {
+        cache.setObject(CacheEntry(hits: hits, limit: limit), forKey: cacheKey(query: query, limit: limit))
+    }
+
     /// Returns up to `limit` structured search hits for `query`. Each hit
     /// has a title, an absolute URL, and a snippet. Engines / agents
     /// should prefer this over the legacy plain-text wrapper.
+    ///
+    /// Cached for 5 minutes per `(query, limit)` pair to absorb agentic
+    /// retries and rapid user follow-ups. Errors are NOT cached — a
+    /// failed lookup retries on the next call.
     static func searchStructured(query: String, limit: Int = 5) async throws -> [Hit] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty,
               let encoded = trimmed.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
               let url = URL(string: "https://lite.duckduckgo.com/lite/")
         else { throw SearchError.invalidURL }
+
+        if let cached = cachedHits(query: trimmed, limit: limit) {
+            return cached
+        }
 
         var request = URLRequest(url: url, timeoutInterval: requestTimeout)
         request.httpMethod = "POST"
@@ -90,6 +141,12 @@ enum WebSearchService {
             throw SearchError.parsingError
         }
         let hits = parseHits(from: html, limit: limit)
+        // Only cache non-empty result sets — caching "no results" would
+        // poison the cache for users who briefly lost connectivity in
+        // the middle of a real search.
+        if !hits.isEmpty {
+            storeHits(hits, query: trimmed, limit: limit)
+        }
         return hits
     }
 

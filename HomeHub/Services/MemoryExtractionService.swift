@@ -95,6 +95,8 @@ actor MemoryExtractionService {
                 fullResponse += piece
             case .finished:
                 break
+            case .warning:
+                break
             }
         }
 

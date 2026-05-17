@@ -35,35 +35,97 @@ actor EmbeddingService {
     private var cache: [String: [Double]] = [:]
     private var cacheOrder: [String] = []
 
+    /// Identity tag for the currently loaded embedding (Latin
+    /// vs. English fallback vs. nil). When a memory-pressure unload
+    /// drops the Latin model and the next `loadIfNeeded` happens to
+    /// install the English fallback (or vice versa), the stale Latin
+    /// vectors in the cache would be tokenisation-mismatched against
+    /// the new model — cosine results computed against them would be
+    /// silently wrong. We compare the tag on every cache lookup and
+    /// drop the whole cache when it shifts.
+    private enum LoadedModelKind: Equatable {
+        case latin
+        case english
+        case unknown
+    }
+    private var loadedModelKind: LoadedModelKind?
+
     // MARK: - Init
 
     /// Attempts to load the system contextual embedding.
     /// Tries Latin-script model first (covers Czech, Slovak, German, French, etc.),
     /// then falls back to English. If neither is available, all similarity
     /// calls return nil and keyword scoring is used instead.
+    ///
+    /// ## Retry behaviour
+    ///
+    /// When the system embedding has no on-device assets yet, we fire
+    /// `requestAssets()` in a detached task so iOS starts the download
+    /// — and then we PERIODICALLY re-probe on subsequent calls instead
+    /// of caching the negative result forever. The previous version set
+    /// `isAvailable = false` on the first miss and early-returned every
+    /// call thereafter; users whose assets arrived 30 s into the
+    /// session were stuck on keyword-only scoring for the entire run.
+    /// The retry cadence (`retryAfterAssetMiss`) is intentionally
+    /// generous so the system-assets check doesn't fire on every embed
+    /// call — once per 30 s is plenty to catch the asset arrival.
     func loadIfNeeded() async {
-        guard isAvailable == nil else { return }
-
-        // Latin-script model covers all Latin-alphabet languages including Czech.
-        // English-only model is a fallback for devices without multilingual assets.
-        let model = NLContextualEmbedding(script: .latin)
-            ?? NLContextualEmbedding(language: .english)
-
-        guard let model else {
-            isAvailable = false
+        // Fast path: already loaded successfully.
+        if isAvailable == true, embedding != nil { return }
+        // Slow path: previously marked unavailable. Re-probe only after
+        // the retry window elapses so high-frequency embed calls don't
+        // hammer NLContextualEmbedding init when assets are still missing.
+        if isAvailable == false,
+           let lastProbe = lastAssetProbeAt,
+           Date().timeIntervalSince(lastProbe) < Self.retryAfterAssetMiss {
             return
         }
 
-        if model.hasAvailableAssets {
-            embedding = model
+        // Latin-script model covers all Latin-alphabet languages including Czech.
+        // English-only model is a fallback for devices without multilingual assets.
+        let latinModel = NLContextualEmbedding(script: .latin)
+        let resolved: (model: NLContextualEmbedding, kind: LoadedModelKind)?
+        if let m = latinModel {
+            resolved = (m, .latin)
+        } else if let m = NLContextualEmbedding(language: .english) {
+            resolved = (m, .english)
+        } else {
+            resolved = nil
+        }
+
+        guard let resolved else {
+            isAvailable = false
+            lastAssetProbeAt = Date()
+            return
+        }
+
+        if resolved.model.hasAvailableAssets {
+            // If the loaded model kind changed since the previous
+            // load (e.g. Latin assets evicted, only English remains
+            // available now), the cached vectors are tokenised against
+            // a different model and must be discarded — using them
+            // would silently degrade similarity quality.
+            if loadedModelKind != resolved.kind {
+                cache.removeAll()
+                cacheOrder.removeAll()
+            }
+            embedding = resolved.model
+            loadedModelKind = resolved.kind
             isAvailable = true
+            lastAssetProbeAt = nil
         } else {
             isAvailable = false
+            lastAssetProbeAt = Date()
             Task.detached(priority: .utility) {
-                try? await model.requestAssets()
+                try? await resolved.model.requestAssets()
             }
         }
     }
+
+    /// Wall-clock for the most recent failed asset probe. Drives the
+    /// re-try gate above. `nil` once we've successfully loaded.
+    private var lastAssetProbeAt: Date?
+    private static let retryAfterAssetMiss: TimeInterval = 30
 
     // MARK: - Public API
 
@@ -122,6 +184,7 @@ actor EmbeddingService {
     func unload() {
         embedding = nil
         isAvailable = nil
+        loadedModelKind = nil
         cache.removeAll()
         cacheOrder.removeAll()
     }

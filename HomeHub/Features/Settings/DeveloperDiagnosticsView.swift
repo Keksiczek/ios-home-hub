@@ -301,6 +301,18 @@ struct DeveloperDiagnosticsView: View {
                     value: String(format: "%.1f t/s", avg.tps)
                 )
             }
+            // Distribution view (p50/p95) — the tail is the honest
+            // measure of how the model feels under sustained use. A
+            // p95 that's < 30% of p50 means the model is stalling
+            // periodically; debugging starts with thermal throttling
+            // or KV-cache pressure before optimisation efforts.
+            if let modelID = runtime.activeModel?.id,
+               let pct = runtime.throughputPercentiles(for: modelID) {
+                LabeledContent(
+                    "Throughput (p50 / p95)",
+                    value: String(format: "%.1f / %.1f t/s", pct.p50, pct.p95)
+                )
+            }
             // Most recent user-facing failure, if any. Surfaced here as
             // well as on the Model Info sheet so power users debugging
             // multi-turn issues don't have to leave Settings.

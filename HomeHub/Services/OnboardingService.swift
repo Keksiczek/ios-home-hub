@@ -8,21 +8,36 @@ import SwiftUI
 final class OnboardingService: ObservableObject {
     @Published var state: OnboardingState = .initial
 
+    /// Set during `load()` when the device already has installed models
+    /// (typical iCloud / Quick Start restore). The Welcome screen can
+    /// read this to surface a "We found N models — get started without
+    /// downloading" CTA so returning users don't have to walk through
+    /// the multi-GB download flow a second time.
+    @Published private(set) var restoredModelIDs: [String] = []
+
     private let store: any Store
     private let settings: SettingsService
     private let personalization: PersonalizationService
     private let appState: AppState
+    /// Optional probe used during `load()` to discover already-installed
+    /// models. Injected as a closure to avoid a hard dependency on
+    /// `LocalModelService` (which OnboardingService doesn't otherwise
+    /// need). Returns the model IDs / repo IDs the user can immediately
+    /// start using. Defaults to empty when not provided.
+    private let installedModelProbe: (@Sendable () async -> [String])?
 
     init(
         store: any Store,
         settings: SettingsService,
         personalization: PersonalizationService,
-        appState: AppState
+        appState: AppState,
+        installedModelProbe: (@Sendable () async -> [String])? = nil
     ) {
         self.store = store
         self.settings = settings
         self.personalization = personalization
         self.appState = appState
+        self.installedModelProbe = installedModelProbe
     }
 
     func load() async {
@@ -33,6 +48,34 @@ final class OnboardingService: ObservableObject {
         } catch {
             HHLog.settings.error("loadOnboardingState failed: \(error.localizedDescription, privacy: .public)")
         }
+
+        // Probe for restored / pre-existing model files. Onboarding is
+        // only relevant while `isCompleted == false`, so we skip the
+        // probe entirely once the user is past first-run — saving the
+        // disk walk on every launch.
+        if !state.isCompleted, let probe = installedModelProbe {
+            let found = await probe()
+            if !found.isEmpty {
+                restoredModelIDs = found
+                HHLog.settings.info("OnboardingService: detected \(found.count, privacy: .public) pre-existing model(s); offering skip path")
+            }
+        }
+    }
+
+    /// Convenience: short-circuits the multi-step download flow when
+    /// the user accepts the "use the restored model" CTA. Selects the
+    /// first restored model, marks onboarding completed with default
+    /// memory settings, and lands the app in `.ready`. The user can
+    /// always adjust personalization / memory later from Settings.
+    func acceptRestoredModel(_ modelID: String) async {
+        let user = personalization.userProfile
+        let assistant = personalization.assistantProfile
+        await commit(
+            user: user,
+            assistant: assistant,
+            memoryEnabled: true,
+            selectedModelID: modelID
+        )
     }
 
     func advance(to step: OnboardingState.Step) async {

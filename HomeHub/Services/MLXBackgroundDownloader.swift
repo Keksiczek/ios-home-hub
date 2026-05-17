@@ -267,13 +267,29 @@ final class MLXBackgroundDownloader: NSObject, ObservableObject, BackgroundDownl
             downloadedBytes: 0
         )
 
-        serialQueue.sync {
+        let staleTIDs: Set<Int> = serialMutate {
             // If a previous job exists for this model, cancel its tasks first.
-            let stale = taskMap.filter { $0.value.modelID == modelID }.map(\.key)
-            for k in stale { taskMap.removeValue(forKey: k) }
+            let ids = Set(taskMap.filter { $0.value.modelID == modelID }.keys)
+            for k in ids { taskMap.removeValue(forKey: k) }
             jobMap[modelID] = job
+            return ids
         }
         persistState()
+
+        // Cancel any in-flight URLSession tasks we just orphaned in the
+        // manifest. Without this, the previous attempt's URLSessionDownloadTask
+        // would happily race the new tasks for the same destination paths —
+        // the loser's `moveItem` overwrites the winner's bytes mid-flight.
+        // Issued OUTSIDE the serial queue (per the concurrency contract at
+        // the top of this file).
+        if !staleTIDs.isEmpty {
+            log.info("MLX: cancelling \(staleTIDs.count) stale URLSession task(s) for restart of '\(modelID, privacy: .public)'")
+            session.getAllTasks { tasks in
+                for t in tasks where staleTIDs.contains(t.taskIdentifier) {
+                    t.cancel()
+                }
+            }
+        }
 
         activeDownloads.insert(modelID)
         downloadProgress[modelID] = 0

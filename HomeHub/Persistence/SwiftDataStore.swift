@@ -224,6 +224,26 @@ actor SwiftDataStore: Store {
         self.context.autosaveEnabled = true
     }
 
+    /// Force-flushes any autosave-pending changes to the on-disk
+    /// SQLite store. Call from the `.background` scenePhase hook so
+    /// the OS can suspend us safely — without this, a model save
+    /// that's been queued by autosave but not yet written would sit
+    /// in the context until autosave's next debounce tick, which may
+    /// not fire before iOS jetsams the app.
+    ///
+    /// SwiftData wraps Core Data which wraps SQLite in WAL mode by
+    /// default since iOS 13, so the durability story is already
+    /// good — this just closes the "autosave debounce" window.
+    /// No-op when there are no pending changes.
+    func flushPendingChanges() async {
+        guard context.hasChanges else { return }
+        do {
+            try context.save()
+        } catch {
+            Self.log.error("SwiftDataStore: flushPendingChanges failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
     #if DEBUG
     /// Testing seam — injects a pre-built container or simulates init failure.
     /// Do NOT use in production code.

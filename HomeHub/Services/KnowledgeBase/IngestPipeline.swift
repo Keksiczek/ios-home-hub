@@ -312,6 +312,7 @@ actor IngestPipeline {
             var allVectors: [[Float]] = []
             allVectors.reserveCapacity(chunks.count)
             var idx = 0
+            let embedStart = Date()
             while idx < chunks.count {
                 guard shouldContinue() else {
                     // Soft exit: persist what we have for resume,
@@ -342,8 +343,37 @@ actor IngestPipeline {
             // Index — write vectors blob.
             document.indexingStatus = .indexing
             try await documentStore.upsert(document: document)
+
+            // Defensive: assert dimension uniformity before persisting.
+            // `KnowledgeBaseStore.saveVectors` packs each vector into a
+            // fixed-stride Float32 blob keyed off the first row's
+            // count — a downstream variable-dimension surprise would
+            // silently truncate later rows on read. Embedders are
+            // expected to be deterministic, but the cost of validating
+            // here is one O(n) scan and the cost of NOT validating is
+            // a corrupt index that produces nonsensical retrieval.
+            if let expected = allVectors.first?.count,
+               let mismatchIdx = allVectors.firstIndex(where: { $0.count != expected }) {
+                throw NSError(
+                    domain: "IngestPipeline",
+                    code: -4,
+                    userInfo: [NSLocalizedDescriptionKey:
+                        "Vektory mají nejednotnou dimenzi (chunk \(mismatchIdx): \(allVectors[mismatchIdx].count) vs. \(expected))."]
+                )
+            }
+
             try await documentStore.saveVectors(allVectors, documentID: document.id)
             document.embeddingDimension = allVectors.first?.count
+
+            // Throughput log — pairs with the MLX/llama.cpp generation
+            // logs so a slow ingest is correlatable with concurrent
+            // load on the embedding model. Total wall-clock includes
+            // the per-batch Task.yield + actor hops, not just embed work.
+            let elapsed = Date().timeIntervalSince(embedStart)
+            if elapsed > 0 {
+                let chunksPerSec = Double(chunks.count) / elapsed
+                HHLog.kb.info("ingest embed: doc=\(document.id, privacy: .public) chunks=\(chunks.count, privacy: .public) elapsed=\(String(format: "%.2f", elapsed), privacy: .public)s rate=\(String(format: "%.1f", chunksPerSec), privacy: .public) chunks/s")
+            }
 
             // Done.
             document.indexingStatus = .indexed

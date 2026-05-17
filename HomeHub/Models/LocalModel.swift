@@ -26,6 +26,15 @@ struct LocalModel: Identifiable, Codable, Equatable, Hashable {
     /// True for models added via "Add from URL" — persisted in user-models.json,
     /// not part of the curated catalog.
     var isUserAdded: Bool
+    /// Upstream commit SHA of the MLX repo at the moment of the most
+    /// recent successful install. `nil` for GGUF models (the catalog
+    /// entry's static `sha256` already pins a specific file) and for
+    /// MLX models installed before this field existed. When set, the
+    /// catalog can compare this against `HFModelManifest.sha` on a
+    /// later manifest fetch to detect that upstream has moved — i.e.
+    /// surface an "Updates available" affordance without breaking the
+    /// currently installed copy.
+    var installedRepoSHA: String?
 
     var sizeFormatted: String {
         guard sizeBytes > 0 else { return "Unknown size" }
@@ -56,7 +65,7 @@ struct LocalModel: Identifiable, Codable, Equatable, Hashable {
         case id, displayName, family, parameterCount, quantization
         case sizeBytes, contextLength, downloadURL, sha256
         case installState, recommendedFor, license, isUserAdded
-        case backend, format
+        case backend, format, installedRepoSHA
     }
 
     init(
@@ -74,7 +83,8 @@ struct LocalModel: Identifiable, Codable, Equatable, Hashable {
         license: String,
         backend: ModelBackend = .mlx,
         format: ModelFormat = .mlx,
-        isUserAdded: Bool = false
+        isUserAdded: Bool = false,
+        installedRepoSHA: String? = nil
     ) {
         self.id = id
         self.displayName = displayName
@@ -91,6 +101,7 @@ struct LocalModel: Identifiable, Codable, Equatable, Hashable {
         self.backend = backend
         self.format = format
         self.isUserAdded = isUserAdded
+        self.installedRepoSHA = installedRepoSHA
     }
 
     init(from decoder: Decoder) throws {
@@ -110,6 +121,7 @@ struct LocalModel: Identifiable, Codable, Equatable, Hashable {
         backend       = try c.decodeIfPresent(ModelBackend.self, forKey: .backend) ?? .llamaCpp
         format        = try c.decodeIfPresent(ModelFormat.self, forKey: .format) ?? .gguf
         isUserAdded   = try c.decodeIfPresent(Bool.self, forKey: .isUserAdded) ?? false
+        installedRepoSHA = try c.decodeIfPresent(String.self, forKey: .installedRepoSHA)
     }
 }
 

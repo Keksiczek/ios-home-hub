@@ -1,0 +1,50 @@
+# SwiftLint configuration for HomeHub.
+#
+# Scope: the hand-written iOS sources only — third-party Swift packages
+# (mlx-swift, swift-transformers, llama.xcframework wrappers) live in
+# `Frameworks/`, `Vendor/`, and SPM's `.build/` and don't follow our
+# conventions. We also skip generated test artefacts.
+
+included:
+  - HomeHub
+  - HomeHubTests
+
+excluded:
+  - .build
+  - Frameworks
+  - Vendor
+  - HomeHub/Resources
+
+# Custom rules — project policies SwiftLint doesn't ship by default.
+custom_rules:
+  no_print:
+    # Goal: every diagnostic goes through `os.Logger` so it shows up in
+    # Console.app and persists across Release builds (where `print` is
+    # silently stripped by the optimiser). Voice paths and a few view
+    # callbacks regressed to `print` historically — the lint guard
+    # stops that creep at PR time. Comments are allowed to mention
+    # `print` (the `// foo print bar` regex), so we anchor to the
+    # call syntax with `(` immediately after.
+    name: "No print() calls"
+    regex: '(?<![A-Za-z0-9_.])print\('
+    match_kinds:
+      - identifier
+    message: "Use os.Logger (HHLog or a category-specific logger) instead of print()."
+    severity: warning
+
+  no_force_unwrap_url:
+    # `URL(string: "…")!` is the most common avoidable crash site in
+    # iOS apps. Force-unwrapping a URL literal that may parse to nil
+    # crashes the user's app in production for a typo the build never
+    # caught. Use `URLComponents` or guard, instead.
+    name: "No force-unwrapped URL literal"
+    regex: 'URL\(string:\s*"[^"]*"\)!'
+    message: "Avoid URL(string:)! — guard the optional or use URLComponents."
+    severity: warning
+
+disabled_rules:
+  # Generated XCTest scaffolding sometimes trips this.
+  - function_body_length
+  # `if let model { … }` is the modern Swift shorthand and reads
+  # better than the suggested rename; we don't enforce it.
+  - shorthand_optional_binding

@@ -161,6 +161,20 @@ final class LlamaCppRuntime: LocalLLMRuntime, @unchecked Sendable {
         // ~10 bytes and won't have the GGUF magic header.
         try Self.validateGGUFFile(at: url)
 
+        // Pre-load memory check — same shape as the MLX path. The 1.25×
+        // multiplier covers KV cache + Metal buffers without including
+        // the de-quantisation scratch the MLX path needs (llama.cpp
+        // mmaps the weights directly, so the overhead is lower).
+        if let fileSize = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.int64Value,
+           fileSize > 0 {
+            let estimatedFootprint = Int64(Double(fileSize) * 1.25)
+            let available = Int64(os_proc_available_memory())
+            if available > 0, estimatedFootprint > available {
+                log.error("llama.cpp: Pre-load memory check failed — model needs ~\(estimatedFootprint / 1_048_576) MB, only \(available / 1_048_576) MB available")
+                throw RuntimeError.outOfMemory
+            }
+        }
+
         // GGUF-metadata-aware context clamp. The catalog stores a
         // per-device-tuned `contextLength` (e.g. 2048 on iPhone for safety),
         // and the GGUF header advertises the model's *trained* context
@@ -343,9 +357,9 @@ final class LlamaCppRuntime: LocalLLMRuntime, @unchecked Sendable {
                             let ttftMs = Int(now.timeIntervalSince(started) * 1_000)
                             log.debug("TTFT: \(ttftMs)ms (request \(requestID, privacy: .public))")
                             await telemetry.emit(.firstToken(requestID: requestID, latencyMs: ttftMs))
-                            #if DEBUG
-                            print("[LlamaCppRuntime] TTFT: \(ttftMs)ms")
-                            #endif
+                            // log.debug above already records this through
+                            // os.Logger — the extra DEBUG print was duplicate
+                            // noise in Xcode console and silenced in Release.
                         }
 
                         // Per-token autoreleasepool — symmetric with the MLX

@@ -145,4 +145,33 @@ final class DownloadManager {
         gguf.reconnect()
         mlx.reconnect()
     }
+
+    // MARK: - Test hooks
+    //
+    // Tests that spin up a fresh `AppContainer` per case inherit the
+    // shared singleton's leftover callback wiring + activeModelIDs from
+    // the previous test, which surfaces as flaky cross-test interference
+    // (the second test's download is unexpectedly marked "in progress"
+    // because the first test never cleared its manifest). These hooks
+    // make the otherwise-private state resettable WITHOUT exposing the
+    // setters to production code.
+
+    #if DEBUG
+    /// Clears every callback and the cached active-ID set. Intended for
+    /// `setUp()` / `tearDown()` in XCTest suites that exercise download
+    /// flows. NOT a substitute for cancelling actual in-flight tasks —
+    /// callers should cancel via `cancel(modelID:)` first if any are
+    /// running, otherwise the URLSession callbacks will fire into a
+    /// `nil` handler (safe, but noisy in the log).
+    func resetForTesting() {
+        activeModelIDs.removeAll()
+        gguf.onProgress  = nil
+        gguf.onCompleted = nil
+        gguf.onFailed    = nil
+        mlx.onProgress   = nil
+        mlx.onCompleted  = nil
+        mlx.onFailed     = nil
+        log.info("DownloadManager: resetForTesting() — cleared callbacks and active IDs")
+    }
+    #endif
 }

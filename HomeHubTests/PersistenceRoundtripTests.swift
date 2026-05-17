@@ -227,4 +227,65 @@ final class PersistenceRoundtripTests: XCTestCase {
         XCTAssertEqual(loaded[0].title, "Updated")
         XCTAssertEqual(loaded[0].lastMessagePreview, "Hello")
     }
+
+    // MARK: - Schema forward-compatibility
+    //
+    // `Message.attachments` is optional and was added after the first
+    // wave of users had already persisted messages. The decoder MUST
+    // tolerate JSON written before the field existed (decode to nil)
+    // and round-trip a message WITHOUT attachments as nil — not as an
+    // empty array. The same contract applies to `Message.tokenCount`.
+
+    func testMessageWithoutAttachments_RoundTripsAsNil() async throws {
+        let store = InMemoryStore.empty()
+        let convoID = UUID()
+        let msg = Message.user("No attachments here", in: convoID, attachments: nil)
+        try await store.save(message: msg)
+
+        let loaded = try await store.loadMessages(conversationID: convoID)
+        XCTAssertEqual(loaded.count, 1)
+        XCTAssertNil(loaded[0].attachments,
+            "Decoder must distinguish 'no attachments' (nil) from 'empty list' for forward-compat")
+        XCTAssertNil(loaded[0].tokenCount)
+    }
+
+    func testMessageWithAttachments_RoundTripsContent() async throws {
+        let store = InMemoryStore.empty()
+        let convoID = UUID()
+        let attachment = Message.Attachment(
+            id: UUID(),
+            filename: "screenshot.png",
+            extractedText: "OCR'd body text from the image"
+        )
+        let msg = Message.user("With one attachment", in: convoID, attachments: [attachment])
+        try await store.save(message: msg)
+
+        let loaded = try await store.loadMessages(conversationID: convoID)
+        XCTAssertEqual(loaded.count, 1)
+        XCTAssertEqual(loaded[0].attachments?.count, 1)
+        XCTAssertEqual(loaded[0].attachments?.first?.filename, "screenshot.png")
+        XCTAssertEqual(loaded[0].attachments?.first?.extractedText, "OCR'd body text from the image")
+    }
+
+    func testMessageDecode_FromLegacyJSON_WithoutAttachmentsKey() throws {
+        // Synthetic pre-attachments JSON shape — simulates a row
+        // written by an older app version. Decoder must default the
+        // missing field to nil without throwing.
+        let legacyJSON = """
+        {
+            "id": "11111111-1111-1111-1111-111111111111",
+            "conversationID": "22222222-2222-2222-2222-222222222222",
+            "role": "user",
+            "content": "Hello from the past",
+            "createdAt": -978307200,
+            "status": "complete"
+        }
+        """.data(using: .utf8)!
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .secondsSince1970
+        let decoded = try decoder.decode(Message.self, from: legacyJSON)
+        XCTAssertEqual(decoded.content, "Hello from the past")
+        XCTAssertNil(decoded.attachments)
+        XCTAssertNil(decoded.tokenCount)
+    }
 }

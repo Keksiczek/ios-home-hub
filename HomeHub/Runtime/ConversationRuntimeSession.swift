@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 // MARK: - StreamCacheBox
 
@@ -12,14 +13,22 @@ import Foundation
 /// (`LlamaCppRuntime.generate()`) reads it after `await`ing the full
 /// stream to update the per-conversation KV-cache session record.
 ///
-/// `@unchecked Sendable`: the write always happens-before the
-/// `continuation.finish()` that wakes the awaiting Task, so the read
-/// sees a fully-written value without a lock. The pattern is the same as
-/// the established `GenerationCancellationToken`.
+/// Wraps the storage in `OSAllocatedUnfairLock` so the happens-before
+/// relationship is explicit at the type level instead of relying on
+/// the AsyncStream continuation's implicit barrier. Costs ~30 ns per
+/// access on Apple Silicon — irrelevant next to a single token decode.
+/// Previously `@unchecked Sendable` with bare `var` storage; that was
+/// "fine in practice" but would break the day someone refactored the
+/// completion path to write the box AFTER the continuation finish.
 final class StreamCacheBox: @unchecked Sendable {
+    private let storage = OSAllocatedUnfairLock<[Int32]>(initialState: [])
+
     /// Tokens decoded in the prompt phase of the most recent generation.
     /// Empty until the generation Task writes it at completion.
-    var finalPromptTokens: [Int32] = []
+    var finalPromptTokens: [Int32] {
+        get { storage.withLock { $0 } }
+        set { storage.withLock { $0 = newValue } }
+    }
 }
 
 // MARK: - ConversationRuntimeSession

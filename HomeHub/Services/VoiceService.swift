@@ -3,9 +3,12 @@ import Speech
 import AVFoundation
 import SwiftUI
 import Accelerate
+import os
 #if canImport(WhisperKit)
 import WhisperKit
 #endif
+
+private let voiceLog = Logger(subsystem: "HomeHub", category: "VoiceService")
 
 enum VoiceServiceError: LocalizedError {
     case speechRecognizerUnavailable
@@ -46,12 +49,23 @@ final class VoiceService: ObservableObject {
             self?.isSpeaking = isSpeaking
         }
         synthesizer.delegate = speechDelegate
-        
+
         // Ensure default locale fallback
         if speechRecognizer == nil {
-            print("Warning: cs-CZ locale not supported for SFSpeechRecognizer on this device, falling back.")
+            voiceLog.warning("cs-CZ locale not supported for SFSpeechRecognizer on this device, falling back.")
         }
     }
+
+    // Note on lifecycle: a `deinit` safety net was tried here to
+    // catch dismissals that bypass `VoiceCallView.onDisappear`
+    // (memory pressure, programmatic root swap). Swift 6 strict
+    // concurrency rejects it because `AVAudioEngine` and
+    // `AVSpeechSynthesizer` aren't `Sendable` and the deinit can
+    // run off the main actor. The .onDisappear path in
+    // `VoiceCallView` covers the normal dismissal case; the
+    // remaining edge case (engine running at process termination)
+    // is owned by iOS — the OS tears down the audio session when
+    // the app is force-killed or backgrounded long enough.
     
     // MARK: - Speech to Text
     
@@ -170,7 +184,7 @@ final class VoiceService: ObservableObject {
         do {
             try AVAudioSession.sharedInstance().setActive(false)
         } catch {
-            print("Failed to deactivate audio session: \(error)")
+            voiceLog.error("Failed to deactivate audio session: \(error.localizedDescription, privacy: .public)")
         }
         
         isListening = false
@@ -190,7 +204,7 @@ final class VoiceService: ObservableObject {
             try audioSession.setCategory(.playback, mode: .spokenAudio, options: .duckOthers)
             try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
         } catch {
-            print("Failed to setup audio session for TTS: \(error)")
+            voiceLog.error("Failed to setup audio session for TTS: \(error.localizedDescription, privacy: .public)")
         }
         
         synthesizer.speak(utterance)

@@ -36,6 +36,7 @@
 		280DC313F1010398AD61F752 /* LlamaRuntimeActor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 903A7DCCA8DACF4957B33D57 /* LlamaRuntimeActor.swift */; };
 		2CF74C27F60697FEC71344EF /* ToolCallEnvelope.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7A58CCC7DA2BBA5CEB441BA /* ToolCallEnvelope.swift */; };
 		2DA29E0CE0AFB8EE8DFBF252 /* ChatTemplate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F4CAE62CBBB91CE28C79FB1 /* ChatTemplate.swift */; };
+		A1B2C3D401234567890ABCDE /* GenerationWatchdog.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4FEDCBA9876543210 /* GenerationWatchdog.swift */; };
 		2DC98FD2EF6F5136BD53F704 /* AppIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1911D715424CCA8F05E5837E /* AppIntents.swift */; };
 		2DEC6889D04ED10AC5D60981 /* CalendarSkill.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E1B5F776E9FFF970D22A8E2 /* CalendarSkill.swift */; };
 		2E70053A17ED5CF6AFDB976A /* ModelCapabilityProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = D74EBED5003F8A6B2BF9A414 /* ModelCapabilityProfile.swift */; };
@@ -193,6 +194,9 @@
 		F998F1F00D3CBD088EB71FCA /* WidgetBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCD904E7B7ABBA4F56D2CCD2 /* WidgetBridge.swift */; };
 		FC359A6E300FD361BE3BB54F /* ImageVisionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52883734A26E98454CA86B73 /* ImageVisionService.swift */; };
 		FCC3B3ADE68878A8C9139EE9 /* MLXCacheTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7CA6AB5D6827FFD2196C8356 /* MLXCacheTests.swift */; };
+		B2C3D4E512345678901ABCDF /* HuggingFaceAPIClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2C3D4E5FEDCBA9876543210 /* HuggingFaceAPIClientTests.swift */; };
+		C3D4E5F623456789012BCDE0 /* TokenEstimatorCacheTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3D4E5F6FEDCBA9876543210 /* TokenEstimatorCacheTests.swift */; };
+		D4E5F60734567890123CDEF1 /* WebSearchServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4E5F607FEDCBA9876543210 /* WebSearchServiceTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -289,6 +293,7 @@
 		4B520B3F720FB7A8E4596432 /* InMemoryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InMemoryStore.swift; sourceTree = "<group>"; };
 		4BD8C51C7925A000E0ACC102 /* PersistenceRoundtripTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersistenceRoundtripTests.swift; sourceTree = "<group>"; };
 		4F4CAE62CBBB91CE28C79FB1 /* ChatTemplate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatTemplate.swift; sourceTree = "<group>"; };
+		A1B2C3D4FEDCBA9876543210 /* GenerationWatchdog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GenerationWatchdog.swift; sourceTree = "<group>"; };
 		5094BD53886597FC3CF669D4 /* ToolExecutionResult.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolExecutionResult.swift; sourceTree = "<group>"; };
 		51C028E2DB46A4B748E32CD6 /* ConversationRuntimeSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationRuntimeSession.swift; sourceTree = "<group>"; };
 		5235C57733C3BC722A6117BB /* HHCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HHCard.swift; sourceTree = "<group>"; };
@@ -324,6 +329,9 @@
 		7BA9952322F2A84FE434D9CC /* GuardrailsConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GuardrailsConfig.swift; sourceTree = "<group>"; };
 		7C9111D3F76F3926E5BCA409 /* MLXBackgroundDownloader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MLXBackgroundDownloader.swift; sourceTree = "<group>"; };
 		7CA6AB5D6827FFD2196C8356 /* MLXCacheTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MLXCacheTests.swift; sourceTree = "<group>"; };
+		B2C3D4E5FEDCBA9876543210 /* HuggingFaceAPIClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HuggingFaceAPIClientTests.swift; sourceTree = "<group>"; };
+		C3D4E5F6FEDCBA9876543210 /* TokenEstimatorCacheTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TokenEstimatorCacheTests.swift; sourceTree = "<group>"; };
+		D4E5F607FEDCBA9876543210 /* WebSearchServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSearchServiceTests.swift; sourceTree = "<group>"; };
 		7CE7ACCAEAA5FA7A738615B8 /* MockLocalRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockLocalRuntime.swift; sourceTree = "<group>"; };
 		7CF7E52049FE562C100A40E6 /* IngestScheduler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IngestScheduler.swift; sourceTree = "<group>"; };
 		7DA90D3CD0DAC38466D0F263 /* NLExtractionPass.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NLExtractionPass.swift; sourceTree = "<group>"; };
@@ -716,6 +724,7 @@
 				DDB0C1D2E3F40516273849A0 /* GGUFMetadata.swift */,
 				DDC0D1E2F30415263748590A /* GGUFModelMetadata.swift */,
 				4F4CAE62CBBB91CE28C79FB1 /* ChatTemplate.swift */,
+				A1B2C3D4FEDCBA9876543210 /* GenerationWatchdog.swift */,
 				8C4E8723CCF07089EABDEDC9 /* LlamaContextHandle.swift */,
 				369CFA371BDA4EB069C38349 /* LlamaCppRuntime.swift */,
 				903A7DCCA8DACF4957B33D57 /* LlamaRuntimeActor.swift */,
@@ -793,6 +802,9 @@
 				A54D39648D57501EBB0BF781 /* MemoryPersistenceTests.swift */,
 				385DF27F2323F418E3404652 /* MemoryServiceTests.swift */,
 				7CA6AB5D6827FFD2196C8356 /* MLXCacheTests.swift */,
+				B2C3D4E5FEDCBA9876543210 /* HuggingFaceAPIClientTests.swift */,
+				C3D4E5F6FEDCBA9876543210 /* TokenEstimatorCacheTests.swift */,
+				D4E5F607FEDCBA9876543210 /* WebSearchServiceTests.swift */,
 				FAD68AC867F11BD32F9AA663 /* MLXHardeningTests.swift */,
 				3C249D3C58DAE5D178D3E1C0 /* MLXIntegrationTests.swift */,
 				ADD4E25F5DFF5967F1506916 /* MLXRuntimeManagerTests.swift */,
@@ -990,6 +1002,7 @@
 				BB4DABB9DB1988621A9AAD2B /* ChatDetailView.swift in Sources */,
 				23B9D807E46F4516DA5D20DA /* ChatListView.swift in Sources */,
 				2DA29E0CE0AFB8EE8DFBF252 /* ChatTemplate.swift in Sources */,
+				A1B2C3D401234567890ABCDE /* GenerationWatchdog.swift in Sources */,
 				748872925F030F8201D35380 /* ChatTextSanitizer.swift in Sources */,
 				AAB2C681E35EF017B42FC1B5 /* Conversation.swift in Sources */,
 				C43FB02E414CBE68FE08A857 /* ConversationRuntimeSession.swift in Sources */,
@@ -1154,6 +1167,9 @@
 				3FBBC814FD2BE70297B4D7F1 /* ExtractionPayloadTests.swift in Sources */,
 				5AB43F75B3BE3A4D97C41E3A /* LlamaRuntimeActorTests.swift in Sources */,
 				FCC3B3ADE68878A8C9139EE9 /* MLXCacheTests.swift in Sources */,
+				B2C3D4E512345678901ABCDF /* HuggingFaceAPIClientTests.swift in Sources */,
+				C3D4E5F623456789012BCDE0 /* TokenEstimatorCacheTests.swift in Sources */,
+				D4E5F60734567890123CDEF1 /* WebSearchServiceTests.swift in Sources */,
 				5EDFED45DB90D4206D584F88 /* MLXHardeningTests.swift in Sources */,
 				422D4454521F209BB14FC9C1 /* MLXIntegrationTests.swift in Sources */,
 				7AF2D364C0144AB77338FB86 /* MLXRuntimeManagerTests.swift in Sources */,

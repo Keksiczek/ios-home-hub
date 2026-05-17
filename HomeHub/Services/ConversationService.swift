@@ -41,6 +41,19 @@ final class ConversationService: ObservableObject {
     ///   - Stream end / cancel  → entry removed
     @Published private(set) var generationPhase: [UUID: GenerationPhase] = [:]
 
+    /// Most-recent non-fatal warning emitted by the runtime watchdog
+    /// (token stall, etc.). UI subscribers can read this to surface a
+    /// transient banner ("Model is taking longer than usual…"). Replaced
+    /// on every new warning; cleared when the next generation completes
+    /// successfully so the banner doesn't linger across turns.
+    @Published private(set) var lastRuntimeWarning: RuntimeWarning?
+
+    /// Clears the warning banner. Called by the UI after the user
+    /// acknowledges it or after a successful turn completes.
+    func acknowledgeRuntimeWarning() {
+        lastRuntimeWarning = nil
+    }
+
     enum GenerationPhase: Equatable, Sendable {
         case prefill
         case decoding
@@ -64,6 +77,20 @@ final class ConversationService: ObservableObject {
     /// Keyed by conversationID; set to `true` by the timeout watchdog task
     /// before it calls `cancelStream`. Cleared in `performSend`'s defer block.
     private var timedOutConversations: Set<UUID> = []
+
+    /// LRU access order — most-recently-touched conversation ID is at the
+    /// end. Used to evict cold entries from `messagesByConversation` when
+    /// the user has cycled through many chats in a single session
+    /// (without this cap, a power user with 100+ conversations could
+    /// hold 100 × N messages in RAM even though they're only viewing
+    /// one at a time — a common path to background-jetsam).
+    private var messagesLRU: [UUID] = []
+    /// Hard cap on cached conversations' messages. Picked to comfortably
+    /// fit on the smallest supported device (6 GB tier) while still
+    /// covering the realistic "I have a few chats open" working set.
+    /// Eviction drops the OLDEST-accessed entry and the cached summary
+    /// for it; the SwiftData store remains the source of truth.
+    private static let messagesCacheCap = 12
 
     init(
         store: any Store,
@@ -109,8 +136,23 @@ final class ConversationService: ObservableObject {
         streamingConversationIDs.removeAll()
     }
 
+    /// Pure read — SAFE to call from a SwiftUI `body`. Does NOT touch
+    /// the LRU; pair it with `noteConversationAccess(_:)` in the
+    /// view's `.onAppear` so the cache still tracks active surfaces.
+    /// (Mutating private state during view evaluation is the standard
+    /// "Modifying state during view update" footgun — SwiftUI doesn't
+    /// observe `messagesLRU` directly, but the pattern still risks
+    /// re-entrancy if a future refactor publishes it.)
     func messages(in conversationID: UUID) -> [Message] {
         messagesByConversation[conversationID] ?? []
+    }
+
+    /// Marks a conversation as recently-viewed for LRU bookkeeping.
+    /// Call from `ChatDetailView.onAppear`. Cheap (no @Published
+    /// emission) so calling multiple times is harmless.
+    func noteConversationAccess(_ conversationID: UUID) {
+        touchLRU(conversationID)
+        evictColdEntriesIfNeeded()
     }
 
     func loadMessages(for conversationID: UUID) async {
@@ -125,9 +167,43 @@ final class ConversationService: ObservableObject {
                 staleIndexes.append(i)
             }
             messagesByConversation[conversationID] = loaded
+            touchLRU(conversationID)
+            evictColdEntriesIfNeeded()
             for i in staleIndexes {
                 try? await store.save(message: loaded[i])
             }
+        }
+    }
+
+    // MARK: - LRU cache management
+    //
+    // Two-step touch / evict pattern. `touchLRU` is O(n) on the LRU
+    // array but n is bounded by `messagesCacheCap`, so it's effectively
+    // constant time. Eviction NEVER touches an entry that has an active
+    // stream — losing the in-flight assistant message would surface as
+    // a UI glitch ("the bubble disappeared!"). All access paths route
+    // through these two helpers; the property is otherwise treated as
+    // read-only by the rest of the class.
+
+    private func touchLRU(_ id: UUID) {
+        if let idx = messagesLRU.firstIndex(of: id) {
+            messagesLRU.remove(at: idx)
+        }
+        messagesLRU.append(id)
+    }
+
+    private func evictColdEntriesIfNeeded() {
+        while messagesLRU.count > Self.messagesCacheCap {
+            // Find the oldest entry that is safe to evict — i.e. has
+            // no active stream. Skip any active ones; if every cached
+            // entry has an active stream (pathological), we simply
+            // tolerate going slightly over the cap until one finishes.
+            guard let victimIdx = messagesLRU.firstIndex(where: { activeStreams[$0] == nil }) else {
+                break
+            }
+            let victim = messagesLRU.remove(at: victimIdx)
+            messagesByConversation.removeValue(forKey: victim)
+            summaryByConversation.removeValue(forKey: victim)
         }
     }
 
@@ -142,6 +218,8 @@ final class ConversationService: ObservableObject {
         )
         conversations.insert(convo, at: 0)
         messagesByConversation[convo.id] = []
+        touchLRU(convo.id)
+        evictColdEntriesIfNeeded()
         try? await store.save(conversation: convo)
         return convo
     }
@@ -154,6 +232,17 @@ final class ConversationService: ObservableObject {
     }
 
     func deleteConversation(_ id: UUID) async {
+        // Capture the in-flight stream Task BEFORE the lifecycle teardown
+        // clears `activeStreams`. We need the handle to `await` its
+        // unwind below — without that wait, the Task's pending
+        // `store.save(message: assistantMessage)` could resume AFTER
+        // `store.delete(conversationID:)` returns, leaving an orphan
+        // message row that the next launch surfaces as a phantom turn.
+        // The Task is already cancelled by `endGenerationLifecycle`; we
+        // just need to let it reach its `defer` block before deleting
+        // anything persistent.
+        let pendingStream = activeStreams[id]
+
         // Single teardown for the four streaming-state slots. After
         // this call the deleted conversation is guaranteed to be
         // absent from every lifecycle dictionary — no orphan windows
@@ -162,6 +251,18 @@ final class ConversationService: ObservableObject {
         conversations.removeAll { $0.id == id }
         messagesByConversation[id] = nil
         summaryByConversation[id] = nil
+        messagesLRU.removeAll { $0 == id }
+
+        // Await the cancelled Task's unwind. `Task<Void, Never>.value`
+        // suspends until completion regardless of cancellation outcome
+        // (the body's `defer` always runs), so this returns as soon as
+        // the stream loop hits its next cancellation checkpoint. Upper
+        // bound: a few hundred ms in pathological cases (model still
+        // doing the next forward pass); typical case is <50 ms.
+        if let pendingStream {
+            await pendingStream.value
+        }
+
         await runtime.invalidateSession(for: id)
         try? await store.delete(conversationID: id)
     }
@@ -703,8 +804,15 @@ final class ConversationService: ObservableObject {
             ? AssistantProfile.defaultSystemPrompt
             : activePreset.prompt
 
+        // Snapshot activeModel once per turn so every lookup downstream
+        // (family → capability profile, stopSequences) sees the same
+        // model. The reads were already cheap (MainActor property
+        // access) but the snapshot makes the data-flow explicit and
+        // means a future async pipeline change can't accidentally
+        // re-read after a swap.
+        let activeModelSnapshot = runtime.activeModel
         let capabilityProfile = ModelCapabilityProfile.resolve(
-            family: runtime.activeModel?.family ?? ""
+            family: activeModelSnapshot?.family ?? ""
         )
 
         let package = PromptContextPackage(
@@ -723,7 +831,7 @@ final class ConversationService: ObservableObject {
             modelCapabilityProfile: capabilityProfile,
             promptMode: .chat
         )
-        let stops = stopSequences(for: runtime.activeModel)
+        let stops = stopSequences(for: activeModelSnapshot)
         var parameters = PromptMode.chat.defaultParameters(
             settings: settings.current,
             stopSequences: stops
@@ -758,6 +866,11 @@ final class ConversationService: ObservableObject {
                 // itself. The UI shows "Čte kontext…" through all of it
                 // because none of these phases emit tokens.
                 let stream = runtime.generate(prompt: runtimePrompt, parameters: parameters)
+                // Last wall-clock at which the partial assistant content was
+                // persisted. Initialised to "now" so the first heartbeat
+                // doesn't fire until 5 s in — short replies skip the write
+                // entirely (the .finished path is the authoritative save).
+                var lastHeartbeatSave = Date()
                 for try await event in stream {
                     // Cooperative cancellation. The user can pull
                     // the cancel button mid-stream OR start a fresh
@@ -784,15 +897,51 @@ final class ConversationService: ObservableObject {
                         markDecoding(for: conversationID)
                         assistantMessage.content += piece
                         messagesByConversation[conversationID]?[assistantIndex] = assistantMessage
+
+                        // Heartbeat save during long streams: persist partial
+                        // content every ~5 s so a jetsam / crash mid-stream
+                        // doesn't lose minutes of generated text. The user
+                        // sees the partial reply with status `.streaming` on
+                        // restart, which `loadMessages` rewrites to `.failed`
+                        // (offers retry). Cheap because SwiftData throttles
+                        // identical-row writes internally; we still gate on
+                        // wall-clock to avoid the overhead in the common
+                        // short-reply case (<5 s = zero extra writes).
+                        let now = Date()
+                        if now.timeIntervalSince(lastHeartbeatSave) >= 5.0 {
+                            lastHeartbeatSave = now
+                            // Snapshot before the await so the value we
+                            // persist is exactly what we showed the user
+                            // at this point in time, even if more tokens
+                            // arrive while the actor hop completes.
+                            let snapshot = assistantMessage
+                            Task { [store] in
+                                try? await store.save(message: snapshot)
+                            }
+                        }
                     case .finished(let reason, _):
                         assistantMessage.status = (reason == .cancelled) ? .cancelled : .complete
                         messagesByConversation[conversationID]?[assistantIndex] = assistantMessage
                         try? await store.save(message: assistantMessage)
-                        
+
                         // UX: Soft haptic to signify turn completion
                         if reason == .stop || reason == .length {
                             HHHaptics.impact(.soft, enabled: settings.current.haptics)
                         }
+
+                        // Clear any stall banner now that the turn ended
+                        // — keeping it visible across turns would be
+                        // misleading once new tokens are flowing.
+                        if lastRuntimeWarning != nil {
+                            lastRuntimeWarning = nil
+                        }
+                    case .warning(let warning):
+                        // Non-fatal stall signal from the runtime watchdog.
+                        // Published for any subscriber (chat banner, etc.)
+                        // while keeping the for-await loop running — the
+                        // model is still expected to recover and stream
+                        // more tokens after a stall.
+                        lastRuntimeWarning = warning
                     }
                 }
             } catch {

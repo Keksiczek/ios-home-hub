@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import os
 
 /// Publishes the current `AppSettings` and mediates every read/write
 /// against the persistence `Store`.
@@ -78,9 +79,11 @@ final class SettingsService: ObservableObject {
         }
     }
 
-    // Centralised so there's exactly one place to swap `print` for
-    // `os.Logger` later if the project grows a proper logging layer.
+    // Routes through `os.Logger` so messages land in unified logging
+    // and aren't dropped in Release builds (`print` is silenced under
+    // the Release optimiser anyway).
+    private static let osLog = Logger(subsystem: "HomeHub", category: "SettingsService")
     private static func log(_ message: String) {
-        print("[SettingsService] \(message)")
+        osLog.info("\(message, privacy: .public)")
     }
 }
