@@ -147,7 +147,28 @@ final class AppContainer: ObservableObject {
             store: store,
             settings: settings,
             personalization: personalization,
-            appState: appState
+            appState: appState,
+            // Probe both MLX cache repos AND GGUF model IDs so an
+            // iCloud / Quick Start restore that includes either
+            // format surfaces a skip option. Catalog lookup happens
+            // on-demand in the welcome view; the probe just returns
+            // the raw identifiers.
+            installedModelProbe: { [weak localModels, weak catalog] in
+                guard let localModels, let catalog else { return [] }
+                let mlxRepos = await localModels.enumerateMLXCacheRepos()
+                let ggufIDs = await localModels.installedModelIDs()
+                // Translate MLX repo → catalog model ID where possible
+                // so callers can hand the result straight to
+                // `acceptRestoredModel(_:)`. Falls back to repo string
+                // when no curated entry matches (user-added models).
+                let mlxModelIDs: [String] = await MainActor.run {
+                    mlxRepos.map { repo in
+                        catalog.models.first(where: { $0.repoId == repo })?.id ?? repo
+                    }
+                }
+                let combined = Array(Set(mlxModelIDs).union(ggufIDs))
+                return combined.sorted()
+            }
         )
 
         self.settingsService = settings
@@ -353,6 +374,19 @@ final class AppContainer: ObservableObject {
         //    we don't accidentally treat a still-known model as gone.
         modelDownloadService.pruneStaleResumeData()
 
+        // 3b. Sweep orphan MLX cache directories. Typical sources:
+        //     a user deleted a custom model while its multi-GB download
+        //     was running (cancel cleanup is best-effort and skips
+        //     half-downloaded shards iOS hadn't flushed yet), or a
+        //     curated entry was renamed across an app version bump.
+        //     Detached so a slow disk walk on a large cache doesn't
+        //     stall onboarding; cleanup is purely a hygiene pass and
+        //     the result lands when it lands.
+        Task.detached(priority: .utility) { [weak self] in
+            guard let self else { return }
+            _ = await self.modelDownloadService.cleanOrphanedMLXCaches()
+        }
+
         if onboardingService.state.isCompleted {
             appState.phase = .ready
             // Auto-load the last selected model if it's installed.
@@ -404,12 +438,69 @@ final class AppContainer: ObservableObject {
     /// Attempts to load the model the user last selected. Called on
     /// launch and after onboarding completes. Silent no-op when no
     /// model is selected or the model file isn't installed yet.
+    ///
+    /// ## Crash-loop guard
+    /// A flag is written to UserDefaults immediately before
+    /// `runtime.load()` and cleared on success. If the flag is still
+    /// set when we next reach this method (i.e. the app crashed
+    /// mid-load on the previous launch — typically OOM during Metal
+    /// pipeline compile) we skip the auto-load and surface the event
+    /// via `lastAutoLoadCrash`, leaving the user in control. The user
+    /// can still tap Load manually from the Models screen, which goes
+    /// through `RuntimeManager.load(_:)` directly — the guard only
+    /// inhibits the silent boot-time path.
     func autoLoadSelectedModel() async {
         guard let modelID = settingsService.current.selectedModelID,
               let model = modelCatalogService.model(withID: modelID),
               model.installState.isReady,
               runtimeManager.activeModel == nil else { return }
+
+        // Honour a sticky crash-loop guard from the previous launch.
+        // The flag is cleared on every successful load, so a one-off
+        // crash recovers on the second tap; only a persistent
+        // load-time crash will leave the user on manual control.
+        if let pending = UserDefaults.standard.string(forKey: Self.autoLoadGuardKey) {
+            UserDefaults.standard.removeObject(forKey: Self.autoLoadGuardKey)
+            if pending == modelID {
+                let log = Logger(subsystem: "HomeHub", category: "AppContainer")
+                log.warning("autoLoadSelectedModel: detected previous-launch crash while loading '\(modelID, privacy: .public)' — skipping auto-load")
+                lastAutoLoadCrash = AutoLoadCrash(modelID: modelID, occurredAt: .now)
+                return
+            }
+        }
+
+        UserDefaults.standard.set(modelID, forKey: Self.autoLoadGuardKey)
         await runtimeManager.load(model)
+        // Only clear when the load actually settled into .ready —
+        // a load that failed cleanly (RuntimeError, no app crash)
+        // still leaves us at a known-good place and the user can
+        // retry, so clearing the flag is correct.
+        if case .ready = runtimeManager.state {
+            UserDefaults.standard.removeObject(forKey: Self.autoLoadGuardKey)
+        } else if case .failed = runtimeManager.state {
+            // Same logic — a typed failure is observable; only an app
+            // termination justifies preserving the flag.
+            UserDefaults.standard.removeObject(forKey: Self.autoLoadGuardKey)
+        }
+    }
+
+    /// UserDefaults key for the crash-loop guard.
+    private static let autoLoadGuardKey = "com.homehub.app.autoLoadInProgressModelID"
+
+    /// Snapshot of the most recent crash-loop event. Published so the
+    /// Models screen can surface a "Last auto-load crashed — load
+    /// manually" banner, mirroring the pattern used for memory-pressure
+    /// unloads.
+    @Published private(set) var lastAutoLoadCrash: AutoLoadCrash?
+
+    struct AutoLoadCrash: Equatable {
+        let modelID: String
+        let occurredAt: Date
+    }
+
+    /// Clears the crash banner once the user acknowledges it.
+    func acknowledgeAutoLoadCrash() {
+        lastAutoLoadCrash = nil
     }
 
     /// Promotes a freshly-installed model to `selectedModelID` and loads it
@@ -568,6 +659,13 @@ final class AppContainer: ObservableObject {
                 // never sees the chat in a broken state and a banner
                 // would only flash on screen for a fraction of a second.
             }
+            // Force any autosave-pending writes to disk before iOS
+            // suspends us. Otherwise a chat turn that finished
+            // 100 ms before backgrounding can sit in the autosave
+            // debounce window until the next foreground — and a
+            // jetsam in between loses it. Cheap when there's nothing
+            // pending (no-op on `hasChanges == false`).
+            await store.flushPendingChanges()
         case .active:
             // Reload model if it was unloaded while backgrounded.
             if runtimeManager.activeModel == nil {

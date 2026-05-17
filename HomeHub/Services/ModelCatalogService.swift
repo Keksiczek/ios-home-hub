@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import os
 
 /// The list of models the user can pick from. In v1 the curated catalog is
 /// hard-coded and vetted for iPhone 16 Pro / M-series iPad. User-added models
@@ -53,6 +54,37 @@ final class ModelCatalogService: ObservableObject {
     func setInstallState(_ state: ModelInstallState, for modelID: String) {
         guard let idx = models.firstIndex(where: { $0.id == modelID }) else { return }
         models[idx].installState = state
+    }
+
+    /// Pins the upstream commit SHA of an MLX repository at the moment
+    /// of its last successful install. Persisted to user-models.json
+    /// (no-op for curated models — those are write-through to the
+    /// in-memory copy only and a future `versionMismatchAvailable`
+    /// banner can still observe them).
+    ///
+    /// Pair this with `HFModelManifest.sha` after each manifest fetch
+    /// to detect that upstream has moved while a cached install is
+    /// still pinned to an older commit. Use `installedRepoSHA(for:)`
+    /// to read the pin back from the catalog.
+    func setInstalledRepoSHA(_ sha: String?, for modelID: String) {
+        guard let idx = models.firstIndex(where: { $0.id == modelID }) else { return }
+        guard models[idx].installedRepoSHA != sha else { return }
+        models[idx].installedRepoSHA = sha
+        // Only user-added models go through user-models.json. Curated
+        // models live in memory only — their pin is implicitly reset
+        // on every cold launch, which is fine for the v1 update-
+        // detection UX (we only need the pin to be authoritative
+        // across the lifetime of the running session).
+        if models[idx].isUserAdded {
+            saveUserModels()
+        }
+    }
+
+    /// Read accessor matching the writer above. Returns `nil` when
+    /// the model has never been installed via the SHA-pinning path
+    /// (e.g. installed in an older app version).
+    func installedRepoSHA(for modelID: String) -> String? {
+        models.first(where: { $0.id == modelID })?.installedRepoSHA
     }
 
     // MARK: - GGUF metadata cache
@@ -206,12 +238,12 @@ final class ModelCatalogService: ObservableObject {
     func reconcileInstallStates(localModels: LocalModelService) async {
         let installedGGUF = await localModels.installedModelIDs()
         let mlxStates = await localModels.mlxCacheStates(catalogModels: models)
-        
+
         for idx in models.indices {
             let model = models[idx]
             // Don't disturb an actively-tracked download.
             if case .downloading = model.installState { continue }
-            
+
             if model.format == .mlx {
                 // Phase 3 Refinement: Tri-state logic mapping
                 // We map .ready to .installed, and safely map .partial or .missing to .notInstalled
@@ -219,6 +251,19 @@ final class ModelCatalogService: ObservableObject {
                 if let state = mlxStates[model.id], state == .ready {
                     let localURL = await localModels.resolvedMLXCacheURL(for: model.repoId ?? "")
                     models[idx].installState = .installed(localURL: localURL)
+                    // Promote a freshly-installed user-added MLX model out
+                    // of the generic "Custom" family so the chat-template
+                    // fallback in `SwiftTransformersTokenizerBridge` can
+                    // hit the right render path. Only fires when the
+                    // family is still the import-time default to avoid
+                    // overwriting a value the user (or a future settings
+                    // surface) deliberately set.
+                    if model.isUserAdded, model.family == "Custom", let repoId = model.repoId {
+                        let inspection = await localModels.inspectMLXCache(for: repoId)
+                        if let detected = inspection.detectedFamily {
+                            models[idx].family = detected
+                        }
+                    }
                 } else {
                     if model.installState != .notInstalled {
                         models[idx].installState = .notInstalled
@@ -242,6 +287,25 @@ final class ModelCatalogService: ObservableObject {
                 }
             }
         }
+
+        // Persist any family upgrades back to user-models.json so the
+        // change survives the next cold launch.
+        if models.contains(where: \.isUserAdded) {
+            saveUserModels()
+        }
+    }
+
+    /// Catalog-aware list of MLX cache directories that no longer back
+    /// any catalog entry — typically left behind when a user-added
+    /// model was deleted while its background download was running, or
+    /// when a curated entry was renamed across app versions. Returned
+    /// as `org/repo` strings; pair with `LocalModelService.mlxCacheSizeBytes`
+    /// + `removeMLXCache` to actually clean them up.
+    func orphanedMLXCacheRepos(localModels: LocalModelService) async -> [String] {
+        let onDisk = await localModels.enumerateMLXCacheRepos()
+        guard !onDisk.isEmpty else { return [] }
+        let known = Set(models.compactMap(\.repoId))
+        return onDisk.filter { !known.contains($0) }
     }
 
     // MARK: - User model persistence
@@ -261,6 +325,14 @@ final class ModelCatalogService: ObservableObject {
     }
 
     private func saveUserModels() {
+        // Encoding happens on @MainActor (cheap — typically 1-4 KB JSON)
+        // because we need to snapshot `models` while we still hold the
+        // actor. The actual disk write is dispatched to a utility-priority
+        // detached Task so we don't block a frame on flash-storage stalls
+        // (rare on modern devices, but observed during heavy background
+        // workloads). The Task is fire-and-forget: a failed write only
+        // costs the next session a stale catalog read, which converges
+        // immediately on the next mutation.
         guard let url = userModelsFileURL else { return }
         let userModels = models
             .filter { $0.isUserAdded }
@@ -272,7 +344,16 @@ final class ModelCatalogService: ObservableObject {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? encoder.encode(userModels) else { return }
-        try? data.write(to: url, options: .atomic)
+        Task.detached(priority: .utility) {
+            do {
+                try data.write(to: url, options: .atomic)
+            } catch {
+                // Persistence failure is non-fatal; the catalog stays in
+                // memory and the next mutation will retry the write.
+                let log = Logger(subsystem: "HomeHub", category: "ModelCatalogService")
+                log.error("saveUserModels failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
     }
 
     private var userModelsFileURL: URL? {

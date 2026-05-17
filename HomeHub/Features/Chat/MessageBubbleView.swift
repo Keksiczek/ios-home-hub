@@ -65,8 +65,27 @@ struct MessageBubbleView: View {
                         DecodingIndicator()
                     }
                 } else if message.role == .assistant {
-                    // Generative UI support — intercepts <Widget:...> and falls back to markdown
-                    WidgetRenderer(rawContent: displayContent)
+                    // Streaming: render plain text. The full markdown parse
+                    // (headings, lists, tables, code fences) re-runs on every
+                    // single-token edit because `MarkdownContentView` recomputes
+                    // its `blocks` from the entire string each invocation — for
+                    // a 500-token reply that's O(n²) work over the lifetime of
+                    // the stream. Plain text during streaming, full markdown
+                    // (incl. WidgetRenderer dispatch) once `.complete` /
+                    // `.failed` flips status. Visual cost: code blocks &
+                    // headings appear as text mid-stream and "snap" to
+                    // formatting on completion — accepted trade-off for the
+                    // measurable FPS win on slower devices.
+                    if message.status == .streaming {
+                        Text(displayContent)
+                            .font(HHTheme.body)
+                            .foregroundStyle(textColor)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else {
+                        // Generative UI support — intercepts <Widget:...> and falls back to markdown
+                        WidgetRenderer(rawContent: displayContent)
+                    }
                 } else {
                     Text(displayContent)
                         .font(HHTheme.body)

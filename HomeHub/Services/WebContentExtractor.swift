@@ -122,19 +122,25 @@ enum WebContentExtractor {
             throw ExtractionError.unsupportedScheme(scheme)
         }
 
-        log.info("fetch start: \(url.absoluteString, privacy: .public)")
+        log.info("fetch start: \(url.absoluteString, privacy: .private)")
 
         var request = URLRequest(url: url, timeoutInterval: timeout)
         request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         request.setValue("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", forHTTPHeaderField: "Accept")
         request.setValue("en-US,en;q=0.9", forHTTPHeaderField: "Accept-Language")
 
-        let data: Data
+        // Stream the response so we can bail at `maxBytes` without
+        // holding the full body in memory first. The previous
+        // `URLSession.shared.data(for:)` path loaded everything,
+        // checked size, and only then threw — peak memory was the
+        // full payload regardless of cap. Streaming bytes lets us
+        // cancel mid-flight on the first byte past the threshold.
+        let asyncBytes: URLSession.AsyncBytes
         let response: URLResponse
         do {
-            (data, response) = try await URLSession.shared.data(for: request)
+            (asyncBytes, response) = try await URLSession.shared.bytes(for: request)
         } catch {
-            log.error("fetch network failed: \(url.absoluteString, privacy: .public) — \(error.localizedDescription, privacy: .public)")
+            log.error("fetch network failed: \(url.absoluteString, privacy: .private) — \(error.localizedDescription, privacy: .public)")
             throw ExtractionError.network(error)
         }
 
@@ -142,7 +148,7 @@ enum WebContentExtractor {
         let finalURL = response.url ?? url
         if let http {
             guard (200..<300).contains(http.statusCode) else {
-                log.error("fetch bad status \(http.statusCode, privacy: .public) for \(url.absoluteString, privacy: .public)")
+                log.error("fetch bad status \(http.statusCode, privacy: .public) for \(url.absoluteString, privacy: .private)")
                 throw ExtractionError.badStatus(http.statusCode)
             }
             let ct = (http.value(forHTTPHeaderField: "Content-Type") ?? "").lowercased()
@@ -153,16 +159,46 @@ enum WebContentExtractor {
             if !ct.isEmpty,
                !ct.contains("text/html"),
                !ct.contains("application/xhtml") {
-                log.error("fetch unsupported content-type '\(ct, privacy: .public)' for \(url.absoluteString, privacy: .public)")
+                log.error("fetch unsupported content-type '\(ct, privacy: .public)' for \(url.absoluteString, privacy: .private)")
                 throw ExtractionError.unsupportedContentType(ct)
             }
             if ct.isEmpty {
-                log.notice("fetch missing Content-Type for \(url.absoluteString, privacy: .public) — proceeding")
+                log.notice("fetch missing Content-Type for \(url.absoluteString, privacy: .private) — proceeding")
+            }
+            // Honour Content-Length when present: bail BEFORE consuming
+            // any body bytes if the server already told us the payload
+            // exceeds our cap. Saves the network transfer too, not just
+            // memory. Header is advisory (servers may lie), so streaming
+            // accumulation below remains the authoritative check.
+            if let lenHeader = http.value(forHTTPHeaderField: "Content-Length"),
+               let declared = Int(lenHeader),
+               declared > maxBytes {
+                log.error("fetch declared size \(declared, privacy: .public) > cap \(maxBytes, privacy: .public) for \(url.absoluteString, privacy: .private) — aborting")
+                throw ExtractionError.tooLarge(bytes: declared)
             }
         }
 
-        guard data.count <= maxBytes else {
-            throw ExtractionError.tooLarge(bytes: data.count)
+        // Streaming accumulation with hard cap. Reserves the cap up
+        // front to avoid the doubling re-alloc cost as the buffer
+        // grows past the typical page size — for sub-cap responses
+        // this trades a one-time reserveCapacity for zero per-chunk
+        // copies. The bytes iterator yields one byte at a time, so
+        // we batch into a contiguous `Data` buffer ourselves.
+        var data = Data()
+        data.reserveCapacity(min(maxBytes, 256 * 1024))
+        do {
+            for try await byte in asyncBytes {
+                data.append(byte)
+                if data.count > maxBytes {
+                    log.error("fetch body exceeded cap \(maxBytes, privacy: .public) for \(url.absoluteString, privacy: .private) — aborting")
+                    throw ExtractionError.tooLarge(bytes: data.count)
+                }
+            }
+        } catch let extractError as ExtractionError {
+            throw extractError
+        } catch {
+            log.error("fetch stream failed: \(url.absoluteString, privacy: .private) — \(error.localizedDescription, privacy: .public)")
+            throw ExtractionError.network(error)
         }
 
         // Decoding order: declared charset (rare in practice) → UTF-8
@@ -199,7 +235,7 @@ enum WebContentExtractor {
             let fallbackRaw = extractBody(from: html)
             let fallback = collapseWhitespace(fallbackRaw)
             if fallback.count < minExtractedChars {
-                log.error("fetch empty content for \(url.absoluteString, privacy: .public) — reader=\(normalised.count, privacy: .public) fallback=\(fallback.count, privacy: .public) bytes=\(data.count, privacy: .public)")
+                log.error("fetch empty content for \(url.absoluteString, privacy: .private) — reader=\(normalised.count, privacy: .public) fallback=\(fallback.count, privacy: .public) bytes=\(data.count, privacy: .public)")
                 throw ExtractionError.emptyContent
             }
             log.notice("fetch: reader pass returned \(normalised.count, privacy: .public) chars (path=\(reader.path, privacy: .public)) — falling back to body-strip (\(fallback.count, privacy: .public) chars)")
@@ -210,7 +246,7 @@ enum WebContentExtractor {
             finalText = normalised
         }
 
-        log.info("fetch ok: \(finalURL.absoluteString, privacy: .public) path=\(path, privacy: .public) bytes=\(data.count, privacy: .public) raw=\(rawSize, privacy: .public) chars=\(finalText.count, privacy: .public) title=\(title ?? "(none)", privacy: .public)")
+        log.info("fetch ok: \(finalURL.absoluteString, privacy: .private) path=\(path, privacy: .public) bytes=\(data.count, privacy: .public) raw=\(rawSize, privacy: .public) chars=\(finalText.count, privacy: .public) title=\(title ?? "(none)", privacy: .private)")
         return Page(
             title: title,
             plainText: finalText,
@@ -477,7 +513,16 @@ enum WebContentExtractor {
                             if len > 0 {
                                 let content = ns.substring(with: NSRange(location: contentStart, length: len))
                                 let plainLen = stripTags(content).count
-                                if best == nil || plainLen > best!.length {
+                                // Avoid the previous `best!.length` force-unwrap
+                                // by binding first; semantically identical
+                                // ("replace if no candidate yet, OR longer than
+                                // current best") but crash-proof against any
+                                // future refactor that nilable `best` mid-loop.
+                                if let current = best {
+                                    if plainLen > current.length {
+                                        best = (content, plainLen)
+                                    }
+                                } else {
                                     best = (content, plainLen)
                                 }
                             }

@@ -12,8 +12,24 @@ struct HFFileEntry: Codable, Sendable {
     }
 }
 
+/// Manifest snapshot returned by `fetchModelManifest`. Pairs the
+/// filtered file list with the upstream commit SHA so callers that
+/// care about reproducibility (custom user-added MLX models, future
+/// "model has updates available" UI) can pin / compare without a
+/// second round trip.
+struct HFModelManifest: Sendable {
+    let files: [HFFileEntry]
+    /// HEAD commit hash of the repo at the moment of fetch. `nil` if
+    /// the API response omitted the `sha` field (rare; legacy repos).
+    let sha: String?
+}
+
 private struct HFModelInfo: Codable {
     let siblings: [HFFileEntry]
+    /// Optional in the API response; old or unverified repos may
+    /// omit it. Decoded as Optional so a missing key doesn't fail
+    /// the whole metadata fetch.
+    let sha: String?
 }
 
 /// Lightweight client for the public Hugging Face model-info REST API.
@@ -26,10 +42,47 @@ enum HuggingFaceAPIClient {
     private static let apiBase = "https://huggingface.co/api/models"
     private static let resolveBase = "https://huggingface.co"
 
+    // MARK: - ETag-aware manifest cache
+    //
+    // HF responds with strong ETags on `/api/models/{repo}` and
+    // honours `If-None-Match` with a 304 (no body) when the upstream
+    // commit hasn't moved. Caching the last (etag, manifest) pair
+    // means a re-fetch on the same network typically transfers ~0 KB
+    // of body, just headers. The cache is in-memory only — losing it
+    // on app restart costs one full manifest fetch, which is what
+    // happens today anyway.
+
+    private final class ManifestCacheEntry {
+        let etag: String
+        let manifest: HFModelManifest
+        let storedAt: Date
+        init(etag: String, manifest: HFModelManifest) {
+            self.etag = etag
+            self.manifest = manifest
+            self.storedAt = Date()
+        }
+    }
+    nonisolated(unsafe) private static let manifestCache: NSCache<NSString, ManifestCacheEntry> = {
+        let c = NSCache<NSString, ManifestCacheEntry>()
+        c.countLimit = 32   // typical install lifetime touches a handful of repos
+        return c
+    }()
+    /// Entries older than this are treated as cold even if the ETag
+    /// would still 304 — caps the staleness of the file list/SHA
+    /// we surface to callers when the network is unavailable.
+    private static let manifestCacheMaxAge: TimeInterval = 30 * 60
+
     // MARK: - Public API
 
     /// Fetches the list of files in an HF repo and returns only those
     /// needed to run MLX inference locally.
+    ///
+    /// Retries up to 3 times on transient errors (429/502/503/504, network
+    /// connection lost / timed out) with exponential back-off + jitter:
+    /// 500 ms, 1 s, 2 s. Honors the `Retry-After` header when present so
+    /// HF's rate limiter dictates cadence directly. Non-transient errors
+    /// (400/401/403/404, malformed JSON, missing repo) propagate
+    /// immediately.
     ///
     /// - Parameter repoId: e.g. `"mlx-community/Llama-3.2-1B-Instruct-4bit"`
     /// - Throws: URLError or DecodingError on network / parse failure.
@@ -40,17 +93,175 @@ enum HuggingFaceAPIClient {
         var request = URLRequest(url: url, timeoutInterval: 10)
         request.setValue("application/json", forHTTPHeaderField: "Accept")
 
-        let (data, response) = try await URLSession.shared.data(for: request)
-        if let http = response as? HTTPURLResponse,
-           !(200..<300).contains(http.statusCode) {
-            throw URLError(
-                .badServerResponse,
-                userInfo: [NSLocalizedDescriptionKey:
-                    "HF API returned HTTP \(http.statusCode) for \(repoId)"]
-            )
+        let maxAttempts = 3
+        var attempt = 0
+        var lastError: Error?
+
+        while attempt < maxAttempts {
+            attempt += 1
+            do {
+                let (data, response) = try await URLSession.shared.data(for: request)
+                if let http = response as? HTTPURLResponse,
+                   !(200..<300).contains(http.statusCode) {
+                    if isTransientStatus(http.statusCode), attempt < maxAttempts {
+                        let delaySec = retryDelay(
+                            attempt: attempt,
+                            retryAfterHeader: http.value(forHTTPHeaderField: "Retry-After")
+                        )
+                        try? await Task.sleep(nanoseconds: UInt64(delaySec * 1_000_000_000))
+                        continue
+                    }
+                    throw URLError(
+                        .badServerResponse,
+                        userInfo: [NSLocalizedDescriptionKey:
+                            "HF API returned HTTP \(http.statusCode) for \(repoId)"]
+                    )
+                }
+                let info = try JSONDecoder().decode(HFModelInfo.self, from: data)
+                return info.siblings.filter { isNeededForMLXInference($0.rfilename) }
+            } catch let urlError as URLError where isTransientURLError(urlError) && attempt < maxAttempts {
+                lastError = urlError
+                let delaySec = retryDelay(attempt: attempt, retryAfterHeader: nil)
+                try? await Task.sleep(nanoseconds: UInt64(delaySec * 1_000_000_000))
+                continue
+            }
         }
-        let info = try JSONDecoder().decode(HFModelInfo.self, from: data)
-        return info.siblings.filter { isNeededForMLXInference($0.rfilename) }
+        throw lastError ?? URLError(.unknown)
+    }
+
+    /// Same as `fetchModelFiles` but also returns the upstream commit
+    /// SHA. Use this variant when the caller wants to pin the version
+    /// or detect upstream updates after install. Shares the retry
+    /// loop / transient-status policy with `fetchModelFiles`.
+    ///
+    /// Conditional GET: when we have a cached `(etag, manifest)` for
+    /// this repo and the cached entry is younger than `manifestCacheMaxAge`,
+    /// the request includes `If-None-Match: <etag>`. A 304 response
+    /// returns the cached manifest without re-parsing the body. A 200
+    /// returns the fresh manifest and refreshes the cache.
+    static func fetchModelManifest(repoId: String) async throws -> HFModelManifest {
+        guard let url = URL(string: "\(apiBase)/\(repoId)") else {
+            throw URLError(.badURL)
+        }
+        var request = URLRequest(url: url, timeoutInterval: 10)
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        let cacheKey = repoId as NSString
+        let cachedEntry: ManifestCacheEntry? = {
+            guard let e = manifestCache.object(forKey: cacheKey) else { return nil }
+            if Date().timeIntervalSince(e.storedAt) > manifestCacheMaxAge {
+                manifestCache.removeObject(forKey: cacheKey)
+                return nil
+            }
+            return e
+        }()
+        if let cachedEntry {
+            request.setValue(cachedEntry.etag, forHTTPHeaderField: "If-None-Match")
+        }
+
+        let maxAttempts = 3
+        var attempt = 0
+        var lastError: Error?
+        while attempt < maxAttempts {
+            attempt += 1
+            do {
+                let (data, response) = try await URLSession.shared.data(for: request)
+                if let http = response as? HTTPURLResponse {
+                    if http.statusCode == 304, let cachedEntry {
+                        // Server confirmed our cached copy is still
+                        // current. Returning the cached manifest
+                        // (with its original storedAt) means callers
+                        // see byte-identical results to the prior call.
+                        return cachedEntry.manifest
+                    }
+                    if !(200..<300).contains(http.statusCode) {
+                        if isTransientStatus(http.statusCode), attempt < maxAttempts {
+                            let delaySec = retryDelay(
+                                attempt: attempt,
+                                retryAfterHeader: http.value(forHTTPHeaderField: "Retry-After")
+                            )
+                            try? await Task.sleep(nanoseconds: UInt64(delaySec * 1_000_000_000))
+                            continue
+                        }
+                        throw URLError(
+                            .badServerResponse,
+                            userInfo: [NSLocalizedDescriptionKey:
+                                "HF API returned HTTP \(http.statusCode) for \(repoId)"]
+                        )
+                    }
+                }
+                let info = try JSONDecoder().decode(HFModelInfo.self, from: data)
+                let files = info.siblings.filter { isNeededForMLXInference($0.rfilename) }
+                let manifest = HFModelManifest(files: files, sha: info.sha)
+                if let http = response as? HTTPURLResponse,
+                   let etag = http.value(forHTTPHeaderField: "ETag") {
+                    manifestCache.setObject(
+                        ManifestCacheEntry(etag: etag, manifest: manifest),
+                        forKey: cacheKey
+                    )
+                }
+                return manifest
+            } catch let urlError as URLError where isTransientURLError(urlError) && attempt < maxAttempts {
+                lastError = urlError
+                let delaySec = retryDelay(attempt: attempt, retryAfterHeader: nil)
+                try? await Task.sleep(nanoseconds: UInt64(delaySec * 1_000_000_000))
+                continue
+            }
+        }
+        // Loop only exits successfully via `return`; if we fall through it
+        // means every attempt threw with a non-transient error or the last
+        // transient retry exhausted. Re-raise the last seen error so the
+        // caller gets a real diagnostic, not a generic "out of attempts".
+        throw lastError ?? URLError(.unknown)
+    }
+
+    // MARK: - Retry helpers
+
+    /// HTTP status codes that warrant a retry. Distinct from "errors we
+    /// surface to the user" — 5xx are transient backend failures, 429
+    /// is rate-limit (HF returns this when the unauth quota is exceeded).
+    private static func isTransientStatus(_ code: Int) -> Bool {
+        return code == 429 || code == 502 || code == 503 || code == 504
+    }
+
+    /// URLError codes corresponding to "network is flapping; retry might
+    /// succeed". Excludes auth / DNS / bad URL — those are sticky.
+    private static func isTransientURLError(_ error: URLError) -> Bool {
+        switch error.code {
+        case .timedOut,
+             .networkConnectionLost,
+             .notConnectedToInternet,
+             .cannotConnectToHost,
+             .dnsLookupFailed,
+             .resourceUnavailable:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Returns the next back-off delay in seconds.
+    /// Honors `Retry-After` (integer seconds OR HTTP-date) if the server
+    /// supplied one — that signal is authoritative. Otherwise uses
+    /// exponential back-off (0.5 s, 1 s, 2 s) with up to ±20 % jitter to
+    /// avoid synchronised retry storms when multiple clients restart at
+    /// the same moment.
+    private static func retryDelay(attempt: Int, retryAfterHeader: String?) -> Double {
+        if let header = retryAfterHeader {
+            if let seconds = Double(header.trimmingCharacters(in: .whitespaces)) {
+                return min(max(seconds, 0.5), 30)
+            }
+            // HTTP-date form: "Retry-After: Wed, 21 Oct 2026 07:28:00 GMT"
+            let fmt = DateFormatter()
+            fmt.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+            fmt.locale = Locale(identifier: "en_US_POSIX")
+            if let date = fmt.date(from: header) {
+                let delta = max(0.5, date.timeIntervalSinceNow)
+                return min(delta, 30)
+            }
+        }
+        let base = 0.5 * pow(2.0, Double(attempt - 1))
+        let jitter = Double.random(in: 0.8...1.2)
+        return min(base * jitter, 10)
     }
 
     /// Direct-download URL for a single file in an HF repo.

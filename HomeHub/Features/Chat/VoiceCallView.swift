@@ -1,4 +1,7 @@
 import SwiftUI
+import os
+
+private let voiceCallLog = Logger(subsystem: "HomeHub", category: "VoiceCallView")
 
 struct VoiceCallView: View {
     let conversationID: UUID
@@ -99,13 +102,18 @@ struct VoiceCallView: View {
                 .padding(.bottom, 40)
             }
         }
-        .onAppear {
-            Task {
-                authorizationStatus = await voiceService.requestAuthorization()
-                if authorizationStatus {
-                    // Automatically start listening if desired
-                    toggleMicrophone()
-                }
+        .task {
+            // `.task` (vs `.onAppear { Task { … } }`) ties the lifetime
+            // to the view: SwiftUI cancels the task automatically when
+            // the view leaves the hierarchy. That cancellation closes
+            // the race where the auto-microphone toggle could fire
+            // AFTER `.onDisappear` already called `hangUp()` — a
+            // detached `Task {}` ignored cancellation and could
+            // restart the engine post-dismiss.
+            authorizationStatus = await voiceService.requestAuthorization()
+            if Task.isCancelled { return }
+            if authorizationStatus {
+                toggleMicrophone()
             }
         }
         .onDisappear {
@@ -145,7 +153,7 @@ struct VoiceCallView: View {
             do {
                 try voiceService.startListening()
             } catch {
-                print("Error starting microphone: \(error)")
+                voiceCallLog.error("Error starting microphone: \(error.localizedDescription, privacy: .public)")
             }
         }
     }

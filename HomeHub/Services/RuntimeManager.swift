@@ -151,6 +151,13 @@ final class RuntimeManager: ObservableObject {
         runtime.averageThroughput(for: modelID)
     }
 
+    /// Throughput distribution (p50, p95) for `modelID`. Surfaces the
+    /// tail latency that `averageThroughput` hides. Returns `nil` for
+    /// runtimes that don't track per-sample history (mock, llama.cpp).
+    func throughputPercentiles(for modelID: String) -> (p50: Double, p95: Double, samples: Int)? {
+        runtime.throughputPercentiles(for: modelID)
+    }
+
     private let log = Logger(subsystem: "com.homehub.app", category: "RuntimeManager")
 
     // MARK: - Init

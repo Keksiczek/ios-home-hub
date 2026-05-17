@@ -78,6 +78,20 @@ final class ModelImportTests: XCTestCase {
         XCTAssertNoThrow(try ModelDownloadService.validateModelURL(url))
     }
 
+    func testValidateAcceptsWellFormedMLXURL() {
+        let url = URL(string: "mlx://mlx-community/Llama-3.2-1B-Instruct-4bit")!
+        XCTAssertNoThrow(try ModelDownloadService.validateModelURL(url))
+    }
+
+    func testValidateRejectsMLXURLWithoutRepoName() {
+        let url = URL(string: "mlx://mlx-community")!
+        XCTAssertThrowsError(try ModelDownloadService.validateModelURL(url)) { error in
+            let msg = (error as? ModelDownloadService.URLImportError)?.errorDescription ?? ""
+            XCTAssertTrue(msg.contains("repository name"),
+                          "Error should mention the missing repository name (\(msg))")
+        }
+    }
+
     // MARK: - Citations parser (ToolObservation)
 
     func testCitationsExtractsSingleURL() {

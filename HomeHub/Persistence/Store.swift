@@ -42,4 +42,14 @@ protocol Store: AnyObject, Sendable {
 
     func loadOnboardingState() async throws -> OnboardingState?
     func save(onboardingState: OnboardingState) async throws
+
+    /// Best-effort flush of any autosave-pending changes. Call from
+    /// the app-background lifecycle hook so iOS suspending us doesn't
+    /// drop the autosave debounce window. Default is a no-op so
+    /// in-memory / test stores don't need to implement it.
+    func flushPendingChanges() async
+}
+
+extension Store {
+    func flushPendingChanges() async {}
 }

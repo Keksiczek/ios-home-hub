@@ -109,6 +109,14 @@ protocol LocalLLMRuntime: AnyObject, Sendable {
     /// Rolling-average tokens/sec for `modelID`, or `nil` if the runtime
     /// doesn't track throughput. Read by diagnostics only.
     func averageThroughput(for modelID: String) -> (tps: Double, samples: Int)?
+
+    /// Snapshot of the throughput distribution: median (p50) and tail
+    /// (p95). p50 catches typical performance; p95 surfaces the
+    /// worst-case stalls that a mean-only readout hides (a model with
+    /// mean 30 t/s and p95-of-2 t/s is functionally unusable even
+    /// though the mean looks fine). `nil` if the runtime doesn't
+    /// track per-sample history.
+    func throughputPercentiles(for modelID: String) -> (p50: Double, p95: Double, samples: Int)?
 }
 
 // MARK: - Default implementations
@@ -146,6 +154,9 @@ extension LocalLLMRuntime {
 
     /// Default: no throughput tracking. Concrete runtimes override.
     func averageThroughput(for modelID: String) -> (tps: Double, samples: Int)? { nil }
+
+    /// Default: no per-sample history. `MLXRuntime` overrides.
+    func throughputPercentiles(for modelID: String) -> (p50: Double, p95: Double, samples: Int)? { nil }
 }
 
 // MARK: - Supporting types
@@ -227,6 +238,11 @@ struct RuntimeParameters: Sendable {
 enum RuntimeEvent: Sendable {
     case token(String)
     case finished(reason: FinishReason, stats: RuntimeStats)
+    /// Soft, non-fatal signal. The watchdog uses it to surface
+    /// "model has been silent for N seconds" without cancelling the
+    /// generation. UI may show a banner or do nothing; consumers MUST
+    /// tolerate zero or many `.warning` events per generation.
+    case warning(RuntimeWarning)
 
     enum FinishReason: Sendable {
         case stop
@@ -234,6 +250,23 @@ enum RuntimeEvent: Sendable {
         case cancelled
         case error
     }
+}
+
+/// Structured non-fatal signals emitted alongside tokens. Carries a
+/// machine-readable kind + a localised user message so the UI can
+/// localise or skip kinds it doesn't care about (vs. parsing free
+/// text).
+struct RuntimeWarning: Sendable, Equatable {
+    enum Kind: String, Sendable, Equatable {
+        /// No tokens have arrived for the threshold window. Fires at
+        /// 30 s, 60 s, 120 s; consumer may show a "model is taking
+        /// longer than usual" banner.
+        case generationStall
+    }
+    let kind: Kind
+    let message: String
+    /// Time since the last token (or generation start), seconds.
+    let secondsSilent: Int
 }
 
 struct RuntimeStats: Sendable {
@@ -253,6 +286,20 @@ enum RuntimeError: LocalizedError, Equatable {
     /// The model targets a backend that isn't linked into this build.
     /// Carries the model's display name so the UI can be specific.
     case backendUnavailable(modelName: String, backend: ModelBackend)
+    /// Required files missing from the on-disk model cache. `missing`
+    /// contains a short human list ("config.json, tokenizer files");
+    /// surfaced verbatim in the Model Info sheet and in load failure
+    /// notifications, so it must be free of low-level symbols.
+    case missingFiles(modelName: String, missing: [String])
+    /// On-disk cache directory exists but isn't a recognisable MLX model
+    /// (no `config.json`, no weights, or both — already classified as
+    /// such by `LocalModelService.inspectMLXCache`).
+    case invalidModelDirectory(modelName: String, detail: String)
+    /// Catch-all for unsupported model configurations (vocab mismatch,
+    /// architecture not implemented by mlx-swift-lm, tokenizer the
+    /// bridge can't load). The carried `detail` is intentionally raw —
+    /// the surrounding UI wraps it with context.
+    case unsupportedModelConfiguration(String)
     case underlying(String)
 
     var errorDescription: String? {
@@ -281,6 +328,13 @@ enum RuntimeError: LocalizedError, Equatable {
                 return "\"\(name)\" vyžaduje MLX runtime, který není v tomto buildu k dispozici. " +
                        "(Pravděpodobně chyba v build configu — MLX má být vždy přítomný.)"
             }
+        case .missingFiles(let name, let missing):
+            let list = missing.isEmpty ? "required files" : missing.joined(separator: ", ")
+            return "Model \"\(name)\" je neúplný na disku — chybí \(list). Smaž ho a stáhni znovu."
+        case .invalidModelDirectory(let name, let detail):
+            return "Model \"\(name)\" nelze načíst: \(detail)"
+        case .unsupportedModelConfiguration(let m):
+            return "Model nelze načíst kvůli nepodporované konfiguraci: \(m)"
         case .underlying(let m):
             return m
         }

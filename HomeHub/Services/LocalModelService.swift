@@ -2,13 +2,58 @@ import Foundation
 import OSLog
 
 /// Tri-state representation of an externally-managed MLX model cache.
-enum MLXCacheState {
+enum MLXCacheState: Equatable, Sendable {
     /// Directory or essential metadata is missing.
     case missing
     /// Metadata exists, but weights are missing or suspiciously small.
     case partial
     /// Strong evidence the cache is fully usable.
     case ready
+}
+
+/// Detailed snapshot of an MLX cache directory — used by the download
+/// finalizer and the runtime pre-flight to give actionable error
+/// messages instead of "Failed to load MLX model".
+struct MLXCacheInspection: Sendable, Equatable {
+    var state: MLXCacheState
+    /// True if the cache directory itself exists on disk.
+    var directoryExists: Bool
+    /// True if `config.json` is present.
+    var hasConfig: Bool
+    /// True if at least one `*.safetensors` weight shard is present.
+    var hasWeights: Bool
+    /// True if a tokenizer artefact is present (`tokenizer.json`,
+    /// `tokenizer.model`, `vocab.json` + `merges.txt`, …). Conservative —
+    /// missing tokenizer is a hard failure on every MLX loader path.
+    var hasTokenizer: Bool
+    /// Sum of weight-shard sizes; useful for telemetry / "weights are
+    /// suspiciously small" sanity checks.
+    var totalWeightsBytes: Int64
+    /// Human-readable list of what's missing. Empty when `state == .ready`.
+    var missingItems: [String]
+    /// Detected model family from `config.json` (`"Llama"`, `"Gemma3"`,
+    /// `"Qwen"`, …). `nil` if `config.json` is missing or unparsable.
+    /// Used by `ModelCatalogService.upgradeCustomFamilyIfDetected` to
+    /// promote user-added MLX models out of the generic "Custom"
+    /// family so `ChatTemplate` picks the right render path in the
+    /// tokenizer-bridge fallback.
+    var detectedFamily: String?
+
+    /// One-line, user-facing reason suitable for `.failed(reason:)`.
+    /// Returns `nil` when the cache is ready.
+    var failureReason: String? {
+        switch state {
+        case .ready:
+            return nil
+        case .missing where !directoryExists:
+            return "Model directory is missing on disk."
+        case .missing, .partial:
+            if missingItems.isEmpty {
+                return "Model directory is incomplete."
+            }
+            return "Model directory is incomplete — missing: \(missingItems.joined(separator: ", "))."
+        }
+    }
 }
 
 /// Owns the on-disk model directory. Nobody else touches model
@@ -43,51 +88,149 @@ actor LocalModelService {
     /// Conservatively evaluates the readiness of an MLX model cache.
     /// - Returns: `MLXCacheState` (missing, partial, or ready).
     private func mlxCacheState(for repoId: String) -> MLXCacheState {
-        let cacheDir = mlxCacheURL(for: repoId)
-        
-        // 1. Directory must exist
+        inspectMLXCache(for: repoId).state
+    }
+
+    /// Detailed inspection of an MLX cache. Used both by post-download
+    /// finalization (where we need an actionable failure reason if the
+    /// cache is partial) and by the runtime pre-flight before invoking
+    /// the MLX loader (so we fail fast with a clear message instead of
+    /// throwing the loader's internal error string at the user).
+    func inspectMLXCache(for repoId: String) -> MLXCacheInspection {
+        Self.inspectMLXCache(
+            at: mlxCacheURL(for: repoId)
+        )
+    }
+
+    /// Off-actor variant used by the runtime pre-flight path. Computes
+    /// the cache URL the same way the actor would, then delegates to the
+    /// directory-based inspector. `baseDocuments` defaults to
+    /// `URL.documentsDirectory` — the same value the production
+    /// `LocalModelService` is constructed with.
+    nonisolated static func inspectMLXCache(
+        repoId: String,
+        baseDocuments: URL = URL.documentsDirectory
+    ) -> MLXCacheInspection {
+        let cacheDir = baseDocuments.appendingPathComponent("huggingface/models/\(repoId)")
+        return inspectMLXCache(at: cacheDir)
+    }
+
+    /// Directory-based inspector. Pure file-system read — safe off any
+    /// actor. Returns the same structured snapshot as the actor-isolated
+    /// method so the two call sites can share `.failureReason` logic.
+    nonisolated static func inspectMLXCache(at cacheDir: URL) -> MLXCacheInspection {
+        let fileManager = FileManager.default
+        let staticLog = Logger(subsystem: "com.keksiczek.HomeHub", category: "LocalModelService")
+
         var isDir: ObjCBool = false
-        guard fileManager.fileExists(atPath: cacheDir.path, isDirectory: &isDir), isDir.boolValue else {
-            return .missing
+        let dirExists = fileManager.fileExists(atPath: cacheDir.path, isDirectory: &isDir) && isDir.boolValue
+        guard dirExists else {
+            staticLog.debug("MLX Cache: directory missing at \(cacheDir.path, privacy: .public)")
+            return MLXCacheInspection(
+                state: .missing,
+                directoryExists: false,
+                hasConfig: false,
+                hasWeights: false,
+                hasTokenizer: false,
+                totalWeightsBytes: 0,
+                missingItems: ["model directory"],
+                detectedFamily: nil
+            )
         }
-        
-        // 2. config.json must exist
-        let configPath = cacheDir.appendingPathComponent("config.json").path
-        guard fileManager.fileExists(atPath: configPath) else {
-            return .missing
-        }
-        
-        // 3. Evaluate weights (.safetensors)
-        guard let contents = try? fileManager.contentsOfDirectory(atPath: cacheDir.path) else {
-            return .missing
-        }
-        
+
+        let contents = (try? fileManager.contentsOfDirectory(atPath: cacheDir.path)) ?? []
+
+        let hasConfig = contents.contains("config.json")
         let safetensorsFiles = contents.filter { $0.hasSuffix(".safetensors") }
-        if safetensorsFiles.isEmpty {
-            log.debug("MLX Cache [\(repoId)]: Metadata found, but no weights (.safetensors) exist. State: partial")
-            return .partial
-        }
-        
-        // 4. Sanity check: Ensure weights are not trivially small (e.g. < 1MB)
-        // This helps detect interrupted downloads where a file was touched but not filled.
+        let hasWeights = !safetensorsFiles.isEmpty
+        // Conservative tokenizer detection: any of the well-known artefacts
+        // satisfies the check. Mirrors what swift-transformers /
+        // AutoTokenizer can actually consume.
+        let tokenizerCandidates: Set<String> = [
+            "tokenizer.json", "tokenizer.model",
+            "spiece.model", "sentencepiece.model",
+            "vocab.json", "tokenizer_config.json"
+        ]
+        let hasTokenizer = contents.contains { tokenizerCandidates.contains($0) }
+            || contents.contains { $0.hasSuffix(".model") && ($0.contains("tokenizer") || $0.contains("spiece")) }
+
         var totalWeightsSize: Int64 = 0
         for file in safetensorsFiles {
             let path = cacheDir.appendingPathComponent(file).path
             if let attrs = try? fileManager.attributesOfItem(atPath: path),
-               let size = attrs[.size] as? Int64 {
+               let size = (attrs[.size] as? NSNumber)?.int64Value {
                 totalWeightsSize += size
             }
         }
-        
-        if totalWeightsSize < 1_000_000 {
-            log.debug("MLX Cache [\(repoId)]: Weights are trivially small (\(totalWeightsSize) bytes). State: partial")
-            return .partial
+
+        var missing: [String] = []
+        if !hasConfig    { missing.append("config.json") }
+        if !hasTokenizer { missing.append("tokenizer files") }
+        if !hasWeights   { missing.append(".safetensors weights") }
+
+        let state: MLXCacheState
+        if missing.isEmpty && totalWeightsSize >= 1_000_000 {
+            state = .ready
+            staticLog.info("MLX Cache: ready at \(cacheDir.lastPathComponent, privacy: .public) (weights=\(totalWeightsSize) B)")
+        } else if !missing.isEmpty {
+            state = !hasConfig || !hasTokenizer ? .missing : .partial
+            staticLog.debug("MLX Cache: incomplete at \(cacheDir.lastPathComponent, privacy: .public) — missing \(missing.joined(separator: ", "), privacy: .public)")
+        } else {
+            // weights present but suspiciously small (< 1 MB total)
+            state = .partial
+            staticLog.debug("MLX Cache: weights trivially small at \(cacheDir.lastPathComponent, privacy: .public) (\(totalWeightsSize) B)")
         }
-        
-        log.info("MLX Cache [\(repoId)]: Strong evidence of usability found. State: ready")
-        return .ready
+
+        // Best-effort family detection from config.json. Failures are
+        // silent — the value is only used as a UI / template hint.
+        let detectedFamily: String? = hasConfig
+            ? detectMLXFamily(configURL: cacheDir.appendingPathComponent("config.json"))
+            : nil
+
+        return MLXCacheInspection(
+            state: state,
+            directoryExists: true,
+            hasConfig: hasConfig,
+            hasWeights: hasWeights,
+            hasTokenizer: hasTokenizer,
+            totalWeightsBytes: totalWeightsSize,
+            missingItems: missing,
+            detectedFamily: detectedFamily
+        )
     }
-    
+
+    /// Reads `config.json` and maps the model architecture / model_type
+    /// to one of the `ChatTemplate.render` family strings. Returns
+    /// `nil` if the file is missing, unparsable, or doesn't carry a
+    /// recognised architecture. Mirrors the catalog's family strings so
+    /// a promoted user-added entry behaves like a curated one.
+    nonisolated static func detectMLXFamily(configURL: URL) -> String? {
+        guard let data = try? Data(contentsOf: configURL, options: .mappedIfSafe),
+              let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+
+        let archCandidate: String?
+        if let arr = raw["architectures"] as? [String], let first = arr.first {
+            archCandidate = first
+        } else if let mt = raw["model_type"] as? String {
+            archCandidate = mt
+        } else {
+            archCandidate = nil
+        }
+        guard let arch = archCandidate?.lowercased() else { return nil }
+
+        if arch.contains("llama")                              { return "Llama" }
+        if arch.contains("gemma3n")                            { return "Gemma3n" }
+        if arch.contains("gemma3")                             { return "Gemma3" }
+        if arch.contains("gemma2")                             { return "Gemma2" }
+        if arch.contains("gemma")                              { return "Gemma3" }
+        if arch.contains("qwen")                               { return "Qwen" }
+        if arch.contains("phi")                                { return "Phi" }
+        if arch.contains("mistral")                            { return "Mistral" }
+        if arch.contains("smollm")                             { return "SmolLM2" }
+        return nil
+    }
+
     /// Returns a mapping of Model IDs to their current MLX cache state.
     func mlxCacheStates(catalogModels: [LocalModel]) -> [String: MLXCacheState] {
         let mlxModels = catalogModels.filter { $0.format == .mlx }
@@ -113,6 +256,50 @@ actor LocalModelService {
             try fileManager.removeItem(at: cacheDir)
             log.info("Deleted MLX cache directory for '\(repoId, privacy: .public)'")
         }
+    }
+
+    /// Enumerates every on-disk MLX cache `org/repo` pair under the
+    /// `huggingface/models/` root. Used by the catalog reconcile step
+    /// to identify orphaned caches (directory exists but no catalog
+    /// entry references it) so they can be removed before reclaiming
+    /// disk space at user request.
+    func enumerateMLXCacheRepos() -> [String] {
+        let root = baseDocumentsDirectory.appendingPathComponent("huggingface/models")
+        guard fileManager.fileExists(atPath: root.path) else { return [] }
+        guard let orgs = try? fileManager.contentsOfDirectory(atPath: root.path) else { return [] }
+        var result: [String] = []
+        for org in orgs {
+            let orgDir = root.appendingPathComponent(org)
+            var isDir: ObjCBool = false
+            guard fileManager.fileExists(atPath: orgDir.path, isDirectory: &isDir), isDir.boolValue else { continue }
+            let repos = (try? fileManager.contentsOfDirectory(atPath: orgDir.path)) ?? []
+            for repo in repos {
+                let repoDir = orgDir.appendingPathComponent(repo)
+                var isRepoDir: ObjCBool = false
+                if fileManager.fileExists(atPath: repoDir.path, isDirectory: &isRepoDir), isRepoDir.boolValue {
+                    result.append("\(org)/\(repo)")
+                }
+            }
+        }
+        return result
+    }
+
+    /// Returns the on-disk size (in bytes) of an MLX cache, or 0 if
+    /// the directory is missing or unreadable. Used by orphan cleanup
+    /// telemetry so the user sees how much was reclaimed.
+    func mlxCacheSizeBytes(for repoId: String) -> Int64 {
+        let cacheDir = mlxCacheURL(for: repoId)
+        guard let enumerator = fileManager.enumerator(
+            at: cacheDir,
+            includingPropertiesForKeys: [.fileSizeKey]
+        ) else { return 0 }
+        var total: Int64 = 0
+        for case let url as URL in enumerator {
+            if let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize {
+                total += Int64(size)
+            }
+        }
+        return total
     }
 
     // MARK: - GGUF Support

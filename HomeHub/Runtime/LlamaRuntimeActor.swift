@@ -223,10 +223,18 @@ actor LlamaRuntimeActor {
     /// **Do not store the returned `LlamaContextHandle` beyond one generation
     /// Task's lifetime.**
     ///
-    /// - Throws: `RuntimeError.noModelLoaded` if no model is loaded.
+    /// - Throws:
+    ///   - `RuntimeError.noModelLoaded` when no model has been loaded yet.
+    ///   - `RuntimeError.generationInProgress` when a previous generation
+    ///     is still executing — llama.cpp is strictly single-threaded
+    ///     on the context handle, so a second concurrent borrow would
+    ///     corrupt KV-cache state and could crash the bridge layer.
+    ///     Previously this case threw `.noModelLoaded`, which surfaced
+    ///     a misleading "No model is currently loaded" toast in the UI
+    ///     during the (rare) concurrent-call window.
     func borrowForGeneration() throws -> (context: LlamaContextHandle, token: GenerationCancellationToken) {
         guard let ctx = context else { throw RuntimeError.noModelLoaded }
-        guard !isGenerating else { throw RuntimeError.noModelLoaded }
+        guard !isGenerating else { throw RuntimeError.generationInProgress }
         isGenerating = true
         return (ctx, currentCancellationToken)
     }

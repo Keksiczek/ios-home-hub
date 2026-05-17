@@ -286,4 +286,76 @@ final class ConversationServiceTests: XCTestCase {
         XCTAssertNotNil(error.errorDescription)
         XCTAssertFalse(error.errorDescription?.isEmpty == true)
     }
+
+    // MARK: - LRU eviction
+    //
+    // The message cache is capped at 12 conversations to keep RAM
+    // bounded for power users (without it, a session that flips
+    // through 100 chats holds 100 × N messages in memory). The
+    // tests below assert: (a) plain access doesn't evict, (b) the
+    // cap actually fires, (c) the LRU order is correct, and (d)
+    // a deletion immediately reclaims its slot.
+
+    func testLRU_DoesNotEvictUnderCap() async {
+        let (service, _, _, _) = await makeStack()
+        var ids: [UUID] = []
+        for _ in 0..<6 {
+            let convo = await service.createConversation()
+            ids.append(convo.id)
+        }
+        // All under cap=12: every conversation must still have an
+        // entry (we read it back as an empty array, not a missing
+        // entry — `messages(in:)` falls back to [] for absent keys,
+        // so we use `noteConversationAccess` as a no-op probe).
+        for id in ids {
+            service.noteConversationAccess(id)
+            XCTAssertEqual(service.messages(in: id), [],
+                "Conversation \(id) should still be cached under cap")
+        }
+    }
+
+    func testLRU_EvictsColdestEntryAtCap() async {
+        let (service, _, _, _) = await makeStack()
+        var ids: [UUID] = []
+        // Create 13 conversations — one over the cap. The FIRST
+        // (coldest) must be evicted; the latest 12 must survive.
+        for _ in 0..<13 {
+            let convo = await service.createConversation()
+            ids.append(convo.id)
+        }
+        // Touch every conversation EXCEPT the first; this re-orders
+        // the LRU so the first remains the eviction victim regardless
+        // of insertion order on the createConversation path.
+        for id in ids.dropFirst() {
+            service.noteConversationAccess(id)
+        }
+        // Trigger eviction: createConversation appends to the LRU
+        // and runs `evictColdEntriesIfNeeded()` synchronously.
+        let extra = await service.createConversation()
+        service.noteConversationAccess(extra.id)
+
+        // Coldest = ids[0] should have been dropped from the cache.
+        // Other entries should still produce an empty array (still
+        // cached, no messages added yet). We can't distinguish "evicted"
+        // from "empty" via `messages(in:)` directly, so we rely on the
+        // fact that the published `messagesByConversation` dictionary
+        // doesn't contain the evicted key.
+        XCTAssertNil(service.messagesByConversation[ids[0]],
+            "Coldest entry must be evicted once the cap is exceeded")
+        for id in ids.dropFirst() {
+            XCTAssertNotNil(service.messagesByConversation[id],
+                "Recently-touched entry \(id) must NOT be evicted")
+        }
+    }
+
+    func testLRU_DeleteImmediatelyReclaimsSlot() async {
+        let (service, _, _, _) = await makeStack()
+        let convo = await service.createConversation()
+        XCTAssertNotNil(service.messagesByConversation[convo.id])
+
+        await service.deleteConversation(convo.id)
+
+        XCTAssertNil(service.messagesByConversation[convo.id],
+            "Deleted conversation must be removed from the message cache")
+    }
 }

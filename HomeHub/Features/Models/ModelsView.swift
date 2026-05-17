@@ -195,6 +195,61 @@ struct ModelsView: View {
         return "\(used) used by installed models · \(free) free"
     }
 
+    /// Disk-space alert tier. Drives the banner shown above the model
+    /// list — keeps the alert in the user's peripheral vision instead
+    /// of waiting for them to tap Download and discover the problem in
+    /// a modal. Thresholds picked so they correspond to common
+    /// model sizes: 1 GB ≈ a typical 4-bit 1B-3B model, 500 MB ≈
+    /// anything bigger will fail to install.
+    private enum DiskAlertTier { case none, low, critical }
+    private var diskAlertTier: DiskAlertTier {
+        // availableBytes == 0 means the resource read hasn't fired yet
+        // (first frame after launch). Suppress until we have real data
+        // so we don't flash a phantom warning during the load.
+        guard availableBytes > 0 else { return .none }
+        if availableBytes < 500_000_000 { return .critical }
+        if availableBytes < 1_500_000_000 { return .low }
+        return .none
+    }
+
+    @ViewBuilder
+    private var diskAlertBanner: some View {
+        let tier = diskAlertTier
+        if tier != .none {
+            let free = ByteCountFormatter.string(fromByteCount: max(availableBytes, 0), countStyle: .file)
+            HStack(spacing: HHTheme.spaceS) {
+                Image(systemName: tier == .critical ? "externaldrive.badge.exclamationmark" : "externaldrive.badge.questionmark")
+                    .foregroundStyle(tier == .critical ? HHTheme.danger : HHTheme.warning)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(tier == .critical
+                         ? "Critical: only \(free) free"
+                         : "Low disk space — \(free) free")
+                        .font(HHTheme.caption.weight(.semibold))
+                        .foregroundStyle(HHTheme.textPrimary)
+                    Text(tier == .critical
+                         ? "Delete an unused model or free space in Settings → Storage before downloading."
+                         : "Most models need 0.5–4 GB. Consider deleting an unused one before downloading more.")
+                        .font(HHTheme.caption)
+                        .foregroundStyle(HHTheme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, HHTheme.spaceL)
+            .padding(.vertical, HHTheme.spaceS)
+            .background(
+                RoundedRectangle(cornerRadius: HHTheme.cornerMedium, style: .continuous)
+                    .fill((tier == .critical ? HHTheme.danger : HHTheme.warning).opacity(0.08))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: HHTheme.cornerMedium, style: .continuous)
+                    .stroke((tier == .critical ? HHTheme.danger : HHTheme.warning).opacity(0.25), lineWidth: 0.5)
+            )
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(tier == .critical ? "Critical low disk space" : "Low disk space")
+        }
+    }
+
     // MARK: - Body
 
     var body: some View {
@@ -210,6 +265,21 @@ struct ModelsView: View {
                         .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
                 }
                 .listSectionSpacing(.compact)
+
+                // Ambient low-disk banner. Renders only when the alert
+                // tier is non-`.none`, so the layout stays flat for
+                // users with healthy storage. The banner uses the same
+                // padding pattern as `memoryHeadroomRow` so the visual
+                // rhythm is preserved.
+                if diskAlertTier != .none {
+                    Section {
+                        diskAlertBanner
+                            .listRowBackground(Color.clear)
+                            .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 8, trailing: 16))
+                            .listRowSeparator(.hidden)
+                    }
+                    .listSectionSpacing(.compact)
+                }
 
                 ForEach(filteredSections) { section in
                     Section {
@@ -390,6 +460,25 @@ struct ModelsView: View {
                         Text("The model file will be removed from this device. You can re-download it later.")
                     }
                 }
+            }
+            // ── Delete failure surface ──────────────────────────────────────
+            // Previously a failed delete (FileManager error, permission
+            // issue) was only logged — the model disappeared from the
+            // catalog while gigabytes of cache lingered on disk with no
+            // recovery path from the UI. The service now publishes
+            // `lastDeleteError` for exactly these cases.
+            .alert(
+                "Delete failed",
+                isPresented: Binding(
+                    get: { downloads.lastDeleteError != nil },
+                    set: { if !$0 { downloads.acknowledgeDeleteError() } }
+                )
+            ) {
+                Button("OK", role: .cancel) {
+                    downloads.acknowledgeDeleteError()
+                }
+            } message: {
+                Text(downloads.lastDeleteError ?? "")
             }
         }
     }
@@ -681,11 +770,14 @@ private struct ModelBrowserRow: View {
                     .foregroundStyle(HHTheme.warning)
                     .lineLimit(3)
                 HStack(spacing: HHTheme.spaceS) {
-                    Button(model.format == .mlx ? "Retry" : (item.hasResumeData ? "Resume" : "Retry")) {
-                        model.format == .mlx ? onLoad() : onDownload()
-                    }
-                    .buttonStyle(HHSecondaryButtonStyle())
-                    .disabled(model.format == .mlx ? !item.actions.canLoad : !item.actions.canDownload)
+                    // Retry always re-triggers the download for both
+                    // formats. The previous wiring routed MLX retry to
+                    // onLoad(), which never fires because the row is
+                    // still .downloadFailed (not .installed) — the
+                    // button was permanently disabled by canLoad=false.
+                    Button(item.hasResumeData ? "Resume" : "Retry", action: onDownload)
+                        .buttonStyle(HHSecondaryButtonStyle())
+                        .disabled(!item.actions.canDownload)
                     deleteButton
                 }
             }

@@ -40,10 +40,38 @@ struct OnboardingWelcomeView: View {
                 )
             }
         } footer: {
-            Button("Continue") {
-                Task { await service.advance(to: .modelSelection) }
+            VStack(spacing: HHTheme.spaceS) {
+                // Skip path for users who came in via an iCloud / Quick
+                // Start restore — they already have the model on disk,
+                // forcing them through the multi-GB download flow a
+                // second time is the surest way to make them uninstall.
+                // The button shows the first restored model's identifier
+                // truncated for length so the user knows what they're
+                // accepting. Tapping defers to OnboardingService, which
+                // commits a sensible-default config and lands on .ready.
+                if let restoredID = service.restoredModelIDs.first {
+                    Button {
+                        Task { await service.acceptRestoredModel(restoredID) }
+                    } label: {
+                        HStack(spacing: HHTheme.spaceXS) {
+                            Image(systemName: "icloud.and.arrow.down.fill")
+                            Text("Use restored model")
+                                .fontWeight(.semibold)
+                        }
+                    }
+                    .buttonStyle(HHPrimaryButtonStyle())
+
+                    Button("Set up from scratch") {
+                        Task { await service.advance(to: .modelSelection) }
+                    }
+                    .buttonStyle(HHSecondaryButtonStyle())
+                } else {
+                    Button("Continue") {
+                        Task { await service.advance(to: .modelSelection) }
+                    }
+                    .buttonStyle(HHPrimaryButtonStyle())
+                }
             }
-            .buttonStyle(HHPrimaryButtonStyle())
         }
     }
 }

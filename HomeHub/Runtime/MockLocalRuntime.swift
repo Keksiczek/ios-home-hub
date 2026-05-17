@@ -3,17 +3,29 @@ import Foundation
 /// Deterministic in-process runtime used by SwiftUI previews and
 /// unit tests. Streams a canned response token by token so previews
 /// look like the real thing without ever loading a model file.
+///
+/// The `@unchecked Sendable` conformance is real — `loadedModel` is
+/// mutated from `load()` / `unload()` and read by the protocol's
+/// `loadedModel` accessor across Tasks. The NSLock below upholds the
+/// Sendable contract: every read / write goes through the lock so
+/// the Swift 6 strict-concurrency promise holds at runtime, even
+/// though the compiler can't verify it for an `@unchecked` class.
 final class MockLocalRuntime: LocalLLMRuntime, @unchecked Sendable {
     let identifier = "mock"
-    private(set) var loadedModel: LocalModel?
+
+    private let stateLock = NSLock()
+    private var _loadedModel: LocalModel?
+    var loadedModel: LocalModel? {
+        stateLock.withLock { _loadedModel }
+    }
 
     func load(model: LocalModel) async throws {
         try? await Task.sleep(nanoseconds: 200_000_000)
-        loadedModel = model
+        stateLock.withLock { _loadedModel = model }
     }
 
     func unload() async {
-        loadedModel = nil
+        stateLock.withLock { _loadedModel = nil }
     }
 
     func generate(

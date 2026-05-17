@@ -19,51 +19,116 @@ struct ChatDetailView: View {
     /// than nagging continuously.
     @State private var contextBannerDismissed: Bool = false
 
+    /// Follow-mode flag for the chat scroll view. While true (default),
+    /// new tokens scroll the view to the bottom every yield. The user's
+    /// drag gesture flips this to false so they can scroll up to re-read
+    /// without the stream fighting them; tapping the "Jump to live" pill
+    /// (or sending a new message, or generation finishing) re-enables it.
+    @State private var isAutoScrollEnabled: Bool = true
+
     var body: some View {
         VStack(spacing: 0) {
             unloadBanner
             contextFullBanner
             ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: HHTheme.spaceM) {
-                        ForEach(messages) { message in
-                            MessageBubbleView(
-                                message: message,
-                                onRegenerate: canRegenerate(message)
-                                    ? { conversations.regenerate(in: conversationID) }
-                                    : nil,
-                                onDelete: isStreaming ? nil : {
-                                    Task {
-                                        await conversations.deleteMessage(
-                                            messageID: message.id,
-                                            in: conversationID
-                                        )
-                                    }
-                                },
-                                onEdit: canEdit(message) ? {
-                                    editingMessageID = message.id
-                                    editingText = message.content
-                                } : nil,
-                                isPrefill: isPrefillBubble(message)
-                            )
-                            .id(message.id)
+                ZStack(alignment: .bottomTrailing) {
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: HHTheme.spaceM) {
+                            ForEach(messages) { message in
+                                MessageBubbleView(
+                                    message: message,
+                                    onRegenerate: canRegenerate(message)
+                                        ? { conversations.regenerate(in: conversationID) }
+                                        : nil,
+                                    onDelete: isStreaming ? nil : {
+                                        Task {
+                                            await conversations.deleteMessage(
+                                                messageID: message.id,
+                                                in: conversationID
+                                            )
+                                        }
+                                    },
+                                    onEdit: canEdit(message) ? {
+                                        editingMessageID = message.id
+                                        editingText = message.content
+                                    } : nil,
+                                    isPrefill: isPrefillBubble(message)
+                                )
+                                .id(message.id)
+                            }
+                        }
+                        .padding(.horizontal, HHTheme.spaceL)
+                        .padding(.vertical, HHTheme.spaceL)
+                    }
+                    // Detect user drag during a stream and pause auto-scroll.
+                    // Without this guard, every token re-snaps the view back
+                    // to the bottom, so users who try to scroll up to re-read
+                    // an earlier paragraph end up fighting the stream. Drag
+                    // resets autoscroll only after the user has lifted their
+                    // finger — the .onEnded re-evaluation runs once the
+                    // stream completes via the `.onChange(of: isStreaming)`
+                    // hook below. Tapping the floating Jump button (added
+                    // beside this stack) explicitly re-enables follow-mode.
+                    .simultaneousGesture(
+                        DragGesture(minimumDistance: 8).onChanged { _ in
+                            if isAutoScrollEnabled {
+                                isAutoScrollEnabled = false
+                            }
+                        }
+                    )
+                    .onChange(of: messages.last?.content) { _, _ in
+                        guard isAutoScrollEnabled, let last = messages.last else { return }
+                        withAnimation(.easeOut(duration: 0.15)) {
+                            proxy.scrollTo(last.id, anchor: .bottom)
                         }
                     }
-                    .padding(.horizontal, HHTheme.spaceL)
-                    .padding(.vertical, HHTheme.spaceL)
-                }
-                .onChange(of: messages.last?.content) { _, _ in
-                    guard let last = messages.last else { return }
-                    withAnimation(.easeOut(duration: 0.15)) {
-                        proxy.scrollTo(last.id, anchor: .bottom)
+                    .onChange(of: messages.count) { _, _ in
+                        // A new message ALWAYS wins follow-mode back: the
+                        // common case is the user tapped Send, which means
+                        // they want to watch the new reply land. If they
+                        // scrolled up while typing the next prompt, that
+                        // intent is satisfied by sending — re-enable.
+                        isAutoScrollEnabled = true
+                        guard let last = messages.last else { return }
+                        withAnimation(.easeOut(duration: 0.2)) {
+                            proxy.scrollTo(last.id, anchor: .bottom)
+                        }
+                    }
+                    .onChange(of: isStreaming) { _, newValue in
+                        // Stream finished — release the user from manual
+                        // mode so the next turn doesn't appear silently
+                        // off-screen.
+                        if newValue == false {
+                            isAutoScrollEnabled = true
+                        }
+                    }
+
+                    // Floating "jump to bottom" pill — only visible when
+                    // the user has actively scrolled away during a live
+                    // stream. Tapping it pins follow-mode and animates
+                    // back to the tail.
+                    if !isAutoScrollEnabled && isStreaming {
+                        Button {
+                            isAutoScrollEnabled = true
+                            if let last = messages.last {
+                                withAnimation(.easeOut(duration: 0.25)) {
+                                    proxy.scrollTo(last.id, anchor: .bottom)
+                                }
+                            }
+                        } label: {
+                            Label("Jump to live", systemImage: "arrow.down.circle.fill")
+                                .font(HHTheme.caption.weight(.semibold))
+                                .padding(.horizontal, HHTheme.spaceM)
+                                .padding(.vertical, 8)
+                                .background(.ultraThinMaterial, in: Capsule())
+                                .overlay(Capsule().stroke(HHTheme.stroke, lineWidth: 0.5))
+                        }
+                        .padding(.trailing, HHTheme.spaceL)
+                        .padding(.bottom, HHTheme.spaceM)
+                        .transition(.opacity.combined(with: .move(edge: .bottom)))
                     }
                 }
-                .onChange(of: messages.count) { _, _ in
-                    guard let last = messages.last else { return }
-                    withAnimation(.easeOut(duration: 0.2)) {
-                        proxy.scrollTo(last.id, anchor: .bottom)
-                    }
-                }
+                .animation(.easeOut(duration: 0.18), value: isAutoScrollEnabled)
             }
 
             // Inline busy-model feedback — shown when the user taps Send while
@@ -199,6 +264,14 @@ struct ChatDetailView: View {
         }
         .task {
             await conversations.loadMessages(for: conversationID)
+        }
+        .onAppear {
+            // Bookkeeping for the LRU cache so the message store doesn't
+            // evict the chat the user is actively viewing. `loadMessages`
+            // also touches the LRU, but `.onAppear` covers the warm-cache
+            // case where the messages are already in memory (typical when
+            // switching between recent chats via the sidebar).
+            conversations.noteConversationAccess(conversationID)
         }
     }
 

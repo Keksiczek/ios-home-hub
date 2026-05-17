@@ -15,6 +15,14 @@ struct SettingsView: View {
     /// the iOS Settings app.
     @State private var toolAvailability: [String: SkillAvailability] = [:]
 
+    /// Drives the "Restart onboarding" destructive confirmation alert.
+    /// The action wipes personalization (user name, assistant style)
+    /// and flips the app back to the onboarding flow — irreversible
+    /// from the user's perspective once they tap through. Previously
+    /// fired immediately on button tap with no guard at all; the
+    /// alert is the cheapest correct fix until we wire snapshot/undo.
+    @State private var showRestartOnboardingConfirm: Bool = false
+
     /// Route enum for path-based navigation. Lets a deep link push
     /// the right destination from outside without the user having
     /// to tap through Settings → Developer → Knowledge Base.
@@ -532,11 +540,32 @@ struct SettingsView: View {
             NavigationLink("Privacy & data") {
                 PrivacyView()
             }
-            Button("Restart onboarding") {
-                Task { await onboarding.reset() }
+            Button(role: .destructive) {
+                showRestartOnboardingConfirm = true
+            } label: {
+                Text("Restart onboarding")
             }
         } header: {
             Text("Privacy")
+        } footer: {
+            Text("Restarting wipes your profile name, assistant style, and onboarding completion. Your chats, memory, and installed models stay.")
+                .font(HHTheme.caption)
+        }
+        .confirmationDialog(
+            "Restart onboarding?",
+            isPresented: $showRestartOnboardingConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Restart", role: .destructive) {
+                Task { await onboarding.reset() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            // Repeated in the dialog body because users frequently
+            // miss section footer copy on first read — destructive
+            // actions deserve unambiguous wording at the decision
+            // point itself.
+            Text("This wipes your profile and assistant style and re-runs the welcome flow. Chats, memory, and installed models stay.")
         }
     }
 

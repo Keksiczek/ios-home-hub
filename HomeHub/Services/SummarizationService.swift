@@ -70,6 +70,7 @@ final class SummarizationService {
                 switch event {
                 case .token(let piece): output += piece
                 case .finished:         break
+                case .warning:          break
                 }
             }
         } catch {

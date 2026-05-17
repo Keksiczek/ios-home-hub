@@ -175,7 +175,10 @@ struct ShareInboxBridge {
 
             \(page.plainText)
             """
-            HHLog.kb.info("ingest: URL extract ok for \(page.finalURL.absoluteString, privacy: .public) chars=\(page.plainText.count, privacy: .public)")
+            // URL is user-supplied content (search queries can carry
+            // personal info); chars count is a coarse aggregate that
+            // stays public so disk-issue debugging still works.
+            HHLog.kb.info("ingest: URL extract ok for \(page.finalURL.absoluteString, privacy: .private) chars=\(page.plainText.count, privacy: .public)")
             let dest = storage.filesURL.appendingPathComponent(
                 "\(payload.id.uuidString).url.txt"
             )

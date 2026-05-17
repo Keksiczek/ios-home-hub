@@ -53,6 +53,60 @@ final class ModelDownloadService: ObservableObject {
 
     @Published private(set) var active: [String: DownloadState] = [:]
 
+    /// OSSignposter for the download lifecycle. Opening an interval
+    /// per modelID at `start(_:)` / `startMLXDownload(_:)` and closing
+    /// it from the install-success or failure callbacks gives the
+    /// Xcode Instruments timeline a single contiguous bar per
+    /// download — far easier to debug "stuck at 95 %" reports than
+    /// the textual log. Interval state map kept here so we can call
+    /// `endInterval` even when the success / failure callbacks are
+    /// far from the start site.
+    private let signposter = OSSignposter(
+        subsystem: "com.homehub.app",
+        category: "ModelDownload"
+    )
+    private var signpostIntervals: [String: OSSignpostIntervalState] = [:]
+
+    /// Opens a signpost interval for this model. No-op if one is
+    /// already open (defensive — repeated starts shouldn't double-tag).
+    private func beginDownloadSignpost(_ modelID: String) {
+        guard signpostIntervals[modelID] == nil else { return }
+        let signpostID = signposter.makeSignpostID()
+        let state = signposter.beginInterval(
+            "Download",
+            id: signpostID,
+            "modelID=\(modelID, privacy: .public)"
+        )
+        signpostIntervals[modelID] = state
+    }
+
+    /// Closes the signpost interval for this model with a final
+    /// outcome tag (`success` / `failed` / `cancelled`). Idempotent.
+    private func endDownloadSignpost(_ modelID: String, outcome: String) {
+        guard let state = signpostIntervals.removeValue(forKey: modelID) else { return }
+        signposter.endInterval("Download", state, "outcome=\(outcome, privacy: .public)")
+    }
+
+    /// Per-modelID sidecar map carrying the upstream commit SHA from
+    /// the manifest fetch through to the install-success callback,
+    /// where the catalog pin gets written. Cleared when the install
+    /// finishes (success OR failure) so a re-download starts clean.
+    /// Kept off `DownloadState` to avoid bleeding MLX-only metadata
+    /// into the shared GGUF/MLX progress struct.
+    private var pendingRepoSHAs: [String: String] = [:]
+
+    /// User-visible error message from the most recent destructive
+    /// operation (currently: `deleteModel`). Set when an underlying
+    /// FileManager / catalog mutation throws; cleared by
+    /// `acknowledgeDeleteError()` when the user dismisses the alert.
+    /// Surfaced as a one-shot alert in the Models screen — previously
+    /// the error was only logged, so a "Delete" tap that silently
+    /// failed left the model lingering with no explanation.
+    @Published var lastDeleteError: String?
+
+    /// UI hook — clears the alert after the user taps OK.
+    func acknowledgeDeleteError() { lastDeleteError = nil }
+
     /// Called on the main actor after a model successfully transitions to
     /// `.installed`. `AppContainer` wires this up to auto-activate the first
     /// installed model when the user hasn't picked one yet — otherwise a
@@ -107,6 +161,12 @@ final class ModelDownloadService: ObservableObject {
             return
         }
 
+        // Open the Instruments-visible interval for this download.
+        // Endpoints live in the install-success / cancel / fail paths
+        // below so the bar in the timeline matches the user-visible
+        // lifecycle exactly.
+        beginDownloadSignpost(model.id)
+
         // Disk-space preflight — catch the "user tries to download a 4 GB
         // model onto a full phone" case before the URLSession task starts
         // and silently fails mid-stream with a cryptic NSPOSIXErrorDomain.
@@ -149,8 +209,27 @@ final class ModelDownloadService: ObservableObject {
         tasks[modelID]?.cancel()
         tasks[modelID] = nil
         active[modelID] = nil
+        // Drop any pending SHA sidecar so a re-download with a different
+        // upstream revision can't accidentally inherit the stale pin.
+        pendingRepoSHAs.removeValue(forKey: modelID)
+        endDownloadSignpost(modelID, outcome: "cancelled")
         DownloadManager.shared.cancel(modelID: modelID)
         catalog.setInstallState(.notInstalled, for: modelID)
+        // Clean up any partial MLX cache so a subsequent Download starts
+        // from a clean slate. Best-effort — a no-op for GGUF and for
+        // models with no cache yet.
+        if let model = catalog.model(withID: modelID),
+           model.format == .mlx,
+           let repoId = model.repoId {
+            Task { [localModels, log] in
+                do {
+                    try await localModels.removeMLXCache(for: repoId)
+                    log.info("Cancelled: cleaned MLX cache for '\(modelID, privacy: .public)'")
+                } catch {
+                    log.notice("Cancelled: MLX cache cleanup skipped for '\(modelID, privacy: .public)': \(error.localizedDescription, privacy: .public)")
+                }
+            }
+        }
         log.info("Cancelled download for '\(modelID, privacy: .public)'")
     }
 
@@ -170,7 +249,11 @@ final class ModelDownloadService: ObservableObject {
             await runtime.unload()
         }
 
-        // Remove file or MLX cache from disk.
+        // Remove file or MLX cache from disk. Failure here used to be
+        // silent (logged only) — the model would vanish from the
+        // catalog while its on-disk artefacts lingered, eating
+        // gigabytes the user couldn't recover from UI. Now we both
+        // log AND surface a one-shot alert via `lastDeleteError`.
         do {
             if let model = catalog.model(withID: modelID), model.format == .mlx, let repoId = model.repoId {
                 try await localModels.removeMLXCache(for: repoId)
@@ -179,6 +262,8 @@ final class ModelDownloadService: ObservableObject {
             }
         } catch {
             log.error("Failed to remove model file for '\(modelID, privacy: .public)': \(error.localizedDescription, privacy: .public)")
+            let displayName = catalog.model(withID: modelID)?.displayName ?? modelID
+            lastDeleteError = "Nepodařilo se smazat '\(displayName)': \(error.localizedDescription)"
         }
 
         // Update catalog: user-added models are removed entirely; curated models
@@ -430,7 +515,24 @@ final class ModelDownloadService: ObservableObject {
     /// metadata files. Keeps the user out of the slow-fail loop where a
     /// download succeeds, validation fails, and they have to start over.
     nonisolated static func validateModelURL(_ url: URL) throws {
-        if url.scheme?.lowercased() == "mlx" { return }
+        if url.scheme?.lowercased() == "mlx" {
+            // MLX repo URLs must contain both an org and a repo name —
+            // `mlx://mlx-community/Gemma-3n-4B-it-MLX-4bit`. Anything
+            // shorter (no host, no path, host with no repo) can't be
+            // turned into a Hugging Face repo ID, so reject it now.
+            guard let host = url.host, !host.isEmpty else {
+                throw URLImportError.unsupportedURL(
+                    "MLX URL must include the repository owner — e.g. mlx://mlx-community/Llama-3.2-1B-Instruct-4bit."
+                )
+            }
+            let path = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            if path.isEmpty {
+                throw URLImportError.unsupportedURL(
+                    "MLX URL must include a repository name — e.g. mlx://mlx-community/Llama-3.2-1B-Instruct-4bit."
+                )
+            }
+            return
+        }
         
         let path = url.path.lowercased()
         // Hugging Face repo-overview / file-tree pages.
@@ -481,6 +583,43 @@ final class ModelDownloadService: ObservableObject {
     /// Safe to call from pull-to-refresh; delegates to ModelCatalogService.
     func reconcileInstallStates() async {
         await catalog.reconcileInstallStates(localModels: localModels)
+    }
+
+    /// Finds MLX cache directories on disk whose `org/repo` no longer
+    /// matches any catalog entry and removes them. Typical sources of
+    /// orphans: user deleted a custom model while its background
+    /// download was running, or a curated entry was renamed across an
+    /// app version bump. Safe to call repeatedly — a no-op when the
+    /// catalog and disk are in sync.
+    ///
+    /// Logs the reclaimed byte total so users can correlate Settings
+    /// "free disk space" growth with this run.
+    @discardableResult
+    func cleanOrphanedMLXCaches() async -> (count: Int, reclaimedBytes: Int64) {
+        let orphans = await catalog.orphanedMLXCacheRepos(localModels: localModels)
+        guard !orphans.isEmpty else {
+            log.debug("Orphan MLX cache scan: none found")
+            return (0, 0)
+        }
+        var reclaimed: Int64 = 0
+        var removed = 0
+        for repoId in orphans {
+            // Skip caches that belong to an in-flight transport — those
+            // are mid-download manifests, not orphans.
+            let belongsToActiveModelID = catalog.models.contains { $0.repoId == repoId }
+            if belongsToActiveModelID { continue }
+            let size = await localModels.mlxCacheSizeBytes(for: repoId)
+            do {
+                try await localModels.removeMLXCache(for: repoId)
+                reclaimed += size
+                removed += 1
+                log.info("Removed orphan MLX cache '\(repoId, privacy: .public)' (\(size) B)")
+            } catch {
+                log.error("Failed to remove orphan MLX cache '\(repoId, privacy: .public)': \(error.localizedDescription, privacy: .public)")
+            }
+        }
+        log.info("Orphan MLX cache scan: removed \(removed) dir(s) reclaiming \(reclaimed) B")
+        return (removed, reclaimed)
     }
 
     /// Cancels all active downloads, deletes every `.gguf` file on disk,
@@ -600,6 +739,7 @@ final class ModelDownloadService: ObservableObject {
 
         log.info("Installed '\(modelID, privacy: .public)' size=\(installedSize, privacy: .public) bytes at \(localURL.path, privacy: .public)")
         catalog.setInstallState(.installed(localURL: localURL), for: modelID)
+        endDownloadSignpost(modelID, outcome: "success")
         // Read GGUF header now while the file is fresh on disk and the user
         // is already waiting on the install spinner — pushes the parse cost
         // off the first chat send. Non-GGUF formats no-op inside the catalog
@@ -666,33 +806,88 @@ final class ModelDownloadService: ObservableObject {
             catalog.setInstallState(.failed(reason: "Invalid model URL (no HF repo ID)."), for: model.id)
             return
         }
-        guard !DownloadManager.shared.isActive(model.id) else { return }
+        // Re-entrancy guard: in-flight transport OR an in-memory active
+        // entry both mean "this model is already being downloaded".
+        // Without this a double-tap on the Download button could enqueue
+        // two manifest fetches → two sets of background tasks against
+        // the same destination directory.
+        guard !DownloadManager.shared.isActive(model.id), active[model.id] == nil else {
+            log.notice("MLX: startMLXDownload bailed for '\(model.id, privacy: .public)' — already active")
+            return
+        }
 
         // Disk-space preflight
         if model.sizeBytes > 0,
            let free = Self.availableDiskSpaceBytes(),
            free < model.sizeBytes {
             let err = DownloadError.insufficientDiskSpace(required: model.sizeBytes, available: free)
+            log.error("MLX: Preflight failed for '\(model.id, privacy: .public)' — \(err.errorDescription ?? "", privacy: .public)")
             catalog.setInstallState(.failed(reason: err.errorDescription ?? "Insufficient disk space"), for: model.id)
             return
         }
 
+        // Track preparing state in `active` so the UI shows the same
+        // unified phase machine for MLX as it does for GGUF.
+        active[model.id] = DownloadState(
+            modelID: model.id,
+            progress: 0,
+            isCancelled: false,
+            phase: .preparing
+        )
         catalog.setInstallState(.downloading(progress: 0), for: model.id)
         log.info("MLX: Fetching file manifest for '\(repoId, privacy: .public)'")
 
         do {
-            let files = try await HuggingFaceAPIClient.fetchModelFiles(repoId: repoId)
+            // Fetch full manifest (files + SHA) so we can both filter
+            // for inference assets AND record the upstream commit hash
+            // for later "model has updates available" detection. Falls
+            // back gracefully if the API omits SHA (rare; old repos).
+            let manifest = try await HuggingFaceAPIClient.fetchModelManifest(repoId: repoId)
+            let files = manifest.files
+            if let sha = manifest.sha {
+                log.info("MLX: Pinning '\(model.id, privacy: .public)' to upstream commit \(sha.prefix(8), privacy: .public)")
+                pendingRepoSHAs[model.id] = sha
+            }
+            // Open the signpost interval AFTER the manifest fetch — we
+            // want the bar in Instruments to start at "transport
+            // begins" so the manifest round-trip doesn't inflate
+            // per-download timings.
+            beginDownloadSignpost(model.id)
             guard !files.isEmpty else {
-                catalog.setInstallState(.failed(reason: "No inference files found for this model."), for: model.id)
+                log.error("MLX: Manifest returned no inference files for '\(repoId, privacy: .public)'")
+                catalog.setInstallState(
+                    .failed(reason: "No inference files found in this repository. The repo may not contain MLX-compatible weights."),
+                    for: model.id
+                )
+                active[model.id] = nil
+                return
+            }
+            // Sum file sizes from the manifest so user-added MLX models
+            // (where `sizeBytes == 0`) still get a disk-space preflight.
+            // Only checked when at least one file reports a size — HF
+            // omits sizes for unresolved LFS pointers.
+            let manifestTotal = files.compactMap(\.size).reduce(Int64(0), +)
+            if manifestTotal > 0,
+               let free = Self.availableDiskSpaceBytes(),
+               free < manifestTotal {
+                let err = DownloadError.insufficientDiskSpace(required: manifestTotal, available: free)
+                log.error("MLX: Manifest-based disk preflight failed for '\(model.id, privacy: .public)' — \(err.errorDescription ?? "", privacy: .public)")
+                catalog.setInstallState(.failed(reason: err.errorDescription ?? "Insufficient disk space"), for: model.id)
+                active[model.id] = nil
                 return
             }
             let cacheDir = await localModels.resolvedMLXCacheURL(for: repoId)
             try FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
             DownloadManager.shared.startMLX(modelID: model.id, repoId: repoId, cacheDir: cacheDir, files: files)
-            log.info("MLX: Started background download of \(files.count) files for '\(model.id, privacy: .public)'")
+            // Move into the .downloading phase so the UI flips from the
+            // brief "Preparing…" spinner to a real progress bar as soon
+            // as the first byte lands.
+            active[model.id]?.phase = .downloading
+            log.info("MLX: Started background download of \(files.count) files for '\(model.id, privacy: .public)' totalBytes=\(manifestTotal)")
         } catch {
             log.error("MLX: Manifest fetch failed for '\(repoId, privacy: .public)': \(error.localizedDescription, privacy: .public)")
             catalog.setInstallState(.failed(reason: "Could not fetch model file list: \(error.localizedDescription)"), for: model.id)
+            active[model.id] = nil
         }
     }
 
@@ -717,17 +912,66 @@ final class ModelDownloadService: ObservableObject {
                 self.handleDownloadError(modelID: id, error: error, resumeData: resumeData)
             },
             mlxProgress: { [weak self] id, fraction in
-                self?.catalog.setInstallState(.downloading(progress: fraction), for: id)
+                guard let self else { return }
+                // Once the first byte lands the row should leave the
+                // "Preparing…" indeterminate state. Without this the
+                // phase stays at `.preparing` until installation.
+                if self.active[id] != nil {
+                    self.active[id]?.progress = fraction
+                    self.active[id]?.phase = .downloading
+                }
+                self.catalog.setInstallState(.downloading(progress: fraction), for: id)
             },
             mlxCompleted: { [weak self] id in
                 DownloadManager.shared.markFinished(modelID: id)
                 guard let self else { return }
                 guard let model = self.catalog.model(withID: id),
                       let repoId = model.repoId else { return }
+                // Validate the cache directory before declaring success.
+                // The MLX background downloader is permissive: it counts a
+                // job as complete once every URLSession task it enqueued
+                // finishes, but if the manifest filter dropped a critical
+                // file (or HF served a 200-with-error for one of them)
+                // the directory can end up structurally incomplete. We
+                // re-inspect with the same helper the runtime pre-flight
+                // uses so both surfaces report identical failures.
+                self.active[id]?.phase = .validating
+                self.log.info("MLX: Validating cache for '\(id, privacy: .public)'")
                 Task {
                     let cacheDir = await self.localModels.resolvedMLXCacheURL(for: repoId)
+                    let inspection = await self.localModels.inspectMLXCache(for: repoId)
+                    // The inspect call hops to the LocalModelService actor;
+                    // during that suspension the user may have tapped
+                    // Cancel or Delete on the row, which cleared `active`
+                    // and reset the catalog state. Bail out so we don't
+                    // resurrect a cancelled install.
+                    guard self.active[id] != nil,
+                          self.catalog.model(withID: id) != nil else {
+                        self.log.notice("MLX: completion validation skipped for '\(id, privacy: .public)' — no longer active")
+                        return
+                    }
+                    guard inspection.state == .ready else {
+                        let reason = inspection.failureReason ?? "Model directory is incomplete."
+                        self.log.error("MLX: Post-download validation failed for '\(id, privacy: .public)' — \(reason, privacy: .public) missing=\(inspection.missingItems.joined(separator: ","), privacy: .public)")
+                        // Wipe the partial cache so the next Retry starts
+                        // from a clean slate rather than re-resolving on
+                        // top of a known-broken directory.
+                        try? await self.localModels.removeMLXCache(for: repoId)
+                        self.catalog.setInstallState(.failed(reason: reason), for: id)
+                        self.active[id] = nil
+                        return
+                    }
+                    self.active[id]?.phase = .installing
                     self.catalog.setInstallState(.installed(localURL: cacheDir), for: id)
-                    self.log.info("MLX: Model '\(id, privacy: .public)' installed at \(cacheDir.path, privacy: .public)")
+                    // Pin the upstream SHA captured at manifest-fetch
+                    // time. Clearing the sidecar entry keeps the map
+                    // bounded across many install/uninstall cycles.
+                    if let pinnedSHA = self.pendingRepoSHAs.removeValue(forKey: id) {
+                        self.catalog.setInstalledRepoSHA(pinnedSHA, for: id)
+                    }
+                    self.endDownloadSignpost(id, outcome: "success")
+                    self.log.info("MLX: Model '\(id, privacy: .public)' installed at \(cacheDir.path, privacy: .public) totalWeights=\(inspection.totalWeightsBytes)")
+                    self.active[id] = nil
                     if let model = self.catalog.model(withID: id) {
                         await self.onModelInstalled?(model)
                     }
@@ -736,9 +980,12 @@ final class ModelDownloadService: ObservableObject {
             mlxFailed: { [weak self] id, error in
                 DownloadManager.shared.markFinished(modelID: id)
                 guard let self else { return }
+                self.pendingRepoSHAs.removeValue(forKey: id)
+                self.endDownloadSignpost(id, outcome: "failed")
                 let reason = error.localizedDescription
                 self.log.error("MLX: Download failed for '\(id, privacy: .public)': \(reason, privacy: .public)")
                 self.catalog.setInstallState(.failed(reason: reason), for: id)
+                self.active[id] = nil
             }
         )
     }
