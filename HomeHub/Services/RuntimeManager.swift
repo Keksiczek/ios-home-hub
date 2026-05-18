@@ -266,19 +266,96 @@ final class RuntimeManager: ObservableObject {
 
         // Phase 3: Load off @MainActor. Task.detached moves Metal pipeline
         // compilation (10–60 s on older hardware) off the UI watchdog's executor.
+        //
+        // **Stall watchdog.** The inner load can hang on a flaky TLS
+        // handshake, a Hub redirect loop, or — observed in production —
+        // a Metal pipeline compile that doesn't surface progress events
+        // for minutes. Without a deadline the UI sits on the spinner
+        // until the user kills the app. We track the last progress
+        // tick and arm a sibling task that cancels the load if no
+        // tick arrives within `loadStallTimeoutSeconds`. The deadline
+        // *resets* on every progress event, so a slow-but-progressing
+        // download is fine; only a true stall trips it.
+        lastLoadProgressAt = Date()
+        let modelID = model.id
+        // Progress events fire from the loader thread at high frequency
+        // (one per chunk on Hub downloads — easily 20+/s on Wi-Fi).
+        // Each one used to schedule a fresh `Task @MainActor` to update
+        // `mlxLoadProgress`, fragmenting the main actor with no UX
+        // benefit (the progress bar can't render faster than the
+        // display refresh anyway). Throttle to ~10 Hz while letting
+        // **phase transitions** through immediately — going from
+        // `.downloading` to `.preparing` is the one moment the UI
+        // *must* update or the user sees a stuck progress bar.
+        let throttle = LoadProgressThrottle()
         let loadTask = Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             try await self.runtime.loadWithProgress(model: model) { [weak self] phase in
+                guard throttle.shouldEmit(phase: phase) else { return }
                 Task { @MainActor [weak self] in
-                    self?.mlxLoadProgress = MLXLoadProgress(modelID: model.id, phase: phase)
+                    self?.mlxLoadProgress = MLXLoadProgress(modelID: modelID, phase: phase)
+                    self?.lastLoadProgressAt = Date()
+                    self?.currentLoadPhase = phase
                 }
             }
         }
         mlxLoadTask = loadTask
 
+        // Sibling watchdog. Lives only as long as the load itself —
+        // when the load finishes (any path), we cancel the watchdog so
+        // it doesn't tick into the next load. The watchdog is the only
+        // task that touches `loadTask.cancel()`, so a successful load
+        // never sees a spurious cancellation.
+        let downloadTimeout = Self.downloadStallTimeoutSeconds
+        let prepareTimeout = Self.prepareStallTimeoutSeconds
+        let stallWatchdog = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                guard let self else { return }
+                if Task.isCancelled { return }
+                let (stalled, effectiveTimeout) = await MainActor.run { () -> (Bool, TimeInterval) in
+                    guard let last = self.lastLoadProgressAt else { return (false, prepareTimeout) }
+                    // Per-phase timeout selection. Defaults to the
+                    // shorter "preparing" budget when no phase event
+                    // has landed yet — an early stall (before download
+                    // even starts ticking) should fail fast, not wait
+                    // out the longer download budget.
+                    let timeout: TimeInterval = {
+                        switch self.currentLoadPhase {
+                        case .downloading: return downloadTimeout
+                        case .preparing:   return prepareTimeout
+                        case .none:        return prepareTimeout
+                        }
+                    }()
+                    return (Date().timeIntervalSince(last) >= timeout, timeout)
+                }
+                if stalled {
+                    self.log.warning("Runtime: load stalled for >\(effectiveTimeout, format: .fixed(precision: 0))s for '\(modelID, privacy: .public)' — cancelling")
+                    // Hop to main actor *before* cancelling so the
+                    // error handler observes the flag set. If we
+                    // cancelled first the loadTask could throw before
+                    // the hop landed, and the failure would render as
+                    // a plain user-cancellation rather than a stall.
+                    await MainActor.run {
+                        self.loadStallTripped = true
+                        // Record the timeout that actually fired so
+                        // the error message in the catch handler can
+                        // quote the right number (download vs prepare
+                        // budgets differ by ~2×).
+                        self.loadStallTimeoutValue = effectiveTimeout
+                    }
+                    loadTask.cancel()
+                    return
+                }
+            }
+        }
+
         do {
             try await loadTask.value
+            stallWatchdog.cancel()
             mlxLoadProgress = nil
+            lastLoadProgressAt = nil
+            currentLoadPhase = nil
             activeModel = model
             state = .ready(modelID: model.id)
             // Clear the risky-verdict crumb only if the load actually
@@ -289,18 +366,92 @@ final class RuntimeManager: ObservableObject {
             }
             log.info("Runtime: '\(model.id, privacy: .public)' loaded successfully")
         } catch is CancellationError {
+            stallWatchdog.cancel()
             mlxLoadProgress = nil
             mlxLoadTask = nil
-            state = .idle
-            log.info("Runtime: Load cancelled for '\(model.id, privacy: .public)'")
+            // Distinguish "user/lifecycle cancelled" from "stall watchdog
+            // cancelled" so the diagnostic state is honest. The watchdog
+            // sets `loadStallTripped` right before it fires; reading +
+            // resetting it here is race-free because the watchdog has
+            // already returned by the time `loadTask.value` throws.
+            if loadStallTripped {
+                loadStallTripped = false
+                let firedTimeout = Int(loadStallTimeoutValue ?? Self.prepareStallTimeoutSeconds)
+                loadStallTimeoutValue = nil
+                state = .failed(modelID: model.id, reason: "Načtení modelu se zastavilo (žádný progress >\(firedTimeout) s). Zkontroluj připojení a zkus znovu.")
+                log.error("Runtime: Load stall-cancelled for '\(model.id, privacy: .public)' (timeout=\(firedTimeout)s)")
+            } else {
+                state = .idle
+                log.info("Runtime: Load cancelled for '\(model.id, privacy: .public)'")
+            }
+            lastLoadProgressAt = nil
+            currentLoadPhase = nil
         } catch {
+            stallWatchdog.cancel()
             mlxLoadProgress = nil
             mlxLoadTask = nil
+            lastLoadProgressAt = nil
+            currentLoadPhase = nil
             state = .failed(modelID: model.id, reason: error.localizedDescription)
             log.error("Runtime: Load failed for '\(model.id, privacy: .public)': \(error.localizedDescription, privacy: .public)")
         }
         mlxLoadTask = nil
     }
+
+    /// Stall-watchdog deadlines, picked separately per load phase:
+    ///   - **Download** (90 s): a single chunk request on cellular can
+    ///     legitimately stall for 60+ s during a slow TLS handshake
+    ///     or a CDN failover; we want to tolerate that before giving
+    ///     up. The total download can still take many minutes — only
+    ///     the *gap between progress ticks* is bounded.
+    ///   - **Preparing** (45 s): no fractional progress is emitted
+    ///     during Metal pipeline compile + tokenizer load; the
+    ///     watchdog is the only thing standing between a genuinely
+    ///     stuck compile and a user staring at a spinner forever.
+    ///     45 s comfortably covers a healthy compile on every iPhone
+    ///     we've tested while catching the truly stuck case.
+    ///   - **Initial / no phase observed yet** (45 s): same as
+    ///     preparing — if we haven't seen a single tick that long
+    ///     after kick-off, something is wrong before download even
+    ///     started.
+    private static let downloadStallTimeoutSeconds: TimeInterval = 90
+    private static let prepareStallTimeoutSeconds: TimeInterval = 45
+    /// Convenience for log messages and the diagnostic strings that
+    /// quote a single number — picks the *longer* of the two so the
+    /// surfaced bound is the user's worst-case patience.
+    private static var loadStallTimeoutSeconds: TimeInterval {
+        max(downloadStallTimeoutSeconds, prepareStallTimeoutSeconds)
+    }
+
+    /// Wall-clock timestamp of the most recent progress tick from the
+    /// active load. `nil` between loads. The stall watchdog reads this
+    /// to detect "no progress in N seconds". Lives on the main actor
+    /// because the progress callback hops there to update
+    /// `mlxLoadProgress`; sharing the actor avoids a separate lock.
+    private var lastLoadProgressAt: Date?
+
+    /// Current load phase as last observed by the progress callback.
+    /// Drives the per-phase timeout selection in the stall watchdog:
+    /// download stalls get more rope (slow chunks are normal) than
+    /// preparing stalls (which signal a stuck Metal compile). `nil`
+    /// before the first phase event arrives — treated as "preparing"
+    /// by the watchdog (early stall = before download starts =
+    /// shorter rope).
+    private var currentLoadPhase: MLXLoadPhase?
+
+    /// Set to `true` by the stall watchdog *before* it cancels the
+    /// load task. The error handler reads + clears it so the failure
+    /// state can distinguish "watchdog tripped" from "user / lifecycle
+    /// cancelled". Safe to read without a lock — both writer (watchdog
+    /// hop to main actor) and reader run on `@MainActor`.
+    private var loadStallTripped: Bool = false
+
+    /// The actual timeout value (seconds) that the watchdog fired on.
+    /// Recorded by the watchdog right before cancellation so the user-
+    /// facing failure message can quote download vs preparing budget
+    /// instead of a fixed legacy "60 s" string. `nil` between loads
+    /// or when the watchdog hasn't fired.
+    private var loadStallTimeoutValue: TimeInterval?
 
     // MARK: - Unload
 
@@ -315,7 +466,10 @@ final class RuntimeManager: ObservableObject {
         mlxLoadTask?.cancel()
         mlxLoadTask = nil
 
-        if let op = operationTask { await op.value }
+        // Bounded wait — Metal pipeline compile occasionally outlives a
+        // cancellation request by a few seconds; we'd rather proceed with
+        // the user-visible unload than block on it. See `awaitOperation`.
+        await awaitOperation(timeout: 1.5, reason: "unload")
         if state == .idle { return }
 
         let task = Task<Void, Never> { [weak self] in await self?._performUnload() }
@@ -488,13 +642,22 @@ final class RuntimeManager: ObservableObject {
     /// modulo `availableMemoryBytes()`, which is a single sysctl call —
     /// callers should still run this off `@MainActor` (the UI does that
     /// via `Task.detached`).
+    ///
+    /// **Display vs. gate.** This function is for the *display* strip in
+    /// `ModelsView` — it answers "is there room for one more reference
+    /// model right now?". The load gate (`evaluateFeasibility`) applies
+    /// the profile's safety factor on top; doing it here too painted
+    /// every iPhone in the catalog as "low" because `os_proc_available_memory`
+    /// returns the per-process limit (~3–5 GB on consumer iPhones), and
+    /// `2 GB × 1.5 = 3 GB` is right on that boundary even when physical
+    /// memory is plentiful. Display compares against the raw reference;
+    /// the gate keeps the safety margin where it matters.
     nonisolated static func currentHeadroom(
         profile: PerformanceProfile,
         available: Int64? = nil
     ) -> MemoryHeadroom {
         guard let avail = available ?? availableMemoryBytes() else { return .unknown }
-        let factor = memorySafetyFactor(for: profile)
-        let reference = Int64(Double(headroomReferenceBytes) * factor)
+        let reference = headroomReferenceBytes
         if avail >= reference + reference / 2 {  // reference × 1.5
             return .high
         } else if avail >= reference {
@@ -595,8 +758,10 @@ final class RuntimeManager: ObservableObject {
         // Cancel inner load immediately — cooperative, returns quickly.
         mlxLoadTask?.cancel()
         mlxLoadTask = nil
-        // Wait for the operation wrapper to observe cancellation.
-        if let op = operationTask { await op.value }
+        // Wait for the operation wrapper to observe cancellation, but cap
+        // it so a stuck Metal compile cannot trap us inside the watchdog
+        // window (see `awaitOperation(timeout:reason:)`).
+        await awaitOperation(timeout: 1.5, reason: "memoryPressure")
 
         let modelBeforeEvent = activeModel
         let id = modelBeforeEvent?.id ?? "none"
@@ -605,6 +770,45 @@ final class RuntimeManager: ObservableObject {
         guard modelBeforeEvent != nil, runtime.loadedModel == nil else { return nil }
         clearState()
         return modelBeforeEvent
+    }
+
+    /// Soft tier of memory pressure — drop cheap caches (KV reuse
+    /// session, sampler scratch) without dropping the model weights.
+    /// Returns `true` if the runtime had anything to release; the
+    /// caller can use this for diagnostics but the soft path is a
+    /// best-effort hint, not a hard contract.
+    ///
+    /// Safe to call during an in-flight load (no wait on operationTask)
+    /// because the soft path doesn't touch the loader — it only flushes
+    /// session-level scratch held by the runtime.
+    func handleSoftMemoryPressure() async {
+        let id = activeModel?.id ?? "none"
+        log.info("Runtime: Soft memory pressure — trimming caches for '\(id, privacy: .public)'")
+        await runtime.trimMemoryCaches()
+    }
+
+    /// Snapshot of whether the underlying runtime is currently producing
+    /// tokens. Used by `AppContainer`'s two-tier pressure policy to
+    /// defer a hard unload until the active turn finishes (interrupting
+    /// a streaming reply is worse UX than completing it).
+    var isGenerating: Bool {
+        runtime.isCurrentlyGenerating
+    }
+
+    /// Real BPE token count via the active model's tokenizer.
+    /// Async because the underlying MLX container is an actor.
+    /// Returns `nil` when no model is loaded or the runtime doesn't
+    /// expose a tokenizer (mock / preview).
+    ///
+    /// Recommended call sites:
+    ///   - Per-turn budget calibration (compare heuristic vs real)
+    ///   - Developer Diagnostics ("show me the ground truth")
+    ///   - Test fixtures that need real numbers
+    ///
+    /// Do NOT call this from the per-streaming-token watchdog; the
+    /// heuristic in `PromptTokenBudgeter` is what that path uses.
+    func realTokenCount(of text: String) async -> Int? {
+        await runtime.realTokenCount(of: text)
     }
 
     /// Forwards a scene-background event to the runtime.
@@ -620,7 +824,7 @@ final class RuntimeManager: ObservableObject {
     func handleBackground() async -> LocalModel? {
         mlxLoadTask?.cancel()
         mlxLoadTask = nil
-        if let op = operationTask { await op.value }
+        await awaitOperation(timeout: 1.5, reason: "background")
 
         let modelBeforeEvent = activeModel
         await runtime.handleBackground()
@@ -640,7 +844,7 @@ final class RuntimeManager: ObservableObject {
     func handleThermalCritical() async -> LocalModel? {
         mlxLoadTask?.cancel()
         mlxLoadTask = nil
-        if let op = operationTask { await op.value }
+        await awaitOperation(timeout: 1.5, reason: "thermalCritical")
 
         guard let modelBeforeEvent = activeModel else { return nil }
         log.critical("Runtime: Thermal critical — force-unloading '\(modelBeforeEvent.id, privacy: .public)'")
@@ -648,5 +852,131 @@ final class RuntimeManager: ObservableObject {
         await runtime.unload()
         clearState()
         return modelBeforeEvent
+    }
+
+    // MARK: - Operation wait with timeout
+
+    /// Bounded wait for the in-flight `operationTask`. The original
+    /// pattern `if let op = operationTask { await op.value }` could
+    /// stall the main actor indefinitely when a detached load was
+    /// mid Metal-pipeline compile — long enough to trip the iOS
+    /// watchdog (0x8BADF00D, observed in production).
+    ///
+    /// Returns as soon as either the operation completes OR the
+    /// timeout elapses. When the timeout fires we **drop** the slot
+    /// (the inner task has already been cancelled by the caller and
+    /// will tear itself down asynchronously) — there is no risk of a
+    /// new operation overlapping, because `operationTask` is the only
+    /// gate and the next public method will install its own task.
+    ///
+    /// The `reason` tag identifies the calling lifecycle path
+    /// ("background", "memoryPressure", "thermalCritical", "unload") so
+    /// the emitted `loaderCancelTimeout` telemetry event can be grouped
+    /// in DeveloperDiagnostics when multiple lifecycle events stack.
+    private func awaitOperation(timeout seconds: TimeInterval, reason: String) async {
+        guard let op = operationTask else { return }
+        let timeoutNS = UInt64(max(0, seconds) * 1_000_000_000)
+        let raced = await withTaskGroup(of: Bool.self, returning: Bool.self) { group in
+            group.addTask { await op.value; return true }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: timeoutNS)
+                return false
+            }
+            let first = await group.next() ?? false
+            group.cancelAll()
+            return first
+        }
+        if !raced {
+            log.warning("Runtime: awaitOperation(\(reason, privacy: .public)) timed out after \(seconds, format: .fixed(precision: 2))s — releasing slot to honour lifecycle event")
+            // Detach the slot so subsequent public methods don't queue
+            // behind a load that already missed its window.
+            if operationTask == op { operationTask = nil }
+            // Surface to subscribers (DeveloperDiagnostics renders a
+            // recent-telemetry list). The await is on an actor send,
+            // not a network round-trip, so it doesn't extend our own
+            // exit from the lifecycle window.
+            await runtime.telemetry.emit(.loaderCancelTimeout(reason: reason, timeoutSeconds: seconds))
+        }
+    }
+}
+
+// MARK: - LoadProgressThrottle
+
+/// Coalesces high-frequency progress callbacks from the MLX loader so
+/// the main actor isn't flooded with redundant `Task @MainActor` hops.
+///
+/// **Policy.**
+///   - Same phase case (e.g. consecutive `.downloading(_)` ticks):
+///     emit at most once every `minIntervalMs`. The display refreshes
+///     at 60 Hz; emitting at 20 Hz is already over-fresh.
+///   - **Different phase case** (e.g. `.downloading` → `.preparing`):
+///     always emit. Phase transitions are the moment the UI needs to
+///     flip from "Stahování X %" to "Příprava…"; throttling them
+///     would leave the progress bar visually stuck.
+///
+/// Lives outside the `@MainActor`-isolated `RuntimeManager` because
+/// the callback runs on the loader's detached executor; reaching back
+/// onto MainActor *just* to check the throttle would defeat the
+/// purpose. Thread safety via `NSLock` keeps the contract obvious —
+/// no actor hop required to read or update the state.
+///
+/// `internal` (not `private`) so the unit tests in
+/// `LoadProgressThrottleTests` can construct it and exercise the
+/// time-window math directly. The class is purely a utility for the
+/// runtime manager; nothing outside the test bundle should use it.
+final class LoadProgressThrottle: @unchecked Sendable {
+    private let lock = NSLock()
+    private var lastEmittedAt: Date?
+    private var lastPhaseCase: PhaseCase?
+    private let minInterval: TimeInterval
+
+    /// Identity for `MLXLoadPhase` cases — strips the associated value
+    /// on `.downloading(fraction:)` so the throttle compares "kind",
+    /// not "kind + payload". Without this, every tick of a varying
+    /// fraction would register as a phase transition and skip the
+    /// throttle. Internal so the unit tests below can construct it.
+    fileprivate enum PhaseCase: Equatable {
+        case downloading
+        case preparing
+    }
+
+    init(minIntervalMs: Int = 100) {
+        self.minInterval = TimeInterval(minIntervalMs) / 1000
+    }
+
+    /// Returns `true` when the progress callback should hop to the
+    /// main actor and update UI state. Mutates the internal state on
+    /// every call, so the caller must respect the return value (a
+    /// second call with the same input may return `false`).
+    func shouldEmit(phase: MLXLoadPhase) -> Bool {
+        let phaseCase: PhaseCase = {
+            switch phase {
+            case .downloading: return .downloading
+            case .preparing:   return .preparing
+            }
+        }()
+        lock.lock()
+        defer { lock.unlock() }
+        // Phase transition → always emit. This covers the initial
+        // .preparing arrival when there's no prior history, and the
+        // .downloading → .preparing flip at end of download.
+        if lastPhaseCase != phaseCase {
+            lastPhaseCase = phaseCase
+            lastEmittedAt = Date()
+            return true
+        }
+        // Same phase → throttle. If never emitted in this scope (we
+        // observed a phase but haven't recorded an emission yet, which
+        // shouldn't happen but is defended against), emit and seed.
+        guard let last = lastEmittedAt else {
+            lastEmittedAt = Date()
+            return true
+        }
+        let now = Date()
+        if now.timeIntervalSince(last) >= minInterval {
+            lastEmittedAt = now
+            return true
+        }
+        return false
     }
 }

@@ -160,30 +160,57 @@ final class MemoryService: ObservableObject {
     /// 2. **Keyword** — cheap word-overlap fallback on older hardware
     ///    or before embedding assets are downloaded.
     ///
-    /// Pinned facts always get a 1.0 base score bonus.
+    /// **Pinned facts get a reserved slot.** A user who pinned 20 facts
+    /// used to lose 12 of them to the hard `prefix(limit)` cap — pin
+    /// was effectively just a sort-priority. Now pinned facts bypass
+    /// the limit entirely (they're returned in full), and `limit`
+    /// caps only the *non-pinned* tail. A turn with `limit: 8` and
+    /// 20 pinned facts now surfaces all 20 + the top 8 relevant
+    /// non-pinned.
+    ///
+    /// **Cost guard.** The pin set is unbounded in theory; if a user
+    /// somehow pins hundreds of facts they could blow the prompt
+    /// budget. We let the downstream `PromptTokenBudgeter` deal with
+    /// that — it caps the facts block as part of system-prompt
+    /// trimming. Better to over-include here and let the budget enforce
+    /// at the proper layer than to silently drop a user-curated pin.
     func relevantFacts(for input: String, limit: Int) async -> [MemoryFact] {
         guard settings.current.memoryEnabled else { return [] }
 
         let activeFacts = facts.filter { !$0.disabled }
         guard !activeFacts.isEmpty else { return [] }
 
-        // Try semantic scoring first
+        // Split pinned (reserved) from non-pinned (compete for `limit`).
+        // Order pinned by createdAt descending so the most-recently-
+        // pinned shows up first — matches the user's mental "I just
+        // pinned this important fact" expectation.
+        let pinned = activeFacts.filter { $0.pinned }
+            .sorted { $0.createdAt > $1.createdAt }
+        let nonPinned = activeFacts.filter { !$0.pinned }
+
+        guard !nonPinned.isEmpty else {
+            // Only pinned facts exist — return them all, no scoring
+            // needed (everything is "relevant" by user decree).
+            return pinned
+        }
+
+        // Try semantic scoring first — only on non-pinned candidates
+        // (pinned are already guaranteed inclusion).
         let semanticScores = await embeddings.batchSimilarity(
             query: input,
-            candidates: activeFacts.map(\.content)
+            candidates: nonPinned.map(\.content)
         )
 
         let scored: [(MemoryFact, Double)]
         if let semanticScores {
-            scored = zip(activeFacts, semanticScores).map { fact, sim in
-                let pinBonus = fact.pinned ? 1.0 : 0.0
-                return (fact, max(sim, 0) + pinBonus)
+            scored = zip(nonPinned, semanticScores).map { fact, sim in
+                (fact, max(sim, 0))
             }
         } else {
             // Keyword fallback
             let normalized = input.lowercased()
-            scored = activeFacts.map { fact in
-                var score = fact.pinned ? 1.0 : 0.0
+            scored = nonPinned.map { fact in
+                var score = 0.0
                 let words = fact.content
                     .lowercased()
                     .split(whereSeparator: { !$0.isLetter })
@@ -194,14 +221,16 @@ final class MemoryService: ObservableObject {
             }
         }
 
-        // Drop non-pinned facts that scored zero — they have no semantic or
-        // keyword overlap with the query and would only dilute the context.
-        // Pinned facts always score ≥ 1.0 (pinBonus) so they are never dropped.
-        return scored
+        // Drop non-pinned facts that scored zero — no overlap with
+        // the query, would only dilute context. Take top-`limit` and
+        // prepend the (always-included) pinned set.
+        let relevantNonPinned = scored
             .filter { $0.1 > 0 }
             .sorted { $0.1 > $1.1 }
             .prefix(limit)
             .map(\.0)
+
+        return pinned + Array(relevantNonPinned)
     }
 
     /// Returns episodes relevant to the current user input.
@@ -275,6 +304,37 @@ final class MemoryService: ObservableObject {
         let proposed = await extractor.extract(from: message)
         guard !proposed.isEmpty else { return }
         candidates.append(contentsOf: proposed)
+    }
+
+    /// Adds a single candidate directly — used by paths that already
+    /// produced the candidate (e.g. `ConversationService.autoEpisodizeIdleConversations`)
+    /// and don't need to run the extraction pipeline first.
+    /// De-duplicates by source-message ID so a re-fire of the same
+    /// auto-episodization (e.g. user backgrounded twice with no new
+    /// turns) doesn't stack identical proposals in the review list.
+    func appendCandidate(_ candidate: MemoryCandidate) async {
+        guard settings.current.memoryEnabled else { return }
+        let alreadyProposed = candidates.contains {
+            $0.sourceMessageID == candidate.sourceMessageID && $0.kind == candidate.kind
+        }
+        guard !alreadyProposed else { return }
+        candidates.append(candidate)
+    }
+
+    // MARK: - Bulk candidate review
+
+    /// Accept every pending candidate in one pass. Used by the
+    /// "Approve all" action in `MemoryView.candidatesSection`. Order
+    /// matches insertion (the user has already eyeballed them in that
+    /// order); `accept(_:)` removes each from the pending list so the
+    /// final state is `candidates == []`.
+    func acceptAllCandidates() async {
+        // Snapshot before iterating — `accept(_:)` mutates `candidates`
+        // and a live iteration would skip every other entry.
+        let snapshot = candidates
+        for candidate in snapshot {
+            await accept(candidate)
+        }
     }
 
     func accept(_ candidate: MemoryCandidate) async {

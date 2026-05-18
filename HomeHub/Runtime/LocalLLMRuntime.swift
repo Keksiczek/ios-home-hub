@@ -81,6 +81,20 @@ protocol LocalLLMRuntime: AnyObject, Sendable {
     /// and test stubs; `MLXRuntime` and `LlamaCppRuntime` override).
     func handleMemoryPressure() async
 
+    /// Soft tier of memory-pressure response — release **cheap** caches
+    /// (KV reuse session, sampler / template scratch) without dropping
+    /// model weights. Called on the first L1 warning in a debounce window
+    /// before the hard `handleMemoryPressure()` path is considered.
+    /// Default: no-op.
+    func trimMemoryCaches() async
+
+    /// `true` while a generation task is producing tokens. Used by the
+    /// two-tier pressure policy to defer hard unload until the current
+    /// turn finishes (interrupting a streaming reply is worse UX than
+    /// finishing it and unloading immediately after).
+    /// Default: `false` (runtimes without active-generation tracking).
+    var isCurrentlyGenerating: Bool { get }
+
     /// Called when the app scene moves to the background.
     ///
     /// Implementations should unload the model if their policy requires it.
@@ -117,6 +131,22 @@ protocol LocalLLMRuntime: AnyObject, Sendable {
     /// though the mean looks fine). `nil` if the runtime doesn't
     /// track per-sample history.
     func throughputPercentiles(for modelID: String) -> (p50: Double, p95: Double, samples: Int)?
+
+    /// Real BPE token count for `text` using the active model's
+    /// tokenizer. Returns `nil` when no model is loaded or when the
+    /// runtime doesn't expose a tokenizer (mock / fake runtimes).
+    ///
+    /// **Cost.** Asynchronous because the underlying MLX container is
+    /// an actor — calling its tokenizer requires hopping through
+    /// `container.perform`. Not safe to call per-streaming-token; the
+    /// heuristic estimator in `PromptTokenBudgeter` covers the hot
+    /// path. Use this method for:
+    ///   - Per-turn budget calibration (compare heuristic vs real)
+    ///   - Diagnostics ("show me the ground truth token count")
+    ///   - Test fixtures that need real numbers
+    ///
+    /// Default implementation: `nil`. `MLXRuntime` overrides.
+    func realTokenCount(of text: String) async -> Int?
 }
 
 // MARK: - Default implementations
@@ -138,6 +168,14 @@ extension LocalLLMRuntime {
     /// Default: no-op. Overridden by runtimes that auto-unload on pressure.
     func handleMemoryPressure() async {}
 
+    /// Default: no-op. Overridden by runtimes that drop scratch buffers
+    /// on L1 warnings (MLX clears its `ChatSession` + KV reuse cache).
+    func trimMemoryCaches() async {}
+
+    /// Default: `false`. Concrete runtimes that track generation state
+    /// (MLX, llama.cpp) override.
+    var isCurrentlyGenerating: Bool { false }
+
     /// Default: no-op. Overridden by runtimes that unload on background.
     func handleBackground() async {}
 
@@ -157,13 +195,68 @@ extension LocalLLMRuntime {
 
     /// Default: no per-sample history. `MLXRuntime` overrides.
     func throughputPercentiles(for modelID: String) -> (p50: Double, p95: Double, samples: Int)? { nil }
+
+    /// Default: no real-tokenizer access (mock / preview / non-MLX).
+    /// `MLXRuntime` overrides by routing through `container.perform`.
+    func realTokenCount(of text: String) async -> Int? { nil }
 }
 
 // MARK: - Supporting types
 
 struct RuntimePrompt: Sendable {
-    var systemPrompt: String
+    /// Full assembled system prompt (stable + volatile concatenated).
+    /// Backward-compat surface — concrete runtimes today still consume
+    /// this single string. Computed from the split fields below so
+    /// callers that only set `systemPrompt` directly still work.
+    var systemPrompt: String {
+        get {
+            if stableSystemPrompt.isEmpty { return volatileSystemPrompt }
+            if volatileSystemPrompt.isEmpty { return stableSystemPrompt }
+            return stableSystemPrompt + "\n\n" + volatileSystemPrompt
+        }
+        set {
+            // Legacy callers (tests, previews) that assign to
+            // `systemPrompt` directly: treat the whole string as
+            // stable. Volatile is empty — we can't safely split a
+            // pre-joined string without re-parsing.
+            stableSystemPrompt = newValue
+            volatileSystemPrompt = ""
+        }
+    }
+
+    /// **Stable** part of the system prompt — persona, language
+    /// policy, style block, hard rules. Identical across every turn
+    /// of a conversation. Surface designed so a future MLX
+    /// `ChatSession` hook can pin this prefix in the KV cache and
+    /// skip re-tokenization for turns where only the volatile half
+    /// changes.
+    var stableSystemPrompt: String = ""
+
+    /// **Volatile** part of the system prompt — retrieved facts,
+    /// episodes, recall snippets, file excerpts, skill instructions,
+    /// current date/time. Recomputed every turn so it's never a cache
+    /// hit candidate. Kept separate from the stable prefix so the
+    /// diagnostic budget report can show how much of the total is
+    /// cacheable vs. churn.
+    var volatileSystemPrompt: String = ""
+
     var messages: [RuntimeMessage]
+
+    init(systemPrompt: String, messages: [RuntimeMessage]) {
+        self.messages = messages
+        // Use the setter so the split fields get populated.
+        self.systemPrompt = systemPrompt
+    }
+
+    init(
+        stableSystemPrompt: String,
+        volatileSystemPrompt: String,
+        messages: [RuntimeMessage]
+    ) {
+        self.stableSystemPrompt = stableSystemPrompt
+        self.volatileSystemPrompt = volatileSystemPrompt
+        self.messages = messages
+    }
 }
 
 struct RuntimeMessage: Sendable {

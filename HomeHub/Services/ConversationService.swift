@@ -71,6 +71,35 @@ final class ConversationService: ObservableObject {
     private let userMemory: UserMemoryStore?
     private let summarizer: SummarizationService
     private let embeddingService: EmbeddingService
+    /// Per-conversation semantic recall over truncated message history.
+    /// Used inside `performSend` to surface earlier turns the budgeter
+    /// would otherwise drop. Reads the shared `embeddingService` LRU,
+    /// so no extra disk or memory footprint beyond what memory facts
+    /// already pay for.
+    private let recall: ConversationRecallService
+    /// Optional sink for the post-assembly real-tokenizer ground-truth
+    /// count. Lives outside `PromptAssemblyService` because real
+    /// tokenization is async and we don't want to colour the builder;
+    /// instead the conversation hot path fires a follow-up Task that
+    /// posts the real count to this reporter once the runtime's
+    /// tokenizer returns. `nil` in tests / previews that don't wire
+    /// observable surfaces.
+    private let promptBudgetReporter: PromptBudgetReporter?
+
+    /// Wall-clock the most recent `scenePhase == .background` event
+    /// fired through the app, supplied by an injected callback so
+    /// the service stays decoupled from `AppContainer`. Read by the
+    /// stream epilogue in `performSend` to decide whether the
+    /// completed turn crossed a background event. `@MainActor`-typed
+    /// because the value source (`AppContainer.lastBackgroundedAt`)
+    /// is main-actor isolated and `performSend` already runs there.
+    private let recentBackgroundTimestamp: @MainActor () -> Date?
+
+    /// Called once when a stream completes successfully after having
+    /// crossed a background transition. Wired by `AppContainer` to
+    /// increment `backgroundGenerationCompletions`. Optional so
+    /// tests / previews that don't care can pass a no-op.
+    private let onBackgroundCompletion: @MainActor () -> Void
 
     private var activeStreams: [UUID: Task<Void, Never>] = [:]
     private var summaryByConversation: [UUID: ConversationSummary] = [:]
@@ -101,7 +130,10 @@ final class ConversationService: ObservableObject {
         personalization: PersonalizationService,
         userMemory: UserMemoryStore? = nil,
         summarizer: SummarizationService? = nil,
-        embeddingService: EmbeddingService = EmbeddingService()
+        embeddingService: EmbeddingService = EmbeddingService(),
+        promptBudgetReporter: PromptBudgetReporter? = nil,
+        recentBackgroundTimestamp: @escaping @MainActor () -> Date? = { nil },
+        onBackgroundCompletion: @escaping @MainActor () -> Void = {}
     ) {
         self.store = store
         self.runtime = runtime
@@ -115,6 +147,10 @@ final class ConversationService: ObservableObject {
         // always injects the shared instance.
         self.summarizer = summarizer ?? SummarizationService(runtime: runtime, prompts: prompts)
         self.embeddingService = embeddingService
+        self.recall = ConversationRecallService(embeddings: embeddingService)
+        self.promptBudgetReporter = promptBudgetReporter
+        self.recentBackgroundTimestamp = recentBackgroundTimestamp
+        self.onBackgroundCompletion = onBackgroundCompletion
     }
 
     // MARK: - Loading
@@ -171,6 +207,17 @@ final class ConversationService: ObservableObject {
             evictColdEntriesIfNeeded()
             for i in staleIndexes {
                 try? await store.save(message: loaded[i])
+            }
+            // Pre-warm the recall embedding cache so the *first* send
+            // after opening a conversation doesn't pay the full
+            // batch-embed cost (~50-200ms on iPhone). The warm-up is
+            // fire-and-forget and bounded by EmbeddingService's LRU;
+            // a tap-and-immediately-close interaction wastes at most
+            // a few cached vectors. Skip when memory is disabled —
+            // the recall pipeline won't fire anyway, and the warm-up
+            // would just bloat the embedding cache.
+            if settings.current.memoryEnabled {
+                recall.warmUp(conversationID: conversationID, messages: loaded)
             }
         }
     }
@@ -265,6 +312,10 @@ final class ConversationService: ObservableObject {
 
         await runtime.invalidateSession(for: id)
         try? await store.delete(conversationID: id)
+        // Persistent recall index lives in a side-file under
+        // Documents — strip it now so deleted conversations don't
+        // leave embedding-vector orphans accumulating on disk.
+        recall.deleteIndex(for: id)
     }
 
     // MARK: - Send
@@ -655,6 +706,15 @@ final class ConversationService: ObservableObject {
             self?.cancelStream(in: conversationID)
         }
 
+        // Snapshot the perform-start wall-clock so the epilogue can
+        // ask "did the most-recent background event happen *after*
+        // this send started?". If yes, the generation ran across a
+        // background transition and we credit it to the
+        // background-completion counter (useful telemetry for
+        // verifying the iOS background-task assertion really buys us
+        // the 30s the entitlement promises).
+        let sendStartedAt = Date()
+
         // `beginGenerationLifecycle` was called by the caller (`send` /
         // `sendAndWait`) before this Task was scheduled, so by the time
         // we land here the four streaming slots are already populated.
@@ -680,11 +740,39 @@ final class ConversationService: ObservableObject {
             watchdog.cancel()
             timedOutConversations.remove(conversationID)
             Self.endBackgroundTask(bgTaskID)
+            // Background-completion detection: if the most recent
+            // app-background event happened AFTER this performSend
+            // started, the generation ran across a background
+            // transition. We notify the container only when the
+            // stream finished cleanly (i.e. the in-memory message
+            // landed in `.complete` state) — a cancelled or failed
+            // stream isn't a "background success".
+            if let bgAt = recentBackgroundTimestamp(),
+               bgAt > sendStartedAt,
+               let lastMsg = messagesByConversation[conversationID]?.last,
+               lastMsg.status == .complete {
+                onBackgroundCompletion()
+                HHLog.chat.info("background completion: \(conversationID, privacy: .public) finished after crossing background event")
+            }
             // Single teardown for every streaming-state slot. `cancellingTask: false`
             // because we're *inside* the Task body — calling cancel on
             // ourselves at this point would be a no-op anyway, but the
             // signature is explicit so the read is unambiguous.
             endGenerationLifecycle(for: conversationID, cancellingTask: false)
+            // Fire-and-forget: when this turn finished with a healthy
+            // history that's getting close to the budget, condense the
+            // older half into a single paragraph. The next turn picks
+            // up the summary via `summaryByConversation[id]` and uses
+            // it as `conversationSummary` on `PromptContextPackage`,
+            // so the model never sees old turns vanish — they shrink
+            // into a one-paragraph recap instead.
+            //
+            // Runs on the MainActor (RuntimeManager is MainActor-only)
+            // but `Task` doesn't await — the user's response is
+            // already delivered by the time this fires.
+            Task { [weak self] in
+                await self?.maybeSummarizeOlderHalf(in: conversationID)
+            }
         }
 
         var list = messagesByConversation[conversationID] ?? []
@@ -734,9 +822,36 @@ final class ConversationService: ObservableObject {
 
 
         // Build prompt context with layered memory.
-        let facts = await memory.relevantFacts(for: userInput, limit: 8)
-        let episodes = await memory.relevantEpisodes(for: userInput, limit: 3)
-        let historyWindow = Array(priorMessages.suffix(20))
+        // Adaptive retrieval limits: a short "ok" or "thanks" doesn't
+        // need 8 facts injected — that's just context bloat that the
+        // model has to read through. A long "remind me about everything
+        // we discussed re: the auth flow yesterday" deserves a deeper
+        // pull. Sizing by user-input length is a cheap proxy that
+        // doesn't need a separate classifier; the user typing more is
+        // a strong signal they expect the model to use more grounding.
+        let (factLimit, episodeLimit) = Self.adaptiveRetrievalLimits(for: userInput)
+        let facts = await memory.relevantFacts(for: userInput, limit: factLimit)
+        let episodes = await memory.relevantEpisodes(for: userInput, limit: episodeLimit)
+        // Removed the historic `suffix(20)` cap. That fence was a
+        // pre-budgeter safety net from before `PromptTokenBudgeter`
+        // existed; with the budgeter in place it just silently throws
+        // away history that the model could still see. On a 4096-token
+        // context, 40 short messages comfortably fit — the cap was
+        // dropping them anyway.
+        //
+        // The budgeter walks newest-first and stops at the per-family
+        // `safeHistoryTokenBudget`, so the cost of passing the full
+        // list is O(kept_messages), not O(all_messages). Long
+        // conversations stay performant.
+        //
+        // Older messages that the budgeter does trim are recovered via
+        // two paths added in this batch:
+        //   1. `conversationSummary` — auto-generated when the budget
+        //      gets tight, injected as the L0.5 system block.
+        //   2. `conversationRecall` — semantic retrieval over the
+        //      *truncated* messages; relevant earlier turns ride along
+        //      as L2' even after the budgeter drops them.
+        let historyWindow = priorMessages
         
         // Chunk and filter attachments using embeddings
         var topExcerpts: [String] = []
@@ -815,6 +930,57 @@ final class ConversationService: ObservableObject {
             family: activeModelSnapshot?.family ?? ""
         )
 
+        // Semantic recall over the *truncated* tail of message history.
+        //
+        // We only ask the recall service to look at messages older
+        // than the live window the budgeter will produce — anything
+        // newer is already going into `recentMessages` verbatim.
+        // Calling `trimHistory` here is a cheap O(kept) walk; we'd do
+        // it inside `PromptAssemblyService.build` anyway, so doing it
+        // ahead just lets us identify which IDs we already have in
+        // the prompt.
+        let budgeter = PromptTokenBudgeter(profile: capabilityProfile)
+        let trimResult = budgeter.trimHistory(historyWindow)
+        let keptIDs = Set(trimResult.kept.map(\.id))
+        // Recall is limited to 3 snippets — more would dilute the
+        // L2' block and starve other layers on small context windows.
+        // Per-conversation embedding lookup is bounded by the
+        // EmbeddingService LRU cap (separate from MemoryService).
+        let semanticRecall: [Message] = settings.current.memoryEnabled
+            ? await recall.recall(
+                query: userInput,
+                from: historyWindow,
+                excluding: keptIDs,
+                limit: 3
+            )
+            : []
+        // Top up the recall block with intrinsically-important dropped
+        // messages — declarations, code fences, numeric facts — that
+        // didn't make the semantic cut. The model often needs these
+        // for follow-up questions that aren't directly about them
+        // ("I'm vegetarian" must survive even if the current turn is
+        // about TV shows). Cap the combined recall at 5 entries; any
+        // more starts pushing other layers off the budget.
+        let recallSlotsRemaining = max(0, 5 - semanticRecall.count)
+        let semanticIDs = Set(semanticRecall.map(\.id))
+        let importantTopUp: [Message] = settings.current.memoryEnabled && recallSlotsRemaining > 0
+            ? MessageImportance.topImportant(
+                from: historyWindow,
+                excluding: keptIDs.union(semanticIDs),
+                limit: recallSlotsRemaining
+            )
+            : []
+        // Concatenate in conversation order so the prompt reads
+        // chronologically. We dedupe via ID set as a defensive belt
+        // (the `excluding:` filter on `topImportant` already covers it).
+        let combinedIDs = Set(semanticRecall.map(\.id))
+        let recalledMessages = (semanticRecall + importantTopUp.filter { !combinedIDs.contains($0.id) })
+            .sorted { $0.createdAt < $1.createdAt }
+        let recalledText = recalledMessages.map { msg in
+            let speaker = msg.role == .user ? "Uživatel" : "Asistent"
+            return "[\(speaker)] \(msg.content)"
+        }
+
         let package = PromptContextPackage(
             assistant: personaForTurn,
             user: personalization.userProfile,
@@ -824,6 +990,7 @@ final class ConversationService: ObservableObject {
             userInput: userInput,
             settings: settings.current,
             conversationSummary: summaryText,
+            conversationRecall: recalledText,
             fileExcerpts: topExcerpts,
             skillInstructions: skillInstructions,
             availableTools: enabledTools,
@@ -854,7 +1021,25 @@ final class ConversationService: ObservableObject {
 
             let runtimePrompt = prompts.build(from: loopPackage)
             assistantMessage.status = .streaming
-            
+
+            // Ground-truth tokenizer count for the assembled prompt.
+            // Fire-and-forget — the budget report has already been
+            // published by `prompts.build`; we just enrich it with the
+            // real number once the tokenizer hop returns. Doing this
+            // here (not inside `PromptAssemblyService`) avoids making
+            // the synchronous builder async and keeps the report
+            // available *immediately* for any caller that doesn't
+            // need ground truth.
+            let promptForCounting = runtimePrompt.systemPrompt
+                + runtimePrompt.messages.map(\.content).joined(separator: "\n")
+            Task { [weak self] in
+                guard let self,
+                      let real = await self.runtime.realTokenCount(of: promptForCounting) else {
+                    return
+                }
+                self.promptBudgetReporter?.recordRealTokenCount(real)
+            }
+
             // UX: Subtle haptic to confirm generation has physically started
             // (after embedding, search, and memory retrieval finishes).
             HHHaptics.impact(.light, enabled: settings.current.haptics)
@@ -1079,6 +1264,515 @@ final class ConversationService: ObservableObject {
             conversations: conversations,
             lastAssistantMessage: assistantMessage.content.isEmpty ? nil : String(assistantMessage.content.prefix(200))
         )
+    }
+
+    // MARK: - Auto-summarization
+
+    /// Auto-condense the older half of the conversation when the budget
+    /// is getting tight. Wired into the `performSend` defer block so it
+    /// runs after the user already has their response — no UX latency.
+    ///
+    /// **When it fires.** Only when *all four* conditions hold:
+    ///   1. A model is loaded (summarizer needs the runtime).
+    ///   2. The conversation has ≥ `minMessagesForSummary` messages —
+    ///      short chats don't need a summary, the full history fits.
+    ///   3. Estimated history token count > 70 % of the model family's
+    ///      `safeHistoryTokenBudget`. Below that the budgeter wouldn't
+    ///      trim anything so the summary would be wasted work.
+    ///   4. The existing cached summary (if any) doesn't already cover
+    ///      the older-half slice — avoids re-summarizing the same range
+    ///      every turn.
+    ///
+    /// **What it does.** Splits the messages roughly in half, takes the
+    /// older slice (oldest → midpoint), runs `SummarizationService` to
+    /// produce a one-paragraph recap, and stores it in
+    /// `summaryByConversation[id]`. The next call to `performSend` reads
+    /// the summary into `PromptContextPackage.conversationSummary`,
+    /// which `PromptAssemblyService` injects as the "Earlier in this
+    /// conversation" block of the system prompt.
+    ///
+    /// **Hierarchical re-condense.** If the freshly-generated summary is
+    /// itself larger than `summaryRecondenseTokenThreshold`, we feed it
+    /// back through `summarizer.summarize` once more with a single
+    /// pseudo-message. Long conversations (50+ turns) generate summaries
+    /// that grow proportionally; without this pass the L0.5 block
+    /// would eventually eat the entire budget. One re-condense pass is
+    /// enough — empirically the second pass converges to a tight
+    /// paragraph, and recursing further hits diminishing returns vs.
+    /// the per-pass inference latency.
+    ///
+    /// **Concurrency.** A single in-flight summarization per conversation
+    /// is tracked via `summarizationTasks` — a second call while the
+    /// first is running is a no-op, preventing two `runtime.generate(...)`
+    /// streams from racing on the same MLX context.
+    private func maybeSummarizeOlderHalf(in conversationID: UUID) async {
+        guard runtime.activeModel != nil,
+              summarizationTasks[conversationID] == nil else { return }
+
+        let messages = messagesByConversation[conversationID] ?? []
+        guard messages.count >= Self.minMessagesForSummary else { return }
+
+        let profile = ModelCapabilityProfile.resolve(
+            family: runtime.activeModel?.family ?? ""
+        )
+        let budgeter = PromptTokenBudgeter(profile: profile)
+        let estimatedTokens = messages.reduce(0) {
+            $0 + budgeter.tokensForMessage(content: $1.content)
+        }
+        let threshold = Int(Double(profile.safeHistoryTokenBudget) * 0.7)
+        guard estimatedTokens > threshold else { return }
+
+        // Slice: older half is messages[0..<midpoint]. The newer half
+        // stays as-is in the live history so the model has unbroken
+        // recent context. We never re-summarize a slice we've already
+        // covered — the cached summary records exactly which message
+        // IDs it abstracts.
+        let midpoint = messages.count / 2
+        let olderSlice = Array(messages.prefix(midpoint))
+        guard !olderSlice.isEmpty else { return }
+
+        let olderIDs = olderSlice.map(\.id)
+        if let existing = summaryByConversation[conversationID],
+           Set(existing.coversMessageIDs) == Set(olderIDs) {
+            // Already up to date — bail before paying for inference.
+            return
+        }
+
+        let task = Task { [weak self] in
+            guard let self else { return }
+            defer { self.summarizationTasks[conversationID] = nil }
+
+            var summary = await self.summarizer.summarize(messages: olderSlice)
+            guard let initial = summary, !initial.isEmpty else {
+                HHLog.chat.notice("auto-summary: produced empty output for \(conversationID, privacy: .public) — leaving prior summary intact")
+                return
+            }
+
+            // Hierarchical pass: if the produced summary itself is too
+            // big for the prompt budget (happens on very long
+            // conversations where the slice was 30+ turns), recondense
+            // it one more time. We synthesise a single Message wrapper
+            // so the existing `summarize(messages:)` API can ingest the
+            // text without a separate code path.
+            let initialTokens = budgeter.tokensAccurate(in: initial)
+            if initialTokens > Self.summaryRecondenseTokenThreshold {
+                let wrapped = Message(
+                    id: UUID(),
+                    conversationID: conversationID,
+                    role: .assistant,
+                    content: initial,
+                    createdAt: .now,
+                    status: .complete,
+                    tokenCount: initialTokens
+                )
+                if let recondensed = await self.summarizer.summarize(messages: [wrapped]),
+                   !recondensed.isEmpty,
+                   budgeter.tokensAccurate(in: recondensed) < initialTokens {
+                    HHLog.chat.info("auto-summary: hierarchical re-condense \(initialTokens) → \(budgeter.tokensAccurate(in: recondensed)) tokens for \(conversationID, privacy: .public)")
+                    summary = recondensed
+                } else {
+                    // Re-condense degraded or empty — keep the original
+                    // and accept the budget cost rather than ship a
+                    // worse summary.
+                    summary = initial
+                }
+            }
+
+            guard let finalSummary = summary, !finalSummary.isEmpty else { return }
+
+            // Hard truncation guard. The hierarchical pass should keep
+            // most summaries under ~400 tokens, but a misbehaving model
+            // (or a custom-loaded community checkpoint with weird
+            // outputs) can return a runaway gist of thousands of
+            // tokens. Without this guard a single bad summary blows
+            // the entire prompt budget for every subsequent turn —
+            // silent UX degradation that's hard to diagnose.
+            //
+            // Clip to byte-length corresponding to `summaryHardClipTokens`
+            // via the conservative tokens-per-char proxy. Better to
+            // ship a truncated paragraph with "…" than a blown budget.
+            let clipped = Self.clipSummaryIfNeeded(finalSummary, budgeter: budgeter)
+            self.summaryByConversation[conversationID] = ConversationSummary(
+                conversationID: conversationID,
+                summary: clipped,
+                coversMessageIDs: olderIDs,
+                generatedAt: .now
+            )
+            HHLog.chat.info("auto-summary: condensed \(olderSlice.count) older messages for \(conversationID, privacy: .public) (\(clipped.count) chars)")
+        }
+        summarizationTasks[conversationID] = task
+    }
+
+    /// Hard upper bound on summary size. If the hierarchical pass
+    /// failed to bring the gist under the budget — or didn't fire —
+    /// this is the last-line clip that protects every downstream turn
+    /// from a runaway summary. Calibrated at 2× the recondense
+    /// threshold so legitimate "long but useful" summaries survive
+    /// and only truly pathological outputs get truncated.
+    private static let summaryHardClipTokens = 800
+
+    /// Returns `summary` if it's within `summaryHardClipTokens`,
+    /// otherwise a truncated version ending with " […]". Truncation
+    /// happens on a word boundary so the clipped output still reads
+    /// as natural language. Logs a warning so the developer knows
+    /// the hard clip fired — repeated hits in Diagnostics indicate a
+    /// model returning bad summaries.
+    private static func clipSummaryIfNeeded(_ summary: String, budgeter: PromptTokenBudgeter) -> String {
+        let tokens = budgeter.tokensAccurate(in: summary)
+        guard tokens > summaryHardClipTokens else { return summary }
+
+        // Convert token target back to an approximate char count via
+        // the family's tokens-per-char ratio. We err small (0.8×) so
+        // the clipped result is comfortably under the bound rather
+        // than right at the edge — leaves room for the " […]" marker
+        // and a safety margin against the heuristic's ±15 % error.
+        let targetChars = Int(Double(summary.count) * Double(summaryHardClipTokens) / Double(tokens) * 0.8)
+        let clipPoint = max(100, min(summary.count, targetChars))
+        // Walk back to the nearest whitespace so we don't slice mid-word.
+        var idx = summary.index(summary.startIndex, offsetBy: clipPoint)
+        while idx > summary.startIndex && !summary[idx].isWhitespace {
+            idx = summary.index(before: idx)
+        }
+        let clipped = String(summary[..<idx]).trimmingCharacters(in: .whitespacesAndNewlines) + " […]"
+        HHLog.chat.warning("auto-summary: hard-clipped from \(tokens) to ≤\(summaryHardClipTokens) tokens (\(summary.count) → \(clipped.count) chars) — runaway model output")
+        return clipped
+    }
+
+    /// Above this token count, the summarizer re-condenses its own
+    /// output once. Calibrated so the summary plus persona + facts +
+    /// recall still fits under the typical 4096-token context with
+    /// room for history and generation. 400 tokens is roughly a
+    /// long paragraph — usable as context, not bloated.
+    private static let summaryRecondenseTokenThreshold = 400
+
+    // MARK: - Episode auto-write-back
+
+    /// Scans conversations that have been idle long enough to count as
+    /// "the user has moved on" and writes back a `MemoryEpisode` for
+    /// each one that hasn't been episodized yet. Triggered by
+    /// `AppContainer.handleScenePhaseChange(.background)` so the user's
+    /// long-form conversations leave a searchable trace in long-term
+    /// memory without the user having to remember to approve a
+    /// memory candidate during the chat itself.
+    ///
+    /// **Why on background, not on chat-switch.** Chat-switch fires
+    /// far more often than the user "closing" the conversation in
+    /// their head — they might just be cross-referencing two
+    /// conversations. App background is a clean signal: the user is
+    /// done for now, episodization can run without competing for
+    /// model time with anything else the user is doing.
+    ///
+    /// **Approval model.** Episodes are written as `approved: false`
+    /// to mirror the existing extraction flow — the user reviews them
+    /// in the Memory tab. Auto-approval would silently inflate the
+    /// retrieval pool with low-quality gists; the manual review is
+    /// the quality gate.
+    ///
+    /// **De-duplication.** We don't episodize a conversation that
+    /// already has *any* episode with the same `sourceConversationID`
+    /// (approved or pending). Re-episodizing on every background
+    /// would clutter the candidates list; the existing episode is
+    /// either approved (still relevant) or pending review (user
+    /// will revisit).
+    func autoEpisodizeIdleConversations(
+        idleThreshold: TimeInterval = 10 * 60
+    ) async {
+        guard settings.current.memoryEnabled,
+              settings.current.autoExtractMemory,
+              runtime.activeModel != nil else { return }
+
+        let now = Date()
+        let candidates = conversations.filter { conv in
+            now.timeIntervalSince(conv.updatedAt) >= idleThreshold
+        }
+        guard !candidates.isEmpty else { return }
+
+        // Snapshot existing episodes once — checking per-conversation
+        // inside the loop would re-iterate the list every time.
+        let alreadyEpisodized = Set(
+            memory.episodes.map(\.sourceConversationID)
+        )
+
+        for conv in candidates where !alreadyEpisodized.contains(conv.id) {
+            // Skip if the conversation was deleted or hasn't loaded
+            // into the cache. The store-backed fetch would work but
+            // we'd rather episodize what the user has actually
+            // touched recently (i.e. it's in the cache).
+            guard let messages = messagesByConversation[conv.id],
+                  messages.count >= Self.minMessagesForEpisode else { continue }
+
+            // Source message is the last user turn — that's what the
+            // episode is "about" from the user's perspective. The
+            // model-summarized gist is `summary`.
+            guard let lastUser = messages.last(where: { $0.role == .user }) else { continue }
+
+            let summary = await summarizer.summarize(messages: messages)
+            guard let summary, !summary.isEmpty else {
+                HHLog.memory.notice("auto-episode: empty summary for \(conv.id, privacy: .public) — skipping")
+                continue
+            }
+
+            // Route through the candidates flow instead of writing the
+            // episode straight to `memory.episodes`. Two reasons:
+            //   1. Bulk approve/dismiss in the Memory tab operates on
+            //      candidates — putting auto-episodes there means the
+            //      user can sweep them in one tap rather than swiping
+            //      each row individually.
+            //   2. The existing UX already conditions users to "review
+            //      candidates" as the approval ceremony; auto-episodes
+            //      that bypass it would feel like silent injection.
+            let candidate = MemoryCandidate(
+                id: UUID(),
+                content: summary,
+                kind: .episode,
+                category: .other,
+                sourceConversationID: conv.id,
+                sourceMessageID: lastUser.id,
+                proposedAt: .now,
+                extractionMethod: .structured
+            )
+            await memory.appendCandidate(candidate)
+            HHLog.memory.info("auto-episode: proposed candidate for \(conv.id, privacy: .public) (\(summary.count) chars)")
+        }
+    }
+
+    /// Below this message count an idle conversation is not worth
+    /// episodizing — a 3-turn chat is its own summary. The summarizer
+    /// also produces low-quality outputs for very short inputs, so
+    /// the floor doubles as a quality guard.
+    private static let minMessagesForEpisode = 8
+
+    // MARK: - Speculative retrieval prefetch
+
+    /// Debounced prefetch of fact/episode/recall embeddings for a
+    /// draft message. Wired into `MessageComposerView`'s text-change
+    /// hook so that by the time the user taps Send the embedding LRU
+    /// for the likely retrieval set is already hot, shaving 50-200ms
+    /// off perceived send latency on iPhone.
+    ///
+    /// **Cancellation.** Each call cancels the prior in-flight prefetch
+    /// for the same conversation — typing keeps moving the target, no
+    /// reason to keep stale prefetches alive. Bursting keystrokes
+    /// produce at most one round-trip per `prefetchDebounceMs`.
+    ///
+    /// **Minimum draft length.** Below `prefetchMinChars` the draft is
+    /// too vague (a single word like "ok") to yield useful retrieval —
+    /// running the prefetch would just bloat the LRU with low-quality
+    /// vectors. The threshold matches the "trivial reply" floor in
+    /// `MessageImportance.score`, keeping the two heuristics aligned.
+    ///
+    /// **No state mutation.** The prefetch does NOT pre-compute the
+    /// `PromptContextPackage`; that would race with the real send
+    /// (which may pick a different model or settings snapshot). It
+    /// only warms the embedding cache as a side effect of running the
+    /// same batch-similarity call the send path would issue.
+    func prefetchRetrieval(for draft: String, in conversationID: UUID) {
+        prefetchTasks[conversationID]?.cancel()
+
+        let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count >= Self.prefetchMinChars,
+              settings.current.memoryEnabled else {
+            prefetchTasks[conversationID] = nil
+            return
+        }
+
+        prefetchTasks[conversationID] = Task { [weak self, memory] in
+            // Debounce. Sleeping at the start lets a fast burst of
+            // keystrokes coalesce into the single most-recent draft;
+            // cancellation during the sleep is the common path.
+            try? await Task.sleep(nanoseconds: UInt64(Self.prefetchDebounceMs) * 1_000_000)
+            guard !Task.isCancelled, let self else { return }
+
+            // Run the same retrieval calls the send path would —
+            // their side effect is to populate the embedding LRU.
+            // We ignore the returned values; the next send will read
+            // from a warm cache and skip the network/compute.
+            let (factLimit, episodeLimit) = Self.adaptiveRetrievalLimits(for: trimmed)
+            _ = await memory.relevantFacts(for: trimmed, limit: factLimit)
+            _ = await memory.relevantEpisodes(for: trimmed, limit: episodeLimit)
+
+            // Warm recall over the live history too — recall uses a
+            // different EmbeddingService entry per message, so the
+            // facts/episodes warm-up doesn't cover it.
+            let history = self.messagesByConversation[conversationID] ?? []
+            if !history.isEmpty {
+                _ = await self.recall.recall(
+                    query: trimmed,
+                    from: history,
+                    excluding: [],
+                    limit: 3
+                )
+            }
+        }
+    }
+
+    /// Per-conversation prefetch task handle. Cancelled and replaced
+    /// on every text-change so we never have two parallel prefetches
+    /// thrashing the embedding cache for the same conversation.
+    private var prefetchTasks: [UUID: Task<Void, Never>] = [:]
+
+    /// Debounce window for typing-driven prefetch. 300 ms catches a
+    /// natural pause between words without firing on every keystroke.
+    private static let prefetchDebounceMs = 300
+
+    /// Drafts shorter than this skip the prefetch — too vague to
+    /// produce useful retrieval, and the LRU shouldn't be polluted
+    /// with vectors for "ok" / "hm" / "díky".
+    private static let prefetchMinChars = 12
+
+    // MARK: - Diagnostics snapshot
+
+    /// Lightweight snapshot of the chat-memory subsystem's current
+    /// state. Consumed by `DeveloperDiagnosticsView` so a developer
+    /// (or a power user filing a bug) can answer "is the summarizer
+    /// keeping up? is recall warm? how many drafts are mid-prefetch?"
+    /// at a glance without attaching Xcode.
+    ///
+    /// All fields are derived from in-memory state — no I/O, safe to
+    /// call on the main actor at any UI cadence.
+    struct ChatMemorySnapshot: Equatable {
+        /// Total conversations persisted (cached + on-disk).
+        let totalConversations: Int
+        /// Conversations whose messages are loaded in the LRU.
+        let cachedConversations: Int
+        /// Cached summaries — one per conversation that's been
+        /// auto-summarized at least once.
+        let summariesCached: Int
+        /// Currently-running summarization tasks. A non-zero value
+        /// during normal use is fine; chronically non-zero (10+ over
+        /// a session) suggests the summarizer is racing with sends
+        /// or the model is too slow to keep up.
+        let summariesInProgress: Int
+        /// Per-conversation prefetch tasks in flight. Should be 0 or 1
+        /// at any given moment — a higher number means the debounce
+        /// or cancellation invariants are leaking.
+        let prefetchesInProgress: Int
+        /// Newest summary timestamp across all conversations, or nil
+        /// if none cached. Useful for "did anything actually run in
+        /// the last hour?" triage.
+        let mostRecentSummaryAt: Date?
+    }
+
+    /// Read-only snapshot of the chat-memory subsystem. Recomputed on
+    /// every call — there's no caching layer because the underlying
+    /// state changes rarely enough that observed-recompute is cheaper
+    /// than maintaining a derived published property.
+    func chatMemorySnapshot() -> ChatMemorySnapshot {
+        let mostRecent = summaryByConversation.values
+            .map(\.generatedAt)
+            .max()
+        return ChatMemorySnapshot(
+            totalConversations: conversations.count,
+            cachedConversations: messagesByConversation.count,
+            summariesCached: summaryByConversation.count,
+            summariesInProgress: summarizationTasks.count,
+            prefetchesInProgress: prefetchTasks.count,
+            mostRecentSummaryAt: mostRecent
+        )
+    }
+
+    /// Per-conversation handle for an in-flight summarization task.
+    /// Used as a re-entrancy guard so a fast burst of sends doesn't
+    /// queue multiple summarization runs against the same MLX context.
+    private var summarizationTasks: [UUID: Task<Void, Never>] = [:]
+
+    /// Below this message count the auto-summarizer never fires —
+    /// the budgeter can keep the entire history in-prompt for short
+    /// conversations and the summary would just add latency on the
+    /// next turn without a recall benefit.
+    private static let minMessagesForSummary = 12
+
+    /// Force the summarizer to run for `conversationID` regardless of
+    /// the usual budget / message-count gates. Used by the chat menu
+    /// "Summarize now" action so a power user can manually compress
+    /// older context before sending a complex follow-up — useful when
+    /// the auto-trigger hasn't fired yet (history is below 70 % of
+    /// budget) but the next turn is known to push it over.
+    ///
+    /// **Re-entrancy.** Routes through the same `summarizationTasks`
+    /// guard as the auto path; a manual tap while a background
+    /// summarization is in flight no-ops and returns `false`, with the
+    /// caller free to surface a "summarization already running" toast.
+    ///
+    /// **Why a public bool return.** Lets the UI distinguish "I
+    /// didn't run because conditions weren't met" (no model loaded,
+    /// not enough messages, already running) from "I ran and
+    /// produced a fresh summary" without exposing internal state.
+    @discardableResult
+    func forceSummarizeNow(in conversationID: UUID) async -> Bool {
+        guard runtime.activeModel != nil,
+              summarizationTasks[conversationID] == nil else { return false }
+
+        let messages = messagesByConversation[conversationID] ?? []
+        // Manual path still respects the "too short to summarize"
+        // floor — a 4-message chat has nothing meaningful to condense
+        // and the summarizer would produce a low-quality output.
+        guard messages.count >= 4 else { return false }
+
+        let profile = ModelCapabilityProfile.resolve(
+            family: runtime.activeModel?.family ?? ""
+        )
+        let budgeter = PromptTokenBudgeter(profile: profile)
+
+        // Use the same "older half" slicing as the auto path so the
+        // summary semantically slots in the same place. A user
+        // triggering "Summarize now" right after a long brainstorm
+        // expects the result to abstract the brainstorm and leave
+        // their final question intact.
+        let midpoint = messages.count / 2
+        let olderSlice = Array(messages.prefix(midpoint))
+        guard !olderSlice.isEmpty else { return false }
+
+        let olderIDs = olderSlice.map(\.id)
+        let task = Task { [weak self] in
+            guard let self else { return }
+            defer { self.summarizationTasks[conversationID] = nil }
+            guard let summary = await self.summarizer.summarize(messages: olderSlice),
+                  !summary.isEmpty else {
+                HHLog.chat.notice("manual-summary: empty output for \(conversationID, privacy: .public)")
+                return
+            }
+            let clipped = Self.clipSummaryIfNeeded(summary, budgeter: budgeter)
+            self.summaryByConversation[conversationID] = ConversationSummary(
+                conversationID: conversationID,
+                summary: clipped,
+                coversMessageIDs: olderIDs,
+                generatedAt: .now
+            )
+            HHLog.chat.info("manual-summary: condensed \(olderSlice.count) older messages for \(conversationID, privacy: .public)")
+        }
+        summarizationTasks[conversationID] = task
+        await task.value
+        // task.value implicitly waits for the deferred clear, so by
+        // the time we return here the call site can read
+        // `summaryByConversation[id]` directly if it wants to render
+        // a confirmation toast.
+        return true
+    }
+
+    /// Adaptive (fact_limit, episode_limit) for a user input.
+    ///
+    /// The numbers are bucketed (not interpolated) so the behaviour is
+    /// predictable and easy to debug from a Diagnostics log: "short
+    /// input → (3, 1)". The buckets are calibrated so that:
+    ///   - Trivial messages ("ok", "thanks", "yes") get the minimum
+    ///     viable context — usually pinned + 1-2 keyword hits.
+    ///   - Medium messages (a sentence or two) get the established
+    ///     defaults (8, 3) — the historic baseline.
+    ///   - Long messages (multi-paragraph queries) get a deeper pull
+    ///     so the model has the grounding to write a structured
+    ///     answer instead of a generic summary.
+    ///
+    /// Pinned facts bypass these limits (see `MemoryService.relevantFacts`),
+    /// so even the "short" bucket can return many facts when the user
+    /// has pinned them.
+    nonisolated static func adaptiveRetrievalLimits(for input: String) -> (facts: Int, episodes: Int) {
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch trimmed.count {
+        case 0..<30:     return (3, 1)   // "ok", "díky", "yes please"
+        case 30..<200:   return (8, 3)   // baseline — single sentence to short paragraph
+        default:         return (12, 5)  // long, deliberate query — deep pull
+        }
     }
 
     // MARK: - Background task helpers

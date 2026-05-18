@@ -21,6 +21,7 @@ struct DeveloperDiagnosticsView: View {
     @EnvironmentObject private var downloads: ModelDownloadService
     @EnvironmentObject private var promptBudget: PromptBudgetReporter
     @EnvironmentObject private var settings: SettingsService
+    @EnvironmentObject private var conversations: ConversationService
 
     @State private var stubModelIDs: [String] = []
     @State private var isScanning = false
@@ -41,6 +42,7 @@ struct DeveloperDiagnosticsView: View {
             deviceEventsSection
             generationPerformanceSection
             tokenBudgetSection
+            chatMemorySection
             integritySection
             actionsSection
             exportSection
@@ -239,6 +241,13 @@ struct DeveloperDiagnosticsView: View {
     private var deviceEventsSection: some View {
         Section {
             LabeledContent("Memory warnings", value: "\(container.memoryWarningCount)")
+            // Background-completion counter — verifies the iOS
+            // background-task assertion is actually buying us the
+            // promised ~30 s of extra runtime when the user switches
+            // apps mid-generation. Zero here while users report
+            // truncated replies = a real lifecycle bug; nonzero =
+            // working as designed.
+            LabeledContent("BG completions", value: "\(container.backgroundGenerationCompletions)")
 
             if let note = container.lastUnloadNotification {
                 VStack(alignment: .leading, spacing: 4) {
@@ -249,6 +258,46 @@ struct DeveloperDiagnosticsView: View {
                         .font(.caption.monospaced())
                         .foregroundStyle(.orange)
                         .textSelection(.enabled)
+                }
+            }
+
+            if let pressure = container.lastPressureEvent {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Last pressure event")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(formatPressureSnapshot(pressure))
+                        .font(.caption.monospaced())
+                        .foregroundStyle(pressure.escalatedToHard ? .orange : .secondary)
+                        .textSelection(.enabled)
+                }
+            }
+
+            if container.pressureHistory.count > 1 {
+                // The first entry duplicates `lastPressureEvent` above —
+                // skip it so the disclosure doesn't show the same line
+                // twice. Aggregates surface the *pattern*: "8× soft,
+                // 1× hard, 0× deferred in the last 20 events" — that's
+                // what answers "is the policy actually working?".
+                DisclosureGroup {
+                    let agg = aggregatePressure(container.pressureHistory)
+                    Text("Tiers: SOFT \(agg.soft) · HARD \(agg.hard) · deferred \(agg.deferred)")
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.secondary)
+                    ForEach(Array(container.pressureHistory.enumerated()), id: \.offset) { _, ev in
+                        Text(formatPressureSnapshot(ev))
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(ev.escalatedToHard ? .orange : .secondary)
+                            .textSelection(.enabled)
+                    }
+                    Button("Vymazat historii", role: .destructive) {
+                        container.clearPressureHistory()
+                    }
+                    .font(.caption)
+                } label: {
+                    Text("Pressure history (\(container.pressureHistory.count))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
 
@@ -356,6 +405,20 @@ struct DeveloperDiagnosticsView: View {
                 LabeledContent("History dropped", value: "\(report.historyMessagesDropped) msgs")
                 LabeledContent("Total prompt",    value: "\(report.totalPromptTokens) tokens")
                 LabeledContent("Gen reserve",     value: "\(report.generationReserveTokens) tokens")
+                // Real-tokenizer ground truth + drift, when an MLX
+                // tokenizer was available at the time the prompt was
+                // sent. A persistent drift > ±15 % suggests the
+                // family's `messageTokenOverhead` calibration is off.
+                if let real = promptBudget.lastRealTokenCount {
+                    LabeledContent("Real (BPE)", value: "\(real) tokens")
+                    if let drift = promptBudget.heuristicDriftPercent {
+                        let sign = drift >= 0 ? "+" : ""
+                        LabeledContent("Heuristic drift") {
+                            Text("\(sign)\(String(format: "%.1f", drift)) %")
+                                .foregroundStyle(abs(drift) > 15 ? .orange : .secondary)
+                        }
+                    }
+                }
             } else {
                 Text("No prompt built yet — send a message to populate.")
                     .foregroundStyle(.secondary)
@@ -365,6 +428,45 @@ struct DeveloperDiagnosticsView: View {
             Text("Last Prompt Budget")
         } footer: {
             Text("Token counts use the heuristic estimator (±15% vs. real BPE). Reflects the most recent call to PromptAssemblyService.build().")
+        }
+    }
+
+    // MARK: - Chat memory
+
+    /// Live snapshot of the chat-memory subsystem (summaries, recall,
+    /// prefetch). Surfaces the auto-summarizer's health and the
+    /// per-conversation cache footprint so the user doesn't have to
+    /// guess whether "the model forgot earlier turns" is a missing
+    /// summary, a stuck task, or genuinely-out-of-budget context.
+    private var chatMemorySection: some View {
+        let snap = conversations.chatMemorySnapshot()
+        return Section {
+            LabeledContent("Conversations (total / cached)",
+                           value: "\(snap.totalConversations) / \(snap.cachedConversations)")
+            LabeledContent("Summaries cached", value: "\(snap.summariesCached)")
+            if snap.summariesInProgress > 0 {
+                LabeledContent("Summarizing now") {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.mini)
+                        Text("\(snap.summariesInProgress)")
+                    }
+                }
+            }
+            if snap.prefetchesInProgress > 0 {
+                LabeledContent("Retrieval prefetches", value: "\(snap.prefetchesInProgress)")
+            }
+            if let when = snap.mostRecentSummaryAt {
+                LabeledContent("Last summary at",
+                               value: DateFormatter.localizedString(from: when, dateStyle: .none, timeStyle: .medium))
+            } else {
+                Text("No summaries generated yet — short conversations don't need them.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        } header: {
+            Text("Chat Memory")
+        } footer: {
+            Text("Auto-summarizer condenses older messages when the history budget exceeds 70%. Cached summaries are kept in-memory; cleared on app relaunch. Prefetches warm the embedding cache as you type.")
         }
     }
 
@@ -578,6 +680,65 @@ struct DeveloperDiagnosticsView: View {
         ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
     }
 
+    /// Maps a live `PressureEventSnapshot` into the Codable wire-format
+    /// used by the diagnostic report. Centralized so the tier-string
+    /// classification (`"soft" | "hard" | "deferred"`) stays in sync
+    /// with the in-app aggregate counters that drive the same buckets.
+    private func encodePressureSnapshot(
+        _ ev: AppContainer.PressureEventSnapshot
+    ) -> DiagnosticReport.PressureEvent {
+        let tier: String = {
+            if ev.escalatedToHard { return "hard" }
+            if ev.wasGenerating   { return "deferred" }
+            return "soft"
+        }()
+        return DiagnosticReport.PressureEvent(
+            occurredAtUnix: ev.occurredAt.timeIntervalSince1970,
+            availableBytes: ev.availableBytes,
+            weightsBytes: ev.weightsBytes,
+            inDebounceWindow: ev.inDebounceWindow,
+            belowHardFloor: ev.belowHardFloor,
+            wasGenerating: ev.wasGenerating,
+            tier: tier
+        )
+    }
+
+    /// Tally of how the two-tier policy handled the recent pressure
+    /// events. Used by the Diagnostics disclosure to surface *trend*
+    /// instead of one line: "is the policy mostly deciding SOFT (good),
+    /// HARD (device is genuinely tight) or DEFERRED (chat is busy and
+    /// we're piling up signals)?" Each event maps to exactly one bucket.
+    private func aggregatePressure(
+        _ events: [AppContainer.PressureEventSnapshot]
+    ) -> (soft: Int, hard: Int, deferred: Int) {
+        var soft = 0, hard = 0, deferred = 0
+        for ev in events {
+            if ev.escalatedToHard {
+                hard += 1
+            } else if ev.wasGenerating {
+                deferred += 1
+            } else {
+                soft += 1
+            }
+        }
+        return (soft, hard, deferred)
+    }
+
+    /// Compact one-line summary of a pressure event for the device-events
+    /// section. Optimised for "did the policy do the right thing?" at a
+    /// glance: tier, the two numeric inputs, and the relevant flags.
+    private func formatPressureSnapshot(_ ev: AppContainer.PressureEventSnapshot) -> String {
+        let time = DateFormatter.localizedString(from: ev.occurredAt, dateStyle: .none, timeStyle: .medium)
+        let tier = ev.escalatedToHard ? "HARD unload" : (ev.wasGenerating ? "deferred (generating)" : "SOFT trim")
+        let avail = ev.availableBytes.map { formattedBytes($0) } ?? "?"
+        let weights = ev.weightsBytes > 0 ? formattedBytes(ev.weightsBytes) : "no model"
+        var flags: [String] = []
+        if ev.inDebounceWindow { flags.append("window") }
+        if ev.belowHardFloor   { flags.append("floor") }
+        let flagStr = flags.isEmpty ? "" : " [\(flags.joined(separator: ","))]"
+        return "\(time) — \(tier) · avail=\(avail) · weights=\(weights)\(flagStr)"
+    }
+
     // MARK: - Async tasks
 
     private func scanForStubs() async {
@@ -711,10 +872,16 @@ struct DeveloperDiagnosticsView: View {
                 tokensPerSecond: lastThroughput,
                 totalDurationMs: lastDurationMs
             ),
-            memory: .init(
-                memoryWarningCount: container.memoryWarningCount,
-                lastUnloadNotification: container.lastUnloadNotification
-            ),
+            memory: {
+                let history = container.pressureHistory
+                let agg = aggregatePressure(history)
+                return .init(
+                    memoryWarningCount: container.memoryWarningCount,
+                    lastUnloadNotification: container.lastUnloadNotification,
+                    pressureTierCounts: .init(soft: agg.soft, hard: agg.hard, deferred: agg.deferred),
+                    pressureHistory: history.map { encodePressureSnapshot($0) }
+                )
+            }(),
             settings: .init(
                 temperature: s.temperature,
                 topP: s.topP,
@@ -755,7 +922,41 @@ struct DeveloperDiagnosticsView: View {
                     enabledContextLayers: layers.sorted(),
                     activePreset: preset
                 )
-            }()
+            }(),
+            huggingFace: hfSnapshot()
+        )
+    }
+
+    /// Snapshots HF token state for the diagnostic report. Never
+    /// includes the token itself — only the boolean presence, the
+    /// last successful-validation timestamp, and a coarse status
+    /// label. Status priority (top wins): live status from
+    /// `AppContainer.huggingFaceTokenStatus` > cached validation
+    /// timestamp staleness > "valid (assumed)" if a token exists but
+    /// no validation has ever been recorded.
+    private func hfSnapshot() -> DiagnosticReport.HuggingFaceSnapshot {
+        let hasToken = HFTokenStore.hasToken
+        guard hasToken else { return .none }
+        let lastVerified = HFTokenStore.lastVerification()
+        let statusLabel: String = {
+            if let live = container.huggingFaceTokenStatus {
+                switch live {
+                case .valid:        return "valid"
+                case .invalid:      return "invalid"
+                case .networkError: return "networkError"
+                }
+            }
+            // No live status yet — fall back to age check.
+            if let last = lastVerified,
+               Date().timeIntervalSince(last.at) > (7 * 24 * 60 * 60) {
+                return "stale"
+            }
+            return lastVerified == nil ? "unverified" : "valid"
+        }()
+        return DiagnosticReport.HuggingFaceSnapshot(
+            hasToken: true,
+            lastVerifiedAtUnix: lastVerified?.at.timeIntervalSince1970,
+            status: statusLabel
         )
     }
 
@@ -809,6 +1010,8 @@ struct DeveloperDiagnosticsView: View {
             return "\(t) ⚠ Memory pressure"
         case .backgroundEventReceived:
             return "\(t) ⬇ App backgrounded"
+        case .loaderCancelTimeout(let reason, let seconds):
+            return "\(t) ⏱ Cancel timeout [\(reason)] @ \(String(format: "%.1f", seconds))s"
         }
     }
 }

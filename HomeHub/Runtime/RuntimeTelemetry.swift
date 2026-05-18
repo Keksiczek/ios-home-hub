@@ -110,6 +110,20 @@ enum RuntimeTelemetryEvent: Sendable {
     /// "was the background event received?" independently of whether an
     /// unload actually happened.
     case backgroundEventReceived
+
+    /// A lifecycle event (background, memory pressure, thermal critical)
+    /// asked `RuntimeManager` to wait for an in-flight load to settle
+    /// and the wait hit its deadline before the inner task finished.
+    /// Emitted from `RuntimeManager.awaitOperation(timeout:)` so the
+    /// crash-from-watchdog story is observable in Diagnostics — repeated
+    /// timeouts mean the loader is stuck and the user should restart.
+    ///
+    /// - Parameters:
+    ///   - reason: short label of the calling site ("background", "memoryPressure",
+    ///     "thermalCritical", "unload") so multiple timeouts within a session
+    ///     can be attributed to the right lifecycle path.
+    ///   - timeoutSeconds: the deadline value the caller used.
+    case loaderCancelTimeout(reason: String, timeoutSeconds: Double)
 }
 
 // MARK: - RuntimeTelemetry

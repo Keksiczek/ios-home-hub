@@ -85,6 +85,11 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
     private var activeGenerationID: UUID?
     /// Single authoritative "busy" flag. Protected by sessionLock.
     private var isGenerating: Bool = false
+    /// When `true`, a soft memory-pressure event arrived during a live
+    /// generation. The generation epilogue (see `generate()`'s defer)
+    /// drops the `ChatSession` so the next turn observes a fresh start
+    /// and the deferred trim actually frees the scratch.
+    private var pendingSessionTrim: Bool = false
     private let sessionLock = NSLock()
 
     private struct ActiveSession: @unchecked Sendable {
@@ -380,6 +385,7 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
             activeTask = nil
             activeGenerationID = nil
             isGenerating = false
+            pendingSessionTrim = false
             // Dropping `activeSession` first releases the `ChatSession`'s
             // strong reference to the container; dropping `container`
             // second lets ARC free the model weights and KV cache buffers
@@ -767,11 +773,17 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                 // lock acquisition with the busy-flag reset to keep the
                 // critical section short.
                 let modelID = self.loadedModel?.id ?? "(none)"
+                var honourPendingTrim = false
                 self.sessionLock.withLock {
                     self.activeTask = nil
                     self.activeGenerationID = nil
                     self.isGenerating = false
                     self._lastGenerationError = nil
+                    if self.pendingSessionTrim {
+                        self.activeSession = nil
+                        self.pendingSessionTrim = false
+                        honourPendingTrim = true
+                    }
                     if tokensGenerated > 0 {
                         let prev = self.tpsAverage[modelID] ?? (mean: 0, n: 0)
                         let n = prev.n + 1
@@ -808,6 +820,10 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                     "MLX generation: backend=mlx modelID=\(modelID, privacy: .public) tokens=\(tokensGenerated, privacy: .public) durationMs=\(durationMs, privacy: .public) tps=\(String(format: "%.1f", tps), privacy: .public) safeMode=\(safeMode, privacy: .public) reason=\(String(describing: finishReason), privacy: .public)"
                 )
 
+                if honourPendingTrim {
+                    self.log.info("MLX: pendingSessionTrim honoured — ChatSession dropped after generation finish")
+                }
+
                 continuation.yield(.finished(reason: finishReason, stats: stats))
                 continuation.finish()
 
@@ -819,6 +835,10 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                     self.activeGenerationID = nil
                     self.isGenerating = false
                     self._lastGenerationError = failure
+                    if self.pendingSessionTrim {
+                        self.activeSession = nil
+                        self.pendingSessionTrim = false
+                    }
                 }
                 self.log.error("MLX generation: backend=mlx modelID=\(modelID, privacy: .public) failed kind=\(String(describing: failure.kind), privacy: .public) error=\(error.localizedDescription, privacy: .public)")
                 continuation.finish(throwing: error)
@@ -839,6 +859,71 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
     func handleMemoryPressure() async {
         self.log.warning("MLX: Memory pressure received — unloading model")
         await unload()
+    }
+
+    /// Soft tier of memory pressure: drop the prefix-reuse `ChatSession`
+    /// and stale generation-failure crumb, **keep** the model container
+    /// (weights stay resident). Frees the per-conversation KV-cache
+    /// scratch (~10–80 MB on small models, scales with context) and is
+    /// essentially free — the next turn reconstructs the session from
+    /// the persisted history. Cheap enough to call on every L1 warning.
+    ///
+    /// **Safety during streaming**: if `isGenerating` is true the active
+    /// `ChatSession` is being read by the generator task; dropping it
+    /// out from under that task is harmless for ARC (the task already
+    /// holds a strong ref) but lets the next turn observe `nil` and
+    /// rebuild — wasting the prefix-reuse benefit for the in-flight
+    /// reply. We instead set a deferred flag and let the generator's
+    /// `finally` path do the drop. Keeps the contract "trim is cheap
+    /// and never interrupts a streaming reply".
+    func trimMemoryCaches() async {
+        let (hadSession, deferred): (Bool, Bool) = sessionLock.withLock {
+            if isGenerating {
+                pendingSessionTrim = activeSession != nil
+                return (false, pendingSessionTrim)
+            }
+            let had = activeSession != nil
+            activeSession = nil
+            _lastGenerationError = nil
+            return (had, false)
+        }
+        if hadSession {
+            self.log.info("MLX: trimMemoryCaches — dropped ChatSession (KV-cache scratch)")
+        } else if deferred {
+            self.log.info("MLX: trimMemoryCaches — deferred (generation in progress); will drop on finish")
+        }
+    }
+
+    /// Snapshot the busy flag under the lock so the pressure policy can
+    /// decide whether to debounce the hard unload past the current turn.
+    var isCurrentlyGenerating: Bool {
+        sessionLock.withLock { isGenerating }
+    }
+
+    /// Real BPE token count via the active MLX tokenizer. Snapshots the
+    /// container under the session lock (so a concurrent unload can't
+    /// invalidate it mid-call), then enters the actor via `perform`
+    /// to access `context.tokenizer.encode(text:)`. Returns `nil` when
+    /// no model is loaded, a generation is in flight (would race the
+    /// container access), or the tokenizer throws on the input.
+    ///
+    /// **Why not always-on.** The encoding step is ~1ms for short
+    /// prompts but climbs to 10-20ms for multi-KB system prompts. We
+    /// keep the per-streaming-token watchdog on the cheap heuristic
+    /// and only reach for the real tokenizer when accuracy matters
+    /// (budget calibration, diagnostics).
+    func realTokenCount(of text: String) async -> Int? {
+        guard !text.isEmpty else { return 0 }
+        let snapshot = sessionLock.withLock { container }
+        guard let container = snapshot else { return nil }
+        do {
+            return try await container.perform { ctx in
+                ctx.tokenizer.encode(text: text).count
+            }
+        } catch {
+            self.log.notice("realTokenCount: tokenizer threw \(error.localizedDescription, privacy: .public) for \(text.count) chars")
+            return nil
+        }
     }
 
     func handleBackground() async {

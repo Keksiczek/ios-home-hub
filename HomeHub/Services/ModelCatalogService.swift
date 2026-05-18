@@ -527,7 +527,14 @@ enum ModelCatalog {
             recommendedFor: [.iPadMSeries],
             license: "Gemma Terms of Use",
             backend: .mlx,
-            format: .mlx
+            format: .mlx,
+            // Google's Gemma family is licence-gated even on mlx-community
+            // mirrors — the user must accept terms on huggingface.co/google
+            // and supply a token via Settings → Hugging Face before this
+            // model can be fetched. Marked so the catalog UI can render the
+            // "Vyžaduje přihlášení" badge and the downloader can fail fast
+            // with a useful message when no token is stored.
+            requiresAuth: true
         ),
 
         LocalModel(

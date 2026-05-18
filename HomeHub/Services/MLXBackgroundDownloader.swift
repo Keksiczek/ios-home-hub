@@ -301,7 +301,14 @@ final class MLXBackgroundDownloader: NSObject, ObservableObject, BackgroundDownl
                 .path
             let downloadURL = HuggingFaceAPIClient.downloadURL(repoId: repoId, filename: file.rfilename)
 
-            let task = session.downloadTask(with: downloadURL)
+            // Use a URLRequest so we can stamp the Authorization header
+            // for gated repos. URLSessionDownloadTask honours per-request
+            // headers under the background session just like a foreground
+            // session would. The header is whitespace-trimmed and may be
+            // absent — anonymous downloads of public weights work as before.
+            var fileRequest = URLRequest(url: downloadURL)
+            HuggingFaceAPIClient.applyAuthorization(to: &fileRequest)
+            let task = session.downloadTask(with: fileRequest)
             let fileTask = MLXFileTask(
                 modelID: modelID,
                 rfilename: file.rfilename,
@@ -466,10 +473,18 @@ extension MLXBackgroundDownloader: URLSessionDownloadDelegate {
         // Validate HTTP status before accepting the file.
         if let http = downloadTask.response as? HTTPURLResponse,
            !(200..<300).contains(http.statusCode) {
+            // Use the shared HF status formatter so a 401 mid-download
+            // says the same thing as a 401 at manifest time. The
+            // `isAuthRelatedFailure` heuristic in `ModelsView` matches
+            // the shared dictionary, so this also keeps the
+            // "Otevřít Nastavení" CTA reliable across both paths.
+            let userMessage = HFError.reasonForHTTPStatus(
+                http.statusCode,
+                context: fileTask.rfilename
+            )
             let err = URLError(
                 .badServerResponse,
-                userInfo: [NSLocalizedDescriptionKey:
-                    "Server returned HTTP \(http.statusCode) for \(fileTask.rfilename)"]
+                userInfo: [NSLocalizedDescriptionKey: userMessage]
             )
             log.error("MLX: HTTP \(http.statusCode) for '\(fileTask.rfilename, privacy: .public)'")
             handleFileFailure(fileTask: fileTask, error: err)

@@ -35,6 +35,17 @@ struct LocalModel: Identifiable, Codable, Equatable, Hashable {
     /// surface an "Updates available" affordance without breaking the
     /// currently installed copy.
     var installedRepoSHA: String?
+    /// `true` for models whose Hugging Face repository requires user
+    /// authentication (Google Gemma, Llama 3 8B+, anything behind a
+    /// licence-accept gate). Set in the curated catalog; user-added
+    /// MLX models default to `false` and get re-tagged at install time
+    /// if the manifest fetch returns 401/403.
+    ///
+    /// Surfaced by the catalog UI as a "Vyžaduje přihlášení" badge and
+    /// used by `ModelDownloadService` to short-circuit the manifest
+    /// fetch when no HF token is configured (showing a clearer error
+    /// than `401 Unauthorized`).
+    var requiresAuth: Bool
 
     var sizeFormatted: String {
         guard sizeBytes > 0 else { return "Unknown size" }
@@ -65,7 +76,7 @@ struct LocalModel: Identifiable, Codable, Equatable, Hashable {
         case id, displayName, family, parameterCount, quantization
         case sizeBytes, contextLength, downloadURL, sha256
         case installState, recommendedFor, license, isUserAdded
-        case backend, format, installedRepoSHA
+        case backend, format, installedRepoSHA, requiresAuth
     }
 
     init(
@@ -84,7 +95,8 @@ struct LocalModel: Identifiable, Codable, Equatable, Hashable {
         backend: ModelBackend = .mlx,
         format: ModelFormat = .mlx,
         isUserAdded: Bool = false,
-        installedRepoSHA: String? = nil
+        installedRepoSHA: String? = nil,
+        requiresAuth: Bool = false
     ) {
         self.id = id
         self.displayName = displayName
@@ -102,6 +114,7 @@ struct LocalModel: Identifiable, Codable, Equatable, Hashable {
         self.format = format
         self.isUserAdded = isUserAdded
         self.installedRepoSHA = installedRepoSHA
+        self.requiresAuth = requiresAuth
     }
 
     init(from decoder: Decoder) throws {
@@ -122,6 +135,7 @@ struct LocalModel: Identifiable, Codable, Equatable, Hashable {
         format        = try c.decodeIfPresent(ModelFormat.self, forKey: .format) ?? .gguf
         isUserAdded   = try c.decodeIfPresent(Bool.self, forKey: .isUserAdded) ?? false
         installedRepoSHA = try c.decodeIfPresent(String.self, forKey: .installedRepoSHA)
+        requiresAuth  = try c.decodeIfPresent(Bool.self, forKey: .requiresAuth) ?? false
     }
 }
 

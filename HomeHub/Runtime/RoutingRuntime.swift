@@ -138,6 +138,18 @@ final class RoutingRuntime: LocalLLMRuntime, @unchecked Sendable {
         await activeBackend?.handleMemoryPressure()
     }
 
+    func trimMemoryCaches() async {
+        await activeBackend?.trimMemoryCaches()
+    }
+
+    var isCurrentlyGenerating: Bool {
+        activeBackend?.isCurrentlyGenerating ?? false
+    }
+
+    func realTokenCount(of text: String) async -> Int? {
+        await activeBackend?.realTokenCount(of: text) ?? nil
+    }
+
     func handleBackground() async {
         await activeBackend?.handleBackground()
     }

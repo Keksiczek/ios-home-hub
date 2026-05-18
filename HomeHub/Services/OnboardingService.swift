@@ -122,8 +122,17 @@ final class OnboardingService: ObservableObject {
 
     /// Restart onboarding. Wipes personalization (but not memory) and
     /// flips the app back to the onboarding phase.
+    ///
+    /// Also clears the Hugging Face token + its verification metadata
+    /// so the new user of this install doesn't inherit the previous
+    /// account's HF identity. Chats, memory, and installed models are
+    /// deliberately preserved (the Settings footer copy promises this).
+    /// The pressure history is short-lived runtime state — it lives on
+    /// `AppContainer.pressureHistory` and is reset when the app process
+    /// next launches anyway, so we don't need to touch it here.
     func reset() async {
         await personalization.reset()
+        HFTokenStore.clearAll()
         state = .initial
         do {
             try await store.save(onboardingState: state)
