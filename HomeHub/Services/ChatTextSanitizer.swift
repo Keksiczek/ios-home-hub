@@ -106,6 +106,28 @@ enum ChatTextSanitizer {
             }
         }
 
+        // Strip *empty* tool_call / Observation envelopes. The model
+        // sometimes opens and immediately closes the tag (e.g.
+        // `<tool_call></tool_call>` or `<tool_call> </tool_call>`)
+        // when its tool-call grammar misfires; downstream parsing
+        // ignores the empty envelope but it still leaks into the
+        // bubble as visible junk. Non-empty envelopes round-trip
+        // unchanged — tool-result rendering depends on them.
+        let emptyEnvelopePatterns = [
+            "<tool_call>\\s*</tool_call>",
+            "<Observation>\\s*</Observation>"
+        ]
+        for pattern in emptyEnvelopePatterns {
+            if let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) {
+                let range = NSRange(cleaned.startIndex..., in: cleaned)
+                cleaned = regex.stringByReplacingMatches(
+                    in: cleaned,
+                    range: range,
+                    withTemplate: ""
+                )
+            }
+        }
+
         // Collapse any run of 3+ newlines to exactly two so stripped tags
         // don't leave visible gaps. A regex here is fine — the input is
         // at most a single assistant turn.

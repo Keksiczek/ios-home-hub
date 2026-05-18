@@ -1363,6 +1363,8 @@
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				INFOPLIST_KEY_BGTaskSchedulerPermittedIdentifiers = cz.keksiczek.homehub.ingest;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Home Hub uses the microphone for voice dictation when you tap the voice call control. Audio stays on this device.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Home Hub uses on-device speech recognition to transcribe your voice into chat text. Recognition runs locally; no audio leaves the device.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -1450,6 +1452,8 @@
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				INFOPLIST_KEY_BGTaskSchedulerPermittedIdentifiers = cz.keksiczek.homehub.ingest;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Home Hub uses the microphone for voice dictation when you tap the voice call control. Audio stays on this device.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Home Hub uses on-device speech recognition to transcribe your voice into chat text. Recognition runs locally; no audio leaves the device.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
