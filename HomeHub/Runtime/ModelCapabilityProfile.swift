@@ -97,6 +97,49 @@ struct ModelCapabilityProfile: Sendable, Equatable {
     /// rather than run inline (EPIC 4). Currently unused — policy is set
     /// at the call-site level regardless of model family.
     let prefersDeferredMemoryExtraction: Bool
+
+    // MARK: - Sampling defaults
+    //
+    // Family-specific recommended sampling parameters. Applied at model
+    // load time (overriding the global `AppSettings` defaults) unless
+    // the user has explicitly customised them. Vendor-recommended values
+    // dramatically reduce language drift / repetition on small models.
+
+    /// Recommended temperature for this family.
+    let recommendedTemperature: Double
+
+    /// Recommended top-p (nucleus) for this family.
+    let recommendedTopP: Double
+
+    /// Recommended top-k for this family. `0` = disabled.
+    let recommendedTopK: Int
+
+    /// Recommended min-p threshold. `0.0` = disabled.
+    let recommendedMinP: Double
+
+    /// Recommended repetition penalty. `1.0` = none, `>1` penalises.
+    /// Critical for Gemma family which has strong repetition bias.
+    let recommendedRepeatPenalty: Double
+
+    /// Window over which repetition penalty is computed.
+    let recommendedRepeatPenaltyLastN: Int
+
+    // MARK: - Instruction-following tier
+    //
+    // True for small / quantised models that lose coherence on long
+    // multi-section system prompts. When set, `PromptAssemblyService`
+    // emits a leaner chat prompt: drops the hard-rules block,
+    // verbatim conversation recall, file excerpts, and episodes;
+    // tightens memory-fact / recall caps. Persona, tone, profile,
+    // facts (capped), tool instructions, and language policy stay —
+    // they're load-bearing.
+    //
+    // Concrete targets: Gemma 3n (4B active), Phi-3 Mini (3.8B),
+    // anything <= 3B. The full L1-L7 stack is 1500-2500 tokens for
+    // these models which alone eats 30-50% of a 4k context and
+    // demonstrably correlates with the mode collapse / language
+    // bleed we saw in the field.
+    let isWeakInstructionFollower: Bool
 }
 
 // MARK: - Built-in profiles
@@ -106,6 +149,8 @@ extension ModelCapabilityProfile {
     // MARK: Per-family constants
 
     /// Llama 3.x, 3.1, 3.2, 3.3 — large context, flash-attn safe.
+    /// Sampling: Meta's official recommendation is temp 0.6 / topP 0.9
+    /// with mild repetition penalty for short-context replies.
     static let llama = ModelCapabilityProfile(
         family: "llama",
         supportsFlashAttention: true,
@@ -114,10 +159,19 @@ extension ModelCapabilityProfile {
         generationReserveTokens: 512,
         messageTokenOverhead: 7,
         supportsStructuredToolCalling: false,
-        prefersDeferredMemoryExtraction: false
+        prefersDeferredMemoryExtraction: false,
+        recommendedTemperature: 0.6,
+        recommendedTopP: 0.9,
+        recommendedTopK: 50,
+        recommendedMinP: 0.05,
+        recommendedRepeatPenalty: 1.1,
+        recommendedRepeatPenaltyLastN: 64,
+        isWeakInstructionFollower: false
     )
 
     /// Qwen 1.5, 2, 2.5 — flash-attn safe, ChatML template.
+    /// Sampling: Alibaba's official Qwen 2.5 card recommends
+    /// temp 0.7 / topK 20 / topP 0.8 / repetitionPenalty 1.05.
     static let qwen = ModelCapabilityProfile(
         family: "qwen",
         supportsFlashAttention: true,
@@ -126,10 +180,17 @@ extension ModelCapabilityProfile {
         generationReserveTokens: 512,
         messageTokenOverhead: 5,
         supportsStructuredToolCalling: false,
-        prefersDeferredMemoryExtraction: false
+        prefersDeferredMemoryExtraction: false,
+        recommendedTemperature: 0.7,
+        recommendedTopP: 0.8,
+        recommendedTopK: 20,
+        recommendedMinP: 0.0,
+        recommendedRepeatPenalty: 1.05,
+        recommendedRepeatPenaltyLastN: 64,
+        isWeakInstructionFollower: false
     )
 
-    /// Mistral 7B and Mixtral variants.
+    /// Mistral 7B and Mixtral variants. Moderate sampling pressure.
     static let mistral = ModelCapabilityProfile(
         family: "mistral",
         supportsFlashAttention: true,
@@ -138,10 +199,20 @@ extension ModelCapabilityProfile {
         generationReserveTokens: 512,
         messageTokenOverhead: 6,
         supportsStructuredToolCalling: false,
-        prefersDeferredMemoryExtraction: false
+        prefersDeferredMemoryExtraction: false,
+        recommendedTemperature: 0.7,
+        recommendedTopP: 0.9,
+        recommendedTopK: 40,
+        recommendedMinP: 0.0,
+        recommendedRepeatPenalty: 1.1,
+        recommendedRepeatPenaltyLastN: 64,
+        isWeakInstructionFollower: false
     )
 
     /// Gemma 1, 2 — verbose turn tokens consume extra context budget.
+    /// Sampling: Gemma family has strong repetition bias; raise the
+    /// repetition penalty above the cross-family default and tighten
+    /// nucleus to keep low-prob foreign-language tokens out.
     static let gemma = ModelCapabilityProfile(
         family: "gemma",
         supportsFlashAttention: true,
@@ -150,11 +221,26 @@ extension ModelCapabilityProfile {
         generationReserveTokens: 512,
         messageTokenOverhead: 6,
         supportsStructuredToolCalling: false,
-        prefersDeferredMemoryExtraction: false
+        prefersDeferredMemoryExtraction: false,
+        recommendedTemperature: 0.5,
+        recommendedTopP: 0.9,
+        recommendedTopK: 40,
+        recommendedMinP: 0.05,
+        recommendedRepeatPenalty: 1.15,
+        recommendedRepeatPenaltyLastN: 64,
+        // Gemma 2 2B variant is borderline-weak but the 9B is fine.
+        // Tag the family conservatively as not weak; users running 2B
+        // can downgrade by picking the `default` profile via manual
+        // family override (no UI for that yet — accepted trade-off).
+        isWeakInstructionFollower: false
     )
 
     /// Gemma 3n — MatFormer architecture, 8B params but ~4B active during inference.
     /// Revolutionary efficiency: larger model quality with small model VRAM footprint.
+    /// Sampling: even tighter than base Gemma because the per-layer-skipping
+    /// architecture amplifies low-prob token drift (the cross-language bleed
+    /// we observed in the field). Lower temperature + harder repetition
+    /// penalty keeps responses on-topic and on-language.
     static let gemma3n = ModelCapabilityProfile(
         family: "gemma",
         supportsFlashAttention: true,
@@ -163,11 +249,22 @@ extension ModelCapabilityProfile {
         generationReserveTokens: 512,
         messageTokenOverhead: 6,
         supportsStructuredToolCalling: false,
-        prefersDeferredMemoryExtraction: false
+        prefersDeferredMemoryExtraction: false,
+        recommendedTemperature: 0.4,
+        recommendedTopP: 0.9,
+        recommendedTopK: 40,
+        recommendedMinP: 0.05,
+        recommendedRepeatPenalty: 1.2,
+        recommendedRepeatPenaltyLastN: 128,
+        // Gemma 3n's ~4B active params + per-layer-skipping make it
+        // visibly degrade on long multi-section prompts. Lean mode on.
+        isWeakInstructionFollower: true
     )
 
     /// Phi-3 Mini/Medium and Phi-4 — flash_attn = true causes incorrect
     /// output on at least some quantised checkpoints; keep it off.
+    /// Sampling: Phi-3 docs recommend moderate temperature; the
+    /// quantised checkpoints repeat without a penalty.
     static let phi = ModelCapabilityProfile(
         family: "phi",
         supportsFlashAttention: false,
@@ -176,7 +273,18 @@ extension ModelCapabilityProfile {
         generationReserveTokens: 512,
         messageTokenOverhead: 5,
         supportsStructuredToolCalling: false,
-        prefersDeferredMemoryExtraction: false
+        prefersDeferredMemoryExtraction: false,
+        recommendedTemperature: 0.5,
+        recommendedTopP: 0.9,
+        recommendedTopK: 40,
+        recommendedMinP: 0.05,
+        recommendedRepeatPenalty: 1.1,
+        recommendedRepeatPenaltyLastN: 64,
+        // Phi-3 Mini (3.8B) is small enough that the L1-L7 stack
+        // overwhelms it. Phi-4 (14B) doesn't have the issue but we
+        // can't distinguish them by family string alone; lean mode
+        // is the safer default for everything on the phi branch.
+        isWeakInstructionFollower: true
     )
 
     /// Fallback for unknown or user-supplied families.
@@ -192,7 +300,17 @@ extension ModelCapabilityProfile {
         generationReserveTokens: 512,
         messageTokenOverhead: 5,
         supportsStructuredToolCalling: false,
-        prefersDeferredMemoryExtraction: false
+        prefersDeferredMemoryExtraction: false,
+        recommendedTemperature: 0.7,
+        recommendedTopP: 0.9,
+        recommendedTopK: 40,
+        recommendedMinP: 0.05,
+        recommendedRepeatPenalty: 1.1,
+        recommendedRepeatPenaltyLastN: 64,
+        // Unknown family → conservative: assume weak. Users running
+        // a large unknown model can override by tagging the family
+        // string correctly in the catalog.
+        isWeakInstructionFollower: true
     )
 
     // MARK: - Resolution
@@ -209,7 +327,9 @@ extension ModelCapabilityProfile {
         let baseProfile = Self.baseProfile(for: family)
         let adjustedBudget = Self.dynamicHistoryBudget(baseProfile: baseProfile)
 
-        // Return a new profile with the dynamically adjusted budget
+        // Return a new profile with the dynamically adjusted budget.
+        // Sampling fields pass through unchanged — they're a function
+        // of model family, not device tier.
         return ModelCapabilityProfile(
             family: baseProfile.family,
             supportsFlashAttention: baseProfile.supportsFlashAttention,
@@ -218,7 +338,14 @@ extension ModelCapabilityProfile {
             generationReserveTokens: baseProfile.generationReserveTokens,
             messageTokenOverhead: baseProfile.messageTokenOverhead,
             supportsStructuredToolCalling: baseProfile.supportsStructuredToolCalling,
-            prefersDeferredMemoryExtraction: baseProfile.prefersDeferredMemoryExtraction
+            prefersDeferredMemoryExtraction: baseProfile.prefersDeferredMemoryExtraction,
+            recommendedTemperature: baseProfile.recommendedTemperature,
+            recommendedTopP: baseProfile.recommendedTopP,
+            recommendedTopK: baseProfile.recommendedTopK,
+            recommendedMinP: baseProfile.recommendedMinP,
+            recommendedRepeatPenalty: baseProfile.recommendedRepeatPenalty,
+            recommendedRepeatPenaltyLastN: baseProfile.recommendedRepeatPenaltyLastN,
+            isWeakInstructionFollower: baseProfile.isWeakInstructionFollower
         )
     }
 

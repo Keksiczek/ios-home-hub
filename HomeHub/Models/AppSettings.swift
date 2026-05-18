@@ -87,10 +87,50 @@ struct AppSettings: Codable, Equatable {
         performanceProfile: .balanced
     )
 
-    /// Tools registered in `SkillManager` by default. Kept in sync with
-    /// `SkillManager.init` — order doesn't matter; the set is an allow-list.
+    /// Sampling-knob factory defaults. Field-by-field equality against
+    /// these constants is how `PromptMode.defaultParameters` detects
+    /// "user hasn't touched this slider yet" and prefers the loaded
+    /// model's family-recommended value instead.
+    ///
+    /// Keep these values in sync with the literal numbers above in
+    /// `AppSettings.default` — they're intentionally duplicated rather
+    /// than computed from `.default` so a future Settings overhaul
+    /// can decouple the two without breaking the comparison.
+    struct FactorySampling: Equatable, Sendable {
+        let temperature: Double = 0.7
+        let topP: Double = 0.9
+        let topK: Int = 40
+        let minP: Double = 0.05
+        let repeatPenalty: Double = 1.1
+        let repeatPenaltyLastN: Int = 64
+    }
+    static let factorySampling = FactorySampling()
+
+    /// Tools registered in `SkillManager` by default — i.e. the subset
+    /// that's ON at first launch. WebSearch is deliberately omitted
+    /// (privacy + network usage; opt-in only).
+    ///
+    /// This list is NOT the source of truth for what's visible in
+    /// Settings — that's `allKnownTools` below. Decoupling the two
+    /// lets the Settings UI show WebSearch (so the user can flip it
+    /// on) while still keeping it off until explicitly chosen.
     static let defaultEnabledTools: Set<String> = [
         "Calculator", "Calendar", "HomeKit", "Reminders", "DeviceInfo"
+    ]
+
+    /// Every tool the app knows how to run, regardless of whether
+    /// it's on by default. Single source of truth for the toggle
+    /// list in Settings. Must stay in sync with `SkillManager.init`
+    /// (default-registered skills) AND `AppContainer.registerWebSearchIfEnabled`
+    /// (the conditional ones).
+    ///
+    /// Bug-fix note: before this list existed, Settings iterated over
+    /// `defaultEnabledTools`, which omitted WebSearch — leaving users
+    /// no UI path to enable it. The model then correctly reported
+    /// "I can't search the web" because the skill was never
+    /// registered in `SkillManager`.
+    static let allKnownTools: Set<String> = [
+        "Calculator", "Calendar", "HomeKit", "Reminders", "DeviceInfo", "WebSearch"
     ]
 
     // MARK: - Codable (migration-safe)

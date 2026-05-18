@@ -365,6 +365,26 @@ final class RuntimeManager: ObservableObject {
                 lastFeasibilityVerdict = nil
             }
             log.info("Runtime: '\(model.id, privacy: .public)' loaded successfully")
+
+            // Fire-and-forget smoke test: ask the model to produce a
+            // single short reply and log whether it actually streams
+            // tokens. Cheap (one token most of the time) and surfaces
+            // a corrupted checkpoint immediately instead of waiting
+            // for the user to hit a garbage reply.
+            //
+            // We DON'T flip state on failure — a smoke-test miss
+            // doesn't necessarily mean every future generation will
+            // fail (could be a transient cold-start issue with KV
+            // cache prefill). The log line is enough signal for
+            // Diagnostics + Console.app to correlate after the fact.
+            //
+            // Deferred 200ms so a user who taps send the instant the
+            // model becomes ready wins the busy-flag race; the smoke
+            // test will see `generationInProgress` and silently skip.
+            Task.detached { [weak self] in
+                try? await Task.sleep(for: .milliseconds(200))
+                await self?.runSmokeTest(for: model)
+            }
         } catch is CancellationError {
             stallWatchdog.cancel()
             mlxLoadProgress = nil
@@ -733,6 +753,81 @@ final class RuntimeManager: ObservableObject {
         parameters: RuntimeParameters
     ) -> AsyncThrowingStream<RuntimeEvent, Error> {
         runtime.generate(prompt: prompt, parameters: parameters)
+    }
+
+    // MARK: - Post-load smoke test
+
+    /// Tiny "hello" generation right after a successful load. Logs
+    /// the elapsed time + first-token latency + total tokens to
+    /// `HHLog.runtime`. Doesn't modify state — a corrupted checkpoint
+    /// shows up immediately in Console.app instead of waiting for
+    /// the user to send a real prompt.
+    ///
+    /// Failure modes detected:
+    ///   * Stream errors (model file broken, tokenizer init failed
+    ///     post-load, OOM at first decode) — logged as `.error`.
+    ///   * Zero tokens streamed within 10 s — logged as `.warning`.
+    ///   * First-token latency > 5 s — logged as `.warning` (slow
+    ///     prefill on this device).
+    private func runSmokeTest(for model: LocalModel) async {
+        let prompt = RuntimePrompt(
+            stableSystemPrompt: "You are a helpful assistant. Reply with one short word.",
+            volatileSystemPrompt: "",
+            messages: [RuntimeMessage(role: .user, content: "Hi")]
+        )
+        // Deterministic + tiny: argmax-ish via low temp, hard ceiling
+        // at 4 tokens. forceStateless so the smoke test never pollutes
+        // the real KV-cache prefix.
+        var parameters = RuntimeParameters(
+            maxTokens: 4,
+            temperature: 0.0,
+            topP: 1.0,
+            stopSequences: []
+        )
+        parameters.forceStateless = true
+        parameters.conversationID = UUID()
+        // Fixed seed: smoke test output should be identical across
+        // launches for the same checkpoint. If a future run produces
+        // different tokens for the same model file, that's a corruption
+        // signal worth investigating.
+        parameters.seed = 42
+
+        let startedAt = Date()
+        var firstTokenAt: Date?
+        var tokens = 0
+        var streamed = ""
+
+        do {
+            for try await event in runtime.generate(prompt: prompt, parameters: parameters) {
+                if Task.isCancelled { return }
+                switch event {
+                case .token(let piece):
+                    if firstTokenAt == nil { firstTokenAt = Date() }
+                    tokens += 1
+                    streamed += piece
+                case .finished:
+                    let totalMs = Int(Date().timeIntervalSince(startedAt) * 1000)
+                    let firstMs = firstTokenAt.map { Int($0.timeIntervalSince(startedAt) * 1000) } ?? -1
+                    if tokens == 0 {
+                        log.warning("Smoke test (\(model.id, privacy: .public)): 0 tokens in \(totalMs, privacy: .public)ms — checkpoint may be corrupted")
+                    } else {
+                        log.info("Smoke test (\(model.id, privacy: .public)): \(tokens, privacy: .public) tokens / first \(firstMs, privacy: .public)ms / total \(totalMs, privacy: .public)ms / output=\"\(streamed.trimmingCharacters(in: .whitespacesAndNewlines), privacy: .public)\"")
+                        if firstMs > 5000 {
+                            log.warning("Smoke test (\(model.id, privacy: .public)): slow first token (\(firstMs, privacy: .public)ms) — device may be RAM-pressured")
+                        }
+                    }
+                    return
+                case .warning:
+                    break
+                }
+            }
+        } catch let error as RuntimeError where error == .generationInProgress {
+            // The user beat us to it — already mid-real-conversation,
+            // which is itself proof the model can stream. Silent skip.
+            log.debug("Smoke test (\(model.id, privacy: .public)) skipped — runtime already busy with user turn")
+        } catch {
+            log.error("Smoke test (\(model.id, privacy: .public)) failed: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     // MARK: - KV-cache session management

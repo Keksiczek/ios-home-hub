@@ -514,14 +514,18 @@ enum ModelCatalog {
         // MARK: iPad M-series only (>3 GB — exceeds iPhone RAM)
 
         LocalModel(
-            id: "mlx-gemma-3n-8b-it",
-            displayName: "Gemma 3n 8B (MLX) - Efficient",
+            id: "mlx-gemma-3n-e4b-it",
+            displayName: "Gemma 3n E4B (MLX) - MatFormer",
             family: "Gemma3n",
             parameterCount: "8B (4B active)",
             quantization: "4-bit",
             sizeBytes: 4_800_000_000,           // HF: ~4.5 GB
             contextLength: 4096,                // MatFormer architecture: 8B params but 4B active during inference
-            downloadURL: URL(static: "https://huggingface.co/mlx-community/gemma-3-8b-it-4bit"),
+            // Bug-fix: previous URL pointed at `gemma-3-8b-it-4bit`
+            // (regular Gemma 3, NOT 3n). Gemma 3n is the MatFormer
+            // architecture variant; the user added it manually
+            // because the catalog entry was wrong.
+            downloadURL: URL(static: "https://huggingface.co/mlx-community/gemma-3n-E4B-it-4bit"),
             sha256: nil,
             installState: .notInstalled,
             recommendedFor: [.iPadMSeries],

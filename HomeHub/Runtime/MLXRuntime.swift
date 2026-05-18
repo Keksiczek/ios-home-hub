@@ -99,7 +99,21 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
         /// tokenised against a different vocab.
         let modelID: String
         let conversationID: UUID
-        let systemPrompt: String
+        /// Stable portion of the system prompt — persona, profile, tools,
+        /// language policy. Everything that doesn't churn turn-by-turn.
+        /// The cache reuse check compares this only; the volatile half
+        /// (date/time, conversation recall, semantic facts) is injected
+        /// into the current user turn instead, so the cached prefix
+        /// stays valid across turns where only volatile context changed.
+        ///
+        /// Before this split, `existing.systemPrompt != prompt.systemPrompt`
+        /// compared the concatenated whole — and because the volatile
+        /// block carries the current minute/second, the cache was
+        /// discarded on practically every turn. End result: full
+        /// re-prefill of system + history on every send, which on a
+        /// 1500-token system prompt costs 200-500 ms before the first
+        /// token streams.
+        let stableSystemPrompt: String
         /// Canonical history snapshot: messages *excluding* the in-flight
         /// user turn. Used as both the seed history for `ChatSession` AND
         /// the comparison key for "is the cached prefix still valid?".
@@ -468,30 +482,35 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                     return
                 }
 
-                let needsWarning: Bool = self.sessionLock.withLock {
-                    if !self.hasLoggedSamplerWarnings {
-                        self.hasLoggedSamplerWarnings = true
-                        return true
-                    }
-                    return false
-                }
-
-                if needsWarning {
-                    if parameters.topK != 0 {
-                        self.log.warning("MLX: topK (\(parameters.topK, privacy: .public)) not supported by current GenerateParameters, skipping")
-                    }
-                    if parameters.minP != 0 {
-                        self.log.warning("MLX: minP (\(parameters.minP, privacy: .public)) not supported by current GenerateParameters, skipping")
-                    }
-                    if parameters.repeatPenalty != 1.0 {
-                        self.log.warning("MLX: repeatPenalty (\(parameters.repeatPenalty, privacy: .public)) not supported by current GenerateParameters, skipping")
-                    }
-                }
+                // Bug fix: previous code dropped topK / minP /
+                // repeatPenalty with a warning ("not supported by
+                // current GenerateParameters"). The current
+                // mlx-swift-lm GenerateParameters DOES support all of
+                // these knobs — the warning was stale. With only
+                // temperature + topP wired through, Gemma 3n and
+                // similar small models had no repetition pressure
+                // and drifted into other languages (Czech replies
+                // bleeding Russian / Spanish tokens — classic
+                // small-model symptom of missing repetition penalty
+                // + over-permissive sampling).
+                //
+                // `repetitionPenalty` is an Optional<Float>: a value
+                // of exactly 1.0 means "no penalty" and we pass nil
+                // so the sampler short-circuits the bookkeeping.
+                // `repetitionContextSize` mirrors the legacy llama.cpp
+                // `repeat_last_n` setting.
+                let repetitionPenalty: Float? = parameters.repeatPenalty > 1.0
+                    ? Float(parameters.repeatPenalty)
+                    : nil
 
                 let generateParameters = GenerateParameters(
                     maxTokens: parameters.maxTokens,
                     temperature: Float(parameters.temperature),
-                    topP: Float(parameters.topP)
+                    topP: Float(parameters.topP),
+                    topK: parameters.topK,
+                    minP: Float(parameters.minP),
+                    repetitionPenalty: repetitionPenalty,
+                    repetitionContextSize: max(0, parameters.repeatPenaltyLastN)
                 )
 
                 let start = Date()
@@ -523,8 +542,13 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                                 discardReason = "different modelID (\(existing.modelID) → \(currentModelID))"
                             } else if existing.conversationID != conversationID {
                                 discardReason = "different conversationID"
-                            } else if existing.systemPrompt != prompt.systemPrompt {
-                                discardReason = "different systemPrompt"
+                            } else if existing.stableSystemPrompt != prompt.stableSystemPrompt {
+                                // Stable-only comparison: volatile churn
+                                // (time, recall, facts) lives in the
+                                // current user turn instead of the
+                                // ChatSession instructions, so it doesn't
+                                // invalidate the cached prefix.
+                                discardReason = "different stable systemPrompt"
                             } else if !MLXChatInput.cachedPrefixMatches(
                                 cached: existing.messages,
                                 incoming: canonicalHistory
@@ -549,9 +573,18 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                         self.log.info("MLX: KV cache discarded — mismatch (reason: \(reason, privacy: .public)) for \(conversationID, privacy: .public)")
 
                         let history: [Chat.Message] = canonicalHistory.map(MLXChatInput.toNative)
+                        // Construct the ChatSession with the STABLE
+                        // system prompt only. The volatile half is
+                        // injected into the current user turn below
+                        // (see `lastTurn` / `userTurnWithVolatile`),
+                        // so it reaches the model on every turn
+                        // without invalidating the cached prefix.
+                        let instructions = prompt.stableSystemPrompt.isEmpty
+                            ? (prompt.systemPrompt.isEmpty ? nil : prompt.systemPrompt)
+                            : prompt.stableSystemPrompt
                         let newSession = ChatSession(
                             nativeContainer,
-                            instructions: prompt.systemPrompt.isEmpty ? nil : prompt.systemPrompt,
+                            instructions: instructions,
                             history: history
                         )
 
@@ -564,7 +597,7 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                             self.activeSession = ActiveSession(
                                 modelID: currentModelID,
                                 conversationID: conversationID,
-                                systemPrompt: prompt.systemPrompt,
+                                stableSystemPrompt: prompt.stableSystemPrompt,
                                 messages: canonicalHistory,
                                 session: newSession
                             )
@@ -574,9 +607,49 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
 
                     let lastTurn = MLXChatInput.lastTurn(from: prompt)
 
+                    // Volatile context is prepended to the current
+                    // user turn so the model sees up-to-date date /
+                    // time / recall / facts on every send while the
+                    // cached prefix (stable instructions + earlier
+                    // history) stays valid. Delimited so the model
+                    // can distinguish the contextual preamble from
+                    // the actual question.
+                    //
+                    // Only applied when the turn is from the user —
+                    // tool-followup turns roleplay an assistant
+                    // message containing the action invocation and
+                    // we don't want to graft system context onto
+                    // those.
+                    let injectedContent: String
+                    if !prompt.volatileSystemPrompt.isEmpty, lastTurn.role == .user {
+                        injectedContent = """
+                            <context>
+                            \(prompt.volatileSystemPrompt)
+                            </context>
+
+                            \(lastTurn.content)
+                            """
+                    } else {
+                        injectedContent = lastTurn.content
+                    }
+
                     session.generateParameters = generateParameters
+
+                    // Apply caller-supplied seed if set. Production
+                    // turns leave `parameters.seed == nil` and the
+                    // global RNG advances freely; debug / reproducer
+                    // turns can pin a value via
+                    // `RuntimeParameters.seed` to make sampling
+                    // bit-identical across runs. `MLXRandom.seed`
+                    // mutates global state on the MLX side — fine
+                    // because the actor's session lock serialises
+                    // generations.
+                    if let seed = parameters.seed {
+                        MLXRandom.seed(seed)
+                    }
+
                     let responseStream = session.streamResponse(
-                        to: lastTurn.content,
+                        to: injectedContent,
                         role: lastTurn.role,
                         images: [],
                         videos: []
@@ -916,13 +989,13 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
         guard !text.isEmpty else { return 0 }
         let snapshot = sessionLock.withLock { container }
         guard let container = snapshot else { return nil }
-        do {
-            return try await container.perform { ctx in
-                ctx.tokenizer.encode(text: text).count
-            }
-        } catch {
-            self.log.notice("realTokenCount: tokenizer threw \(error.localizedDescription, privacy: .public) for \(text.count) chars")
-            return nil
+        // `container.perform { ... }` propagates `rethrows`, and
+        // `ctx.tokenizer.encode(text:)` is non-throwing — keep the
+        // call non-throwing too so the compiler doesn't flag the
+        // wrapping `do/catch` as dead. If the upstream encode ever
+        // gains throwing semantics, re-add the catch.
+        return await container.perform { ctx in
+            ctx.tokenizer.encode(text: text).count
         }
     }
 

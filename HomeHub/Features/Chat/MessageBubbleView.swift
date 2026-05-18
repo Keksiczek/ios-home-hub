@@ -24,11 +24,45 @@ struct MessageBubbleView: View {
     var isPrefill: Bool = false
 
     /// Content with chat-template control tokens (`<start_of_turn>`,
-    /// `<|eot_id|>`, `</s>` …) removed. Applied at render time so the raw
-    /// string in storage stays lossless for debugging, but the user never
-    /// sees leaked control markers in their bubbles.
+    /// `<|eot_id|>`, `</s>` …) AND tool-call envelopes removed. The
+    /// envelope removal is presentation-only; storage keeps the raw
+    /// `<tool_call>…</tool_call>` so the agentic loop's parser still
+    /// finds it. Without this strip the bubble briefly showed the
+    /// raw JSON during streaming, which read as garbage to the user.
     private var displayContent: String {
-        ChatTextSanitizer.strip(message.content)
+        Self.stripToolEnvelopes(from: ChatTextSanitizer.strip(message.content))
+    }
+
+    /// Detected tool call inside the message, used to render a compact
+    /// "Running Calculator…" footer chip inside the bubble while the
+    /// agentic loop is fetching the observation. Returns `nil` for
+    /// plain messages.
+    private var detectedToolCall: ToolCallEnvelope? {
+        ToolCallEnvelope.parse(from: message.content)
+    }
+
+    /// Removes every tool-call envelope variant from `text`. Mirrors
+    /// the wrapper list `ToolCallEnvelope.parse` understands so the
+    /// display always agrees with what the parser saw.
+    private static func stripToolEnvelopes(from text: String) -> String {
+        let patterns = [
+            "<tool_call>[\\s\\S]*?</tool_call>",
+            "<function_call>[\\s\\S]*?</function_call>",
+            "<function>[\\s\\S]*?</function>",
+            "<tool>[\\s\\S]*?</tool>",
+            "\\[TOOL_CALLS\\][\\s\\S]*?\\[/TOOL_CALLS\\]",
+            "<\\|python_tag\\|>[\\s\\S]*?(<\\|eom_id\\|>|<\\|eot_id\\|>|$)"
+        ]
+        var cleaned = text
+        for pattern in patterns {
+            guard let regex = try? NSRegularExpression(
+                pattern: pattern,
+                options: [.caseInsensitive, .dotMatchesLineSeparators]
+            ) else { continue }
+            let range = NSRange(cleaned.startIndex..., in: cleaned)
+            cleaned = regex.stringByReplacingMatches(in: cleaned, range: range, withTemplate: "")
+        }
+        return cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Tool observations are smuggled in as user-role messages (so the
@@ -57,7 +91,7 @@ struct MessageBubbleView: View {
             VStack(alignment: message.role == .user ? .trailing : .leading, spacing: 4) {
                 header
 
-                if displayContent.isEmpty && message.status == .streaming {
+                if displayContent.isEmpty && message.status == .streaming && detectedToolCall == nil {
                     if isPrefill {
                         PrefillIndicator()
                     } else {
@@ -96,6 +130,29 @@ struct MessageBubbleView: View {
                         .font(HHTheme.body)
                         .foregroundStyle(textColor)
                         .textSelection(.enabled)
+                }
+
+                // Compact tool-call chip rendered alongside the
+                // sanitized prose. Replaces the raw JSON envelope the
+                // user would otherwise see while the agentic loop is
+                // fetching the observation. The chip stays visible on
+                // completed assistant messages too — that way an
+                // exported transcript still hints "this turn called a
+                // tool" without surfacing the JSON.
+                if let call = detectedToolCall, message.role == .assistant {
+                    HStack(spacing: 6) {
+                        Image(systemName: "wrench.and.screwdriver.fill")
+                            .imageScale(.small)
+                            .foregroundStyle(HHTheme.accent)
+                        Text(message.status == .streaming
+                             ? "Calling \(call.name)…"
+                             : "Called \(call.name)")
+                            .font(HHTheme.caption.weight(.semibold))
+                            .foregroundStyle(HHTheme.textSecondary)
+                    }
+                    .padding(.horizontal, HHTheme.spaceS)
+                    .padding(.vertical, 4)
+                    .background(HHTheme.accent.opacity(0.12), in: Capsule())
                 }
 
                 if message.status == .failed {

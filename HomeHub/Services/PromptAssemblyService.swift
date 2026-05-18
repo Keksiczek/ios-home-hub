@@ -57,7 +57,11 @@ final class PromptAssemblyService {
                 return (assembleSystemPrompt(for: mode, from: package), "")
             }
         }()
-        let system = stableSystem + (volatileSystem.isEmpty ? "" : "\n\n" + volatileSystem)
+        // (Previously `let system = stable + volatile` was built here
+        // and passed into `RuntimePrompt(systemPrompt:)`. Since the
+        // runtime now reads `stableSystemPrompt` / `volatileSystemPrompt`
+        // separately for cache-aware assembly, the merged string is
+        // dead. Removed to silence the warning.)
 
         let profile = package.modelCapabilityProfile ?? .default
         let budgeter = PromptTokenBudgeter(profile: profile)
@@ -118,11 +122,59 @@ final class PromptAssemblyService {
         )
         reporter?.publish(report)
 
-        return RuntimePrompt(
+        let runtimePrompt = RuntimePrompt(
             stableSystemPrompt: stableSystem,
             volatileSystemPrompt: volatileSystem,
             messages: runtimeMessages
         )
+
+        // Diagnostic log: emit a compact snapshot of what's actually
+        // going to the runtime. Debug-level so it's off by default in
+        // Release but trivial to switch on in Console.app when chasing
+        // a quality regression ("did the model see X?" / "is the
+        // language block actually present?"). Counts of layers + first
+        // / last 120 chars of each section are enough to spot most
+        // wiring bugs without firehosing Console with a 2 KB blob per
+        // turn.
+        Self.logPromptSnapshot(
+            mode: mode,
+            family: profile.family,
+            stable: stableSystem,
+            volatile: volatileSystem,
+            messageCount: runtimeMessages.count,
+            userInput: package.userInput,
+            isWeak: package.modelCapabilityProfile?.isWeakInstructionFollower ?? false
+        )
+
+        return runtimePrompt
+    }
+
+    /// Compact prompt snapshot for `HHLog.runtime` at debug level.
+    /// Truncates each chunk to ~120 chars on both ends; the goal is
+    /// "is the structure right?", not "show me every token".
+    private static func logPromptSnapshot(
+        mode: PromptMode,
+        family: String,
+        stable: String,
+        volatile: String,
+        messageCount: Int,
+        userInput: String,
+        isWeak: Bool
+    ) {
+        func sketch(_ s: String, limit: Int = 120) -> String {
+            let trimmed = s.replacingOccurrences(of: "\n", with: " ⏎ ")
+            if trimmed.count <= limit * 2 { return trimmed }
+            let head = trimmed.prefix(limit)
+            let tail = trimmed.suffix(limit)
+            return "\(head) … \(tail)"
+        }
+        HHLog.runtime.debug("""
+            Prompt[\(mode.rawValue, privacy: .public)] family=\(family, privacy: .public) weak=\(isWeak, privacy: .public) \
+            stable=\(stable.count, privacy: .public)c volatile=\(volatile.count, privacy: .public)c msgs=\(messageCount, privacy: .public) \
+            stable=\"\(sketch(stable), privacy: .public)\" \
+            volatile=\"\(sketch(volatile), privacy: .public)\" \
+            user=\"\(sketch(userInput, limit: 80), privacy: .public)\"
+            """)
     }
 
     // MARK: - Mode dispatch
@@ -187,11 +239,28 @@ final class PromptAssemblyService {
         var stableChunks: [String] = []
         var volatileChunks: [String] = []
 
+        // Weak instruction-follower (Gemma 3n, Phi-3 Mini, unknown
+        // small models): emit a leaner prompt. Long multi-section
+        // system prompts demonstrably correlate with mode collapse
+        // and language bleed on these models — we drop:
+        //   * hard-rules block (saves ~250 tokens; rules still in persona)
+        //   * verbatim conversation recall (summary-only is enough)
+        //   * file excerpts (rarely useful for small models, big cost)
+        //   * episodes (summary already captures gist)
+        //   * tightened fact / recall caps applied below
+        // Persona, tone, profile, facts (capped), context rail,
+        // tool instructions, language policy, and privacy guardrail
+        // stay — they're load-bearing for correctness.
+        let isWeak = package.modelCapabilityProfile?.isWeakInstructionFollower ?? false
+
         // L0a. Assistant persona base
         stableChunks.append(package.assistant.systemPromptBase)
 
         // L0a'. Hard rules (STABLE) — same wording every turn.
-        if package.settings.guardrailsConfig.hardRulesEnabled {
+        // Skipped for weak models: the persona already covers the
+        // essentials and the long enumerated list seems to teach
+        // weak models to enumerate everything in replies.
+        if package.settings.guardrailsConfig.hardRulesEnabled && !isWeak {
             stableChunks.append("""
             Hard rules (follow ALL of them):
             1. Output plain Markdown only. NEVER emit chat-template control \
@@ -255,25 +324,42 @@ final class PromptAssemblyService {
         }
 
         // L0.6: Verbatim recall of specific earlier turns (VOLATILE).
-        if !package.conversationRecall.isEmpty {
+        // Skipped for weak models — the summary at L0.5 covers the
+        // same information without the per-turn quoting overhead,
+        // and the verbatim block is the single largest source of
+        // prompt-injection-style confusion we've seen on Gemma 3n
+        // ("Štěpánu, vecera je svá" — model echoing fragments from
+        // recalled turns instead of answering the current question).
+        if !package.conversationRecall.isEmpty && !isWeak {
+            // Hard cap to top 3 entries even for strong models —
+            // anything beyond that is rarely on-topic and just
+            // burns context budget.
+            let recall = package.conversationRecall.prefix(3)
             volatileChunks.append("""
             Relevant earlier turns from this conversation (recalled by similarity to the current question — quote verbatim if asked, otherwise treat as background context):
-            \(package.conversationRecall.joined(separator: "\n\n"))
+            \(recall.joined(separator: "\n\n"))
             """)
         }
 
         // L1. Durable facts (VOLATILE — semantic retrieval per turn).
+        // Cap is tighter for weak models so the prompt stays under
+        // the ~600-token "lean" target.
         if package.settings.guardrailsConfig.factsEnabled {
-            appendFacts(from: package, to: &volatileChunks)
+            appendFacts(from: package, to: &volatileChunks, limit: isWeak ? 3 : 8)
         }
 
         // L2. Episodic summaries (VOLATILE).
-        if package.settings.guardrailsConfig.episodesEnabled {
+        // Dropped entirely for weak models — episodes are
+        // higher-level than facts and weak models can't reliably
+        // disambiguate them from the current turn.
+        if package.settings.guardrailsConfig.episodesEnabled && !isWeak {
             appendEpisodes(from: package, to: &volatileChunks)
         }
 
         // L3. Source excerpts (VOLATILE — depends on attached files).
-        if package.settings.guardrailsConfig.fileExcerptsEnabled {
+        // Big block. Weak models can't follow "use this excerpt only
+        // when answering" instruction reliably, so we drop it.
+        if package.settings.guardrailsConfig.fileExcerptsEnabled && !isWeak {
             appendFileExcerpts(from: package, to: &volatileChunks)
         }
 

@@ -320,6 +320,18 @@ struct RuntimeParameters: Sendable {
     /// for experiments.
     var forceStateless: Bool = false
 
+    /// Optional RNG seed for reproducible sampling. When set, the
+    /// runtime calls `MLXRandom.seed(_)` before the generation so two
+    /// runs of the same prompt + sampling parameters produce identical
+    /// token streams. `nil` (default) preserves the current behaviour
+    /// where every run draws from a fresh global RNG state.
+    ///
+    /// Primary use case: debugging quality regressions. With a fixed
+    /// seed the user can report "ask X with seed 42 and you'll see
+    /// the model emit Y" and the bug becomes reproducible on another
+    /// device. Production turns leave it nil.
+    var seed: UInt64? = nil
+
     static let balanced = RuntimeParameters(
         maxTokens: 768,
         temperature: 0.7,
