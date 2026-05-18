@@ -46,7 +46,18 @@ final class PromptAssemblyService {
 
     func build(from package: PromptContextPackage) -> RuntimePrompt {
         let mode = package.promptMode
-        let system = assembleSystemPrompt(for: mode, from: package)
+        // Split-aware assembly. Chat mode returns (stable, volatile);
+        // other modes are single-shot — no KV-cache reuse possible
+        // anyway — so their whole prompt is treated as stable.
+        let (stableSystem, volatileSystem): (String, String) = {
+            switch mode {
+            case .chat:
+                return assembleChatPromptSplit(from: package)
+            case .toolFollowup, .summarization, .memoryExtraction:
+                return (assembleSystemPrompt(for: mode, from: package), "")
+            }
+        }()
+        let system = stableSystem + (volatileSystem.isEmpty ? "" : "\n\n" + volatileSystem)
 
         let profile = package.modelCapabilityProfile ?? .default
         let budgeter = PromptTokenBudgeter(profile: profile)
@@ -75,13 +86,31 @@ final class PromptAssemblyService {
         }
         // Use the accurate (NLTokenizer-backed) estimator for the one-shot
         // per-turn counts; the hot streaming path still uses the fast heuristic.
+        //
+        // Note on summary + recall accounting: their token cost is
+        // already inside `system` (both are appended to the assembled
+        // system prompt before we measure it). Splitting them out as
+        // separate sections would double-count toward
+        // `totalPromptTokens`. Diagnostics that need the per-layer
+        // breakdown can re-estimate `package.conversationSummary` and
+        // `package.conversationRecall` directly; we keep this report
+        // additive-correct so callers can trust the total.
+        // Split system into "stable" (cacheable across turns) and
+        // "volatile" (per-turn churn) for the diagnostic report. The
+        // numbers still add up to the same total — we just break out
+        // the cacheable fraction so the Diagnostics view can show
+        // "62 % of system prompt is reusable across turns" and the
+        // user can reason about why some turns feel faster than others.
+        let stableTokens = budgeter.tokensAccurate(in: stableSystem)
+        let volatileTokens = volatileSystem.isEmpty ? 0 : budgeter.tokensAccurate(in: volatileSystem)
         let report = PromptBudgetReport(
             family: profile.family,
             mode: mode,
             sections: [
-                .init(name: "system",     tokens: budgeter.tokensAccurate(in: system)),
-                .init(name: "history",    tokens: historyTokens),
-                .init(name: "user_input", tokens: budgeter.tokensAccurate(in: package.userInput))
+                .init(name: "system.stable",   tokens: stableTokens),
+                .init(name: "system.volatile", tokens: volatileTokens),
+                .init(name: "history",         tokens: historyTokens),
+                .init(name: "user_input",      tokens: budgeter.tokensAccurate(in: package.userInput))
             ],
             historyMessagesKept: trimResult.kept.count,
             historyMessagesDropped: trimResult.dropped,
@@ -89,7 +118,11 @@ final class PromptAssemblyService {
         )
         reporter?.publish(report)
 
-        return RuntimePrompt(systemPrompt: system, messages: runtimeMessages)
+        return RuntimePrompt(
+            stableSystemPrompt: stableSystem,
+            volatileSystemPrompt: volatileSystem,
+            messages: runtimeMessages
+        )
     }
 
     // MARK: - Mode dispatch
@@ -108,22 +141,58 @@ final class PromptAssemblyService {
 
     // MARK: - Chat (full 7-layer assembly)
 
+    /// Backwards-compat wrapper. Joins the split assembly into a
+    /// single string for callers that don't yet consume the split
+    /// form. New code should prefer `assembleChatPromptSplit` so the
+    /// stable prefix can be cache-pinned downstream.
     private func assembleChatPrompt(from package: PromptContextPackage) -> String {
-        var chunks: [String] = []
+        let (stable, volatile) = assembleChatPromptSplit(from: package)
+        if volatile.isEmpty { return stable }
+        if stable.isEmpty { return volatile }
+        return stable + "\n\n" + volatile
+    }
+
+    /// Builds the chat system prompt as `(stable, volatile)` so the
+    /// runtime / diagnostics can reason about which fraction is
+    /// reusable across turns.
+    ///
+    /// **Stable** blocks (identical across every turn of a session,
+    /// independent of the user's current question):
+    ///   - L0a persona, hard rules
+    ///   - L0b tone + style (depends only on user.preferredResponseStyle)
+    ///   - L0c user profile
+    ///   - L0d user memory block
+    ///   - L0e language policy (extracted from contextRail)
+    ///   - Privacy guardrail
+    ///
+    /// **Volatile** blocks (recomputed every turn — semantic retrieval,
+    /// time-of-day, dynamic skill set):
+    ///   - Date/time + location (from contextRail)
+    ///   - Tool policy (depends on per-turn `availableTools`)
+    ///   - L0.5 conversation summary
+    ///   - L0.6 conversation recall
+    ///   - L1 facts
+    ///   - L2 episodes
+    ///   - L3 file excerpts
+    ///   - L4 skill instructions
+    ///
+    /// The boundary is conservative — anything that COULD vary on a
+    /// per-turn basis goes into volatile, even if in practice it's
+    /// usually stable (e.g. `availableTools`). Better to miss a
+    /// potential cache hit than to invalidate the cache because a
+    /// "stable" block changed unexpectedly.
+    private func assembleChatPromptSplit(
+        from package: PromptContextPackage
+    ) -> (stable: String, volatile: String) {
+        var stableChunks: [String] = []
+        var volatileChunks: [String] = []
 
         // L0a. Assistant persona base
-        chunks.append(package.assistant.systemPromptBase)
+        stableChunks.append(package.assistant.systemPromptBase)
 
-        // L0a'. Hard rules (if enabled). Placed RIGHT after the persona so they sit at the
-        // top of the context where small models pay attention. These are the
-        // instructions that tackle the "weird characters / hallucinations /
-        // bad formatting" issues most directly:
-        //   1. Plain Markdown only — no chat-template tokens.
-        //   2. Don't invent facts; admit uncertainty.
-        //   3. One coherent answer, no echo of the user's question.
-        //   4. Stop after answering — don't keep talking to yourself.
+        // L0a'. Hard rules (STABLE) — same wording every turn.
         if package.settings.guardrailsConfig.hardRulesEnabled {
-            chunks.append("""
+            stableChunks.append("""
             Hard rules (follow ALL of them):
             1. Output plain Markdown only. NEVER emit chat-template control \
             tokens (e.g. <|im_start|>, <|eot_id|>, <start_of_turn>, [INST], </s>) \
@@ -143,72 +212,88 @@ final class PromptAssemblyService {
             """)
         }
 
-        // L0b. Tone + style hints
-        chunks.append("""
+        // L0b. Tone + style hints (STABLE — only changes when the user
+        // edits their `preferredResponseStyle` in Settings).
+        stableChunks.append("""
         Tone: \(package.assistant.tone.label.lowercased()). \
         Preferred response style: \(package.user.preferredResponseStyle.label.lowercased()) — \
         \(package.user.preferredResponseStyle.blurb)
         """)
 
-        // L0bʹ. Context rail — date/time, location, language policy,
-        // tool policy (math is mandatory, web is tool-only), style.
-        // Single source of truth for all per-turn context constraints;
-        // lives in PromptBuilder so it can be unit-tested in isolation.
-        chunks.append(PromptBuilder.contextRail(
+        // L0c. User profile (STABLE — derived from onboarding).
+        appendUserProfile(from: package, to: &stableChunks)
+
+        // L0d. User memory (STABLE within a session — UserMemoryStore
+        // doesn't usually change mid-conversation; even when it does,
+        // the cost of a single cache invalidation beats inlining it
+        // into the volatile half on every turn).
+        if let block = package.userMemoryBlock, !block.isEmpty {
+            stableChunks.append(block)
+        }
+
+        // L0bʹ. Context rail (VOLATILE — carries the current date,
+        // local time, location hint, language + tool policy). The
+        // date alone is enough to invalidate this block every turn
+        // (well, every day) so the whole rail lives on the volatile
+        // side. The language policy itself is stable in practice but
+        // bundled inside contextRail; we'd have to extract it
+        // separately to recover those tokens. Acceptable trade-off
+        // for the architectural simplicity.
+        volatileChunks.append(PromptBuilder.contextRail(
             .live(
                 settings: package.settings,
                 availableTools: package.availableTools
             )
         ))
 
-        // L0c. User profile (from onboarding — name, pronouns, interests…).
-        appendUserProfile(from: package, to: &chunks)
-
-        // L0d. User memory — user-curated notes + preferences from the
-        // UserDefaults-backed `UserMemoryStore`. Injected verbatim so
-        // small models see the user's own hand-written facts on every
-        // turn regardless of retrieval ranking.
-        if let block = package.userMemoryBlock, !block.isEmpty {
-            chunks.append(block)
-        }
-
-        // L0.5: Summary of older messages
+        // L0.5: Summary of older messages (VOLATILE).
         if let summary = package.conversationSummary {
-            chunks.append("""
+            volatileChunks.append("""
             Earlier in this conversation (condensed summary — may be incomplete):
             \(summary)
             """)
         }
 
-        // L1. Durable facts
+        // L0.6: Verbatim recall of specific earlier turns (VOLATILE).
+        if !package.conversationRecall.isEmpty {
+            volatileChunks.append("""
+            Relevant earlier turns from this conversation (recalled by similarity to the current question — quote verbatim if asked, otherwise treat as background context):
+            \(package.conversationRecall.joined(separator: "\n\n"))
+            """)
+        }
+
+        // L1. Durable facts (VOLATILE — semantic retrieval per turn).
         if package.settings.guardrailsConfig.factsEnabled {
-            appendFacts(from: package, to: &chunks)
+            appendFacts(from: package, to: &volatileChunks)
         }
 
-        // L2. Episodic summaries
+        // L2. Episodic summaries (VOLATILE).
         if package.settings.guardrailsConfig.episodesEnabled {
-            appendEpisodes(from: package, to: &chunks)
+            appendEpisodes(from: package, to: &volatileChunks)
         }
 
-        // L3. Source excerpts
+        // L3. Source excerpts (VOLATILE — depends on attached files).
         if package.settings.guardrailsConfig.fileExcerptsEnabled {
-            appendFileExcerpts(from: package, to: &chunks)
+            appendFileExcerpts(from: package, to: &volatileChunks)
         }
 
-        // L4. Agentic tool instructions
+        // L4. Agentic tool instructions (VOLATILE — dynamic registration).
         if package.settings.guardrailsConfig.skillInstructionsEnabled,
            let skills = package.skillInstructions, !skills.isEmpty {
-            chunks.append(skills)
+            volatileChunks.append(skills)
         }
 
-        // Privacy guardrail — conditional: only claim "no network access"
-        // when the web-search tool isn't available. Otherwise the rail
-        // would contradict the tool policy above. Also respects guardrails config.
+        // Privacy guardrail (STABLE — wording depends on availableTools
+        // which lives in volatile, but the actual privacy text is the
+        // same per-policy and produced from a fixed lookup table).
         if package.settings.guardrailsConfig.privacyGuardrailEnabled {
-            chunks.append(privacyGuardrail(for: package))
+            stableChunks.append(privacyGuardrail(for: package))
         }
 
-        return chunks.joined(separator: "\n\n")
+        return (
+            stable: stableChunks.joined(separator: "\n\n"),
+            volatile: volatileChunks.joined(separator: "\n\n")
+        )
     }
 
     // MARK: - Tool followup (post-action loop iteration)
@@ -354,9 +439,29 @@ final class PromptAssemblyService {
 
     private func appendEpisodes(from package: PromptContextPackage, to chunks: inout [String], limit: Int = 3) {
         guard !package.episodes.isEmpty else { return }
-        let episodeLines = package.episodes.prefix(limit).map { "- \($0.summary)" }
+        // Episode lines carry a "from N days ago" relative timestamp
+        // so the model can reason about freshness ("you talked about
+        // this last week" vs "you talked about this an hour ago").
+        // Source-conversation provenance is implicit — the episode
+        // came from a different chat by definition (we're injecting
+        // it into the current one), so the date hint plus the gist
+        // is enough for the model to anchor it.
+        let now = Date()
+        let episodeLines = package.episodes.prefix(limit).map { episode -> String in
+            let ageDays = Int(now.timeIntervalSince(episode.createdAt) / 86_400)
+            let when: String
+            switch ageDays {
+            case 0:        when = "today"
+            case 1:        when = "yesterday"
+            case 2...6:    when = "\(ageDays) days ago"
+            case 7...13:   when = "last week"
+            case 14...29:  when = "\(ageDays / 7) weeks ago"
+            default:       when = "\(ageDays / 30) months ago"
+            }
+            return "- (\(when)) \(episode.summary)"
+        }
         chunks.append("""
-        Recent context (episodic, may be outdated):
+        Recent context (episodic recall from earlier conversations, may be outdated — the date hint shows how fresh each item is):
         \(episodeLines.joined(separator: "\n"))
         """)
     }

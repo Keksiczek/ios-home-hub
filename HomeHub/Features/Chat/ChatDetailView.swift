@@ -11,6 +11,10 @@ struct ChatDetailView: View {
     @State private var showingVoiceCall = false
     @State private var showingClearConfirm = false
     @State private var renameText: String = ""
+    /// `true` while a user-initiated `forceSummarizeNow` is in
+    /// flight. Drives the menu button's spinner + label and prevents
+    /// double-taps from queuing a redundant summarization.
+    @State private var isSummarizingManually = false
     @State private var editingMessageID: UUID?
     @State private var editingText: String = ""
     /// User dismissed the context-full banner for the current threshold
@@ -170,6 +174,14 @@ struct ChatDetailView: View {
                 },
                 onCancel: cancel
             )
+            // Speculative retrieval prefetch — debounced inside the
+            // service so a fast burst of keystrokes coalesces. The
+            // service handles cancel-on-resubmit and the minimum
+            // draft-length floor; the view just keeps it informed of
+            // what the user is currently typing.
+            .onChange(of: draft) { _, newDraft in
+                conversations.prefetchRetrieval(for: newDraft, in: conversationID)
+            }
         }
         .background(HHTheme.canvas)
         .navigationTitle(conversationTitle)
@@ -206,6 +218,28 @@ struct ChatDetailView: View {
                             Label("Export", systemImage: "square.and.arrow.up")
                         }
                         .disabled(messages.isEmpty)
+
+                        // Manual summarize trigger. Surfaces the
+                        // background auto-summarizer as a power-user
+                        // control. Disabled until the chat has enough
+                        // content to summarize meaningfully (matches
+                        // `forceSummarizeNow`'s own floor) and during
+                        // streaming so we don't race with the live
+                        // turn for the runtime.
+                        Button {
+                            isSummarizingManually = true
+                            Task {
+                                _ = await conversations.forceSummarizeNow(in: conversationID)
+                                isSummarizingManually = false
+                            }
+                        } label: {
+                            if isSummarizingManually {
+                                Label("Summarizing…", systemImage: "hourglass")
+                            } else {
+                                Label("Summarize now", systemImage: "text.append")
+                            }
+                        }
+                        .disabled(messages.count < 4 || isStreaming || isSummarizingManually || runtime.activeModel == nil)
 
                         Divider()
 

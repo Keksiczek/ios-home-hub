@@ -826,6 +826,19 @@ final class ModelDownloadService: ObservableObject {
             return
         }
 
+        // Auth preflight — fail fast before kicking off the manifest
+        // round-trip when the catalog says this repo is gated AND the
+        // user hasn't configured a token. The HF API would reject the
+        // manifest fetch with HTTP 401 anyway, but doing the check here
+        // gives the user a clearer next step ("open Settings → Hugging
+        // Face") instead of a generic auth error 200ms later.
+        if model.requiresAuth, !HFTokenStore.hasToken {
+            let msg = "Tento model je chráněný. Otevři Nastavení → Hugging Face, vlož svůj token, a zkus to znovu."
+            log.warning("MLX: Auth preflight failed for '\(model.id, privacy: .public)' — no HF token in Keychain")
+            catalog.setInstallState(.failed(reason: msg), for: model.id)
+            return
+        }
+
         // Track preparing state in `active` so the UI shows the same
         // unified phase machine for MLX as it does for GGUF.
         active[model.id] = DownloadState(
@@ -884,6 +897,22 @@ final class ModelDownloadService: ObservableObject {
             // as the first byte lands.
             active[model.id]?.phase = .downloading
             log.info("MLX: Started background download of \(files.count) files for '\(model.id, privacy: .public)' totalBytes=\(manifestTotal)")
+        } catch let hfErr as HFError {
+            // Typed HF errors get user-actionable, localized reasons. The
+            // gated-repo case used to surface as a cryptic "HF API returned
+            // HTTP 401" — now the user sees "vyžaduje přihlášení nebo
+            // přijetí licence" and (eventually) a CTA to open HF.
+            log.error("MLX: Manifest fetch failed for '\(repoId, privacy: .public)' (typed): \(String(describing: hfErr), privacy: .public)")
+            let reason: String = {
+                switch hfErr {
+                case .gatedRepository(let id, _):
+                    return "Tento model je chráněný (\(id)) — musíš se přihlásit na huggingface.co a přijmout licenci. Pro provoz čistě v offline appce vyber jiný (otevřený) MLX model."
+                case .notFound(let id):
+                    return "Repozitář \(id) na Hugging Face neexistuje. Zkontroluj přesný název nebo vyber jiný model."
+                }
+            }()
+            catalog.setInstallState(.failed(reason: reason), for: model.id)
+            active[model.id] = nil
         } catch {
             log.error("MLX: Manifest fetch failed for '\(repoId, privacy: .public)': \(error.localizedDescription, privacy: .public)")
             catalog.setInstallState(.failed(reason: "Could not fetch model file list: \(error.localizedDescription)"), for: model.id)

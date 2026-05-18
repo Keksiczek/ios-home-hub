@@ -198,4 +198,58 @@ final class PromptAssemblyTests: XCTestCase {
         XCTAssertEqual(prompt.messages.count, 2)
         XCTAssertEqual(prompt.messages[0].content, "Hi")
     }
+
+    // MARK: - Conversation recall layer (L0.6)
+
+    /// When `conversationRecall` is non-empty, the assembled system
+    /// prompt must contain a dedicated block introducing the snippets.
+    /// We assert both the block header (so a future copy edit doesn't
+    /// silently delete the explanation) and the verbatim snippet text
+    /// (so the model can quote it back when asked).
+    func testRecallBlockRenderedWhenPresent() {
+        var package = makePackage(userInput: "What was the API shape we agreed on?")
+        package.conversationRecall = [
+            "[Uživatel] We agreed on userId: UUID for the API",
+            "[Asistent] Confirmed — userId: UUID, createdAt: Date"
+        ]
+
+        let prompt = service.build(from: package)
+
+        XCTAssertTrue(prompt.systemPrompt.contains("Relevant earlier turns"),
+                      "Recall block header missing — copy edit may have stripped it")
+        XCTAssertTrue(prompt.systemPrompt.contains("userId: UUID for the API"),
+                      "Verbatim recall content missing from system prompt")
+        XCTAssertTrue(prompt.systemPrompt.contains("Confirmed — userId: UUID"))
+    }
+
+    /// Empty recall must not produce a stray header. Locks down the
+    /// guard that prevents "Relevant earlier turns:" with no content
+    /// appearing in the prompt — the model would treat the bare
+    /// header as an instruction and fabricate snippets.
+    func testRecallBlockOmittedWhenEmpty() {
+        let package = makePackage()
+        let prompt = service.build(from: package)
+
+        XCTAssertFalse(prompt.systemPrompt.contains("Relevant earlier turns"),
+                       "Recall block leaked into prompt without content")
+    }
+
+    /// Summary + recall coexist: the summary lives at L0.5, recall at
+    /// L0.6, and both precede the L1 facts block. The order matters
+    /// for narrative coherence — model reads gist → quotes → curated
+    /// facts → live history.
+    func testSummaryAndRecallOrdering() {
+        var package = makePackage()
+        package.conversationSummary = "Earlier we discussed user authentication design"
+        package.conversationRecall = ["[Uživatel] verbatim recall snippet"]
+
+        let prompt = service.build(from: package)
+
+        guard let summaryRange = prompt.systemPrompt.range(of: "Earlier in this conversation (condensed"),
+              let recallRange = prompt.systemPrompt.range(of: "Relevant earlier turns") else {
+            return XCTFail("Both blocks must appear in the system prompt")
+        }
+        XCTAssertLessThan(summaryRange.lowerBound, recallRange.lowerBound,
+                          "Summary (gist) must precede recall (verbatim quotes)")
+    }
 }

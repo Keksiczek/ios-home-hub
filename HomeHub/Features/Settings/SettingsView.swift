@@ -8,6 +8,16 @@ struct SettingsView: View {
     @EnvironmentObject private var onboarding: OnboardingService
     @EnvironmentObject private var runtime: RuntimeManager
     @EnvironmentObject private var appState: AppState
+    /// Needed for the post-token-save retry surface: we scan the
+    /// catalog for `requiresAuth` models stuck in `.failed(reason:)`
+    /// and offer a one-tap retry without forcing the user to switch
+    /// tabs back to Models.
+    @EnvironmentObject private var modelCatalog: ModelCatalogService
+    @EnvironmentObject private var modelDownloads: ModelDownloadService
+    /// Foreground re-validation lives on the container; this is how
+    /// the live token status surfaces into the Settings UI without
+    /// the row needing to re-poll the network on every appearance.
+    @EnvironmentObject private var container: AppContainer
 
     /// Cached snapshot of `SkillManager.availabilitySnapshot()` so the
     /// row UI can render synchronously while the Settings screen is on
@@ -22,6 +32,31 @@ struct SettingsView: View {
     /// fired immediately on button tap with no guard at all; the
     /// alert is the cheapest correct fix until we wire snapshot/undo.
     @State private var showRestartOnboardingConfirm: Bool = false
+
+    /// Mirror of the persisted HF token. Loaded from Keychain when the
+    /// section appears; written back on Save. Kept as a separate
+    /// `@State` (rather than reading the Keychain on every render)
+    /// because Keychain calls block briefly and SwiftUI re-renders the
+    /// Form on each unrelated state change.
+    @State private var hfTokenDraft: String = ""
+    @State private var hfTokenStored: Bool = false
+    @State private var hfTokenSaveMessage: String?
+    /// Tracks the async whoami probe so the UI can disable the Save
+    /// button while it's running and surface the result inline.
+    @State private var hfTokenValidating: Bool = false
+    /// Result of the last whoami probe — drives the badge colour
+    /// (green = authenticated, red = rejected, grey = pending).
+    @State private var hfTokenLastValidation: HuggingFaceAPIClient.TokenValidation?
+    /// Persisted "last verified at" snapshot, surfaced as
+    /// "Naposledy ověřeno před X dny — username" so the user can spot
+    /// stale state (e.g. token rotated 6 months ago) without re-running
+    /// the probe.
+    @State private var hfTokenLastVerification: (username: String, at: Date)?
+    /// Set by the "Stáhnout všech N modelů" button. Non-nil triggers
+    /// the confirmation alert; nil dismisses it. The alert reads the
+    /// snapshot rather than re-querying the catalog so the count and
+    /// size shown in the prompt match exactly what the user tapped.
+    @State private var bulkRetryTarget: [LocalModel]?
 
     /// Route enum for path-based navigation. Lets a deep link push
     /// the right destination from outside without the user having
@@ -61,6 +96,7 @@ struct SettingsView: View {
                 DisclosureGroup {
                     appearanceSection
                     privacySection
+                    huggingFaceSection
                 } label: {
                     Label("App Experience", systemImage: "paintpalette.fill")
                         .font(HHTheme.subheadline.weight(.semibold))
@@ -534,6 +570,324 @@ struct SettingsView: View {
     }
 
     // MARK: - Privacy
+
+    // MARK: - Hugging Face token
+
+    private var huggingFaceSection: some View {
+        Section {
+            SecureField("hf_xxx…", text: $hfTokenDraft)
+                .textContentType(.password)
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+
+            HStack {
+                Button {
+                    Task { await validateAndSaveHFToken() }
+                } label: {
+                    HStack(spacing: 6) {
+                        if hfTokenValidating {
+                            ProgressView().controlSize(.mini)
+                        }
+                        Text(hfTokenDraft.isEmpty ? "Vymazat token" : "Ověřit a uložit")
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .disabled(hfTokenValidating || (hfTokenDraft.isEmpty && !hfTokenStored))
+
+                if let validation = hfTokenLastValidation {
+                    switch validation {
+                    case .valid:
+                        Image(systemName: "checkmark.seal.fill")
+                            .foregroundStyle(.green)
+                            .accessibilityLabel("Token ověřen")
+                    case .invalid:
+                        Image(systemName: "xmark.seal.fill")
+                            .foregroundStyle(.red)
+                            .accessibilityLabel("Token odmítnut")
+                    case .networkError:
+                        Image(systemName: "wifi.exclamationmark")
+                            .foregroundStyle(.orange)
+                            .accessibilityLabel("Síťová chyba")
+                    }
+                } else if hfTokenStored {
+                    Image(systemName: "lock.fill")
+                        .foregroundStyle(.green)
+                        .accessibilityLabel("Token uložen")
+                }
+            }
+
+            if let msg = hfTokenSaveMessage {
+                Text(msg).font(HHTheme.caption).foregroundStyle(.secondary)
+            }
+
+            // Live status from the container's foreground re-validation.
+            // Takes precedence over the cached `hfTokenLastVerification`
+            // row below — if the user backgrounded the app yesterday
+            // and HF revoked the token overnight, the cached line still
+            // says "ověřeno před 1 dnem" (the *last* successful probe),
+            // while this line says "selhalo (orange)" with current
+            // information.
+            if let live = container.huggingFaceTokenStatus {
+                liveStatusRow(live)
+            }
+
+            if let verification = hfTokenLastVerification {
+                Text("Naposledy ověřeno \(verifiedAgo(verification.at)) — \(verification.username)")
+                    .font(HHTheme.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            // Post-save retry surface: after a successful validation
+            // we scan the catalog for gated models that previously
+            // failed (typical reason: "no token configured" or "HF
+            // 401"). Each gets a one-tap retry button so the user
+            // doesn't have to navigate back to Models and remember
+            // which downloads to nudge.
+            let retryables = gatedRetryCandidates()
+            if !retryables.isEmpty {
+                // Per-row retries for fine-grained control.
+                ForEach(retryables, id: \.id) { model in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(model.displayName).font(.subheadline)
+                            Text("Předchozí pokus selhal kvůli tokenu").font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("Zkusit znovu") {
+                            Task { await modelDownloads.startMLXDownload(model) }
+                        }
+                        .buttonStyle(HHSecondaryButtonStyle())
+                    }
+                }
+                // Bulk action — appears only when there are 2+
+                // candidates so we don't show a meaningless "Stáhnout
+                // všechny" for a single row. Confirmation alert
+                // quotes the combined size so the user doesn't
+                // accidentally kick off 12 GB of downloads on
+                // cellular.
+                if retryables.count >= 2 {
+                    Button {
+                        bulkRetryTarget = retryables
+                    } label: {
+                        HStack {
+                            Image(systemName: "arrow.triangle.2.circlepath")
+                            Text("Stáhnout všech \(retryables.count) modelů (\(bulkRetrySize(retryables)))")
+                                .font(.subheadline.weight(.semibold))
+                        }
+                        .frame(maxWidth: .infinity, alignment: .center)
+                    }
+                    .buttonStyle(HHSecondaryButtonStyle())
+                }
+            }
+        } header: {
+            Text("Hugging Face")
+        } footer: {
+            Text("Některé MLX modely (Gemma, Llama 3 8B, …) vyžadují přihlášení a přijetí licence. Vytvoř Read-token na huggingface.co/settings/tokens a vlož ho sem — uloží se zašifrovaně do Keychainu a použije při stahování. Token ověříme proti `whoami` před uložením, takže hned uvidíš jestli funguje.")
+                .font(HHTheme.caption)
+        }
+        .onAppear {
+            // Lazy-load the stored token so users who never open this
+            // section don't pay the Keychain round-trip on every
+            // Settings launch. Loaded into the draft so the existing
+            // value is visible (SecureField masks the characters).
+            if let existing = HFTokenStore.load() {
+                hfTokenDraft = existing
+                hfTokenStored = true
+            } else {
+                hfTokenStored = false
+            }
+            hfTokenSaveMessage = nil
+            hfTokenLastValidation = nil
+            hfTokenLastVerification = HFTokenStore.lastVerification()
+        }
+        .confirmationDialog(
+            "Spustit stahování?",
+            isPresented: Binding(
+                get: { bulkRetryTarget != nil },
+                set: { if !$0 { bulkRetryTarget = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            if let models = bulkRetryTarget {
+                Button("Spustit \(models.count) stahování", role: .destructive) {
+                    Task {
+                        for model in models {
+                            await modelDownloads.startMLXDownload(model)
+                        }
+                        bulkRetryTarget = nil
+                    }
+                }
+                Button("Zrušit", role: .cancel) { bulkRetryTarget = nil }
+            }
+        } message: {
+            if let models = bulkRetryTarget {
+                Text("Spustí se \(models.count) souběžných stahování v celkové velikosti \(bulkRetrySize(models)). Doporučujeme být na Wi-Fi.")
+            }
+        }
+    }
+
+    /// Human-friendly relative time for the verification timestamp.
+    /// Today / včera get explicit labels; older falls back to a
+    /// RelativeDateTimeFormatter ("před 3 dny"). Avoids the "verified
+    /// at 11:42:01 on 2026-05-15" footgun that looks like debug output
+    /// instead of UX.
+    private func verifiedAgo(_ date: Date) -> String {
+        let rdf = RelativeDateTimeFormatter()
+        rdf.locale = Locale(identifier: "cs_CZ")
+        rdf.unitsStyle = .full
+        return rdf.localizedString(for: date, relativeTo: Date())
+    }
+
+    /// Renders the live HF token status as a one-line row with an
+    /// icon + label + "Re-ověřit" trailing button. The icon colour
+    /// (`green`/`red`/`orange`) and copy are derived from the enum
+    /// case so the UI stays in lockstep with what the container
+    /// actually knows. Always shown when status is non-nil; if the
+    /// last attempt was `.networkError` the row stays orange even
+    /// though the underlying token might still be fine — that's
+    /// intentional, the user shouldn't trust a stale "green" badge
+    /// after a failed retry.
+    @ViewBuilder
+    private func liveStatusRow(_ live: AppContainer.HFTokenStatus) -> some View {
+        HStack(spacing: 6) {
+            switch live {
+            case .valid(let user, let at):
+                Image(systemName: "checkmark.seal.fill")
+                    .foregroundStyle(.green)
+                Text("Aktivní jako \(user) (ověřeno \(verifiedAgo(at)))")
+                    .font(HHTheme.caption)
+                    .foregroundStyle(.secondary)
+            case .invalid:
+                Image(systemName: "xmark.seal.fill")
+                    .foregroundStyle(.red)
+                Text("Token byl odmítnut — zřejmě vypršel nebo byl odvolán.")
+                    .font(HHTheme.caption)
+                    .foregroundStyle(.red)
+            case .networkError(_, let detail):
+                Image(systemName: "wifi.exclamationmark")
+                    .foregroundStyle(.orange)
+                Text("Síťová chyba při ověření: \(detail)")
+                    .font(HHTheme.caption)
+                    .foregroundStyle(.orange)
+            }
+            Spacer()
+            // Re-validate button — useful when the user just rotated
+            // the token on huggingface.co and wants to confirm without
+            // re-pasting. Refreshes the stored verification metadata
+            // and the live status in one round trip.
+            Button {
+                Task { await revalidateExistingToken() }
+            } label: {
+                Text("Re-ověřit").font(.caption)
+            }
+            .buttonStyle(.borderless)
+            .disabled(hfTokenValidating || !hfTokenStored)
+        }
+    }
+
+    /// Re-runs the whoami probe against the *stored* token (not the
+    /// draft). Delegates to `AppContainer.forceRevalidateHFToken()`
+    /// so the published live status and the persisted verification
+    /// metadata stay in lockstep — using the container path also
+    /// means an `.invalid` result actually downgrades the live badge
+    /// (the legacy "refresh if stale" path would short-circuit on
+    /// cached `.valid` and ignore the new attempt).
+    private func revalidateExistingToken() async {
+        guard HFTokenStore.hasToken else {
+            hfTokenSaveMessage = "Žádný token k ověření — vlož ho výše a klikni Uložit."
+            return
+        }
+        hfTokenValidating = true
+        defer { hfTokenValidating = false }
+
+        let result = await container.forceRevalidateHFToken()
+        hfTokenLastValidation = result
+        hfTokenLastVerification = HFTokenStore.lastVerification()
+        switch result {
+        case .valid(let username):
+            hfTokenSaveMessage = "Token stále funguje (\(username))."
+        case .invalid:
+            hfTokenSaveMessage = "Token už nefunguje (HTTP 401). Otevři huggingface.co/settings/tokens a vytvoř nový."
+        case .networkError(let detail):
+            hfTokenSaveMessage = "Síťová chyba: \(detail)"
+        case .none:
+            hfTokenSaveMessage = "Token zmizel z Keychainu — vlož ho znovu."
+        }
+    }
+
+    /// Total formatted size for a list of models (skips zero-size
+    /// catalog entries — those happen for user-added models that
+    /// haven't had a manifest probe yet, so we can't show a real
+    /// number). Used by the bulk-retry button label so the user can
+    /// decide before tapping.
+    private func bulkRetrySize(_ models: [LocalModel]) -> String {
+        let total = models.map(\.sizeBytes).filter { $0 > 0 }.reduce(Int64(0), +)
+        guard total > 0 else { return "neznámá velikost" }
+        return ByteCountFormatter.string(fromByteCount: total, countStyle: .file)
+    }
+
+    /// Catalog scan for `requiresAuth` models stuck in `.failed(reason:)`.
+    /// Only surfaced once the user has *successfully* validated a token
+    /// in this session (`hfTokenLastValidation == .valid`) — otherwise
+    /// the row would appear immediately on app launch and confuse a
+    /// user who just opened Settings for unrelated reasons. The
+    /// substring filter on the reason mirrors `isAuthRelatedFailure`
+    /// in ModelsView; a model that failed for disk-space reasons
+    /// shouldn't surface here even if it's `requiresAuth`.
+    private func gatedRetryCandidates() -> [LocalModel] {
+        guard case .valid = hfTokenLastValidation else { return [] }
+        return modelCatalog.models.filter { model in
+            guard model.requiresAuth else { return false }
+            if case .failed(let reason) = model.installState {
+                let lc = reason.lowercased()
+                return lc.contains("token")
+                    || lc.contains("přihlášení")
+                    || lc.contains("chráněný")
+                    || lc.contains("hugging face")
+                    || lc.contains("http 401")
+                    || lc.contains("http 403")
+            }
+            return false
+        }
+    }
+
+    /// Two-phase save: blank input → clear and short-circuit; non-blank
+    /// → validate against `/api/whoami-v2` first, only persist if HF
+    /// confirms the token authenticates. Avoids the "I saved this and
+    /// thought it worked" footgun where a typo'd token sits in the
+    /// Keychain and only fails on the first gated download.
+    private func validateAndSaveHFToken() async {
+        let trimmed = hfTokenDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            HFTokenStore.clearAll()
+            hfTokenStored = false
+            hfTokenSaveMessage = "Token vymazán."
+            hfTokenLastValidation = nil
+            hfTokenLastVerification = nil
+            return
+        }
+        hfTokenValidating = true
+        hfTokenSaveMessage = nil
+        defer { hfTokenValidating = false }
+
+        let result = await HuggingFaceAPIClient.validateToken(trimmed)
+        hfTokenLastValidation = result
+        switch result {
+        case .valid(let username):
+            if HFTokenStore.save(trimmed) {
+                hfTokenStored = true
+                HFTokenStore.recordVerification(username: username)
+                hfTokenLastVerification = HFTokenStore.lastVerification()
+                hfTokenSaveMessage = "Přihlášen jako \(username). Token uložen do Keychainu."
+            } else {
+                hfTokenSaveMessage = "Token je platný, ale uložení do Keychainu selhalo. Zkus znovu."
+            }
+        case .invalid:
+            hfTokenSaveMessage = "Hugging Face token odmítlo (401). Zkontroluj že je platný a má scope `read`."
+        case .networkError(let detail):
+            hfTokenSaveMessage = "Nelze ověřit (síť): \(detail). Token jsem neuložil — zkus znovu na lepším připojení."
+        }
+    }
 
     private var privacySection: some View {
         Section {

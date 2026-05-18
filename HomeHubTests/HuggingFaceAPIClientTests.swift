@@ -66,4 +66,40 @@ final class HuggingFaceAPIClientTests: XCTestCase {
         XCTAssertFalse(HuggingFaceAPIClient.isNeededForMLXInference("model.pt"))
         XCTAssertFalse(HuggingFaceAPIClient.isNeededForMLXInference("model.onnx"))
     }
+
+    // MARK: - HFError.reasonForHTTPStatus
+
+    /// Both the manifest path and the mid-download path funnel HTTP
+    /// failures through `HFError.reasonForHTTPStatus(_:context:)`. The
+    /// CTA-detection heuristic in `ModelsView.isAuthRelatedFailure`
+    /// matches on substrings of these messages, so a wording change
+    /// here can silently break the "Otevřít Nastavení" button. These
+    /// tests pin the substrings that the heuristic relies on.
+    func testReasonForStatus_401MentionsTokenAndSettings() {
+        let msg = HFError.reasonForHTTPStatus(401, context: "config.json").lowercased()
+        XCTAssertTrue(msg.contains("token"), "401 message must mention token (catches auth CTA heuristic)")
+        XCTAssertTrue(msg.contains("nastavení"), "401 message must reference the Settings deep-link target")
+        XCTAssertTrue(msg.contains("http 401"), "401 message must include the raw status for triage")
+    }
+
+    func testReasonForStatus_403UsesSameHeuristicVocabulary() {
+        // 403 is rendered by the same branch as 401 — both indicate
+        // auth-shaped failures. If a future refactor splits them,
+        // ModelsView's heuristic must still match both.
+        let msg = HFError.reasonForHTTPStatus(403, context: "model.safetensors").lowercased()
+        XCTAssertTrue(msg.contains("token") || msg.contains("přihlášení") || msg.contains("licen"))
+    }
+
+    func testReasonForStatus_404IncludesContext() {
+        let msg = HFError.reasonForHTTPStatus(404, context: "tokenizer.json")
+        XCTAssertTrue(msg.contains("tokenizer.json"),
+                      "404 must echo the missing context so the user knows which file went away")
+        XCTAssertTrue(msg.contains("404"))
+    }
+
+    func testReasonForStatus_UnknownCodeFallsBackToGenericMessage() {
+        let msg = HFError.reasonForHTTPStatus(599, context: "repo")
+        XCTAssertTrue(msg.contains("599"))
+        XCTAssertTrue(msg.contains("repo"))
+    }
 }

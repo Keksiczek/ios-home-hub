@@ -15,6 +15,7 @@ private final class SpyLocalRuntime: LocalLLMRuntime, @unchecked Sendable {
     // --- Call counters ---
     private(set) var memoryPressureCallCount = 0
     private(set) var backgroundCallCount = 0
+    private(set) var trimCallCount = 0
 
     /// When `true`, `handleMemoryPressure()` simulates an unload
     /// (as `LlamaCppRuntime` would when policy is `.onBackgroundOrMemoryPressure`).
@@ -22,6 +23,12 @@ private final class SpyLocalRuntime: LocalLLMRuntime, @unchecked Sendable {
 
     /// When `true`, `handleBackground()` simulates an unload.
     var shouldUnloadOnBackground = false
+
+    /// Mirrors what `MLXRuntime.isCurrentlyGenerating` would report.
+    /// Drives the two-tier pressure policy's "defer hard unload while a
+    /// turn is streaming" branch.
+    var fakeIsGenerating = false
+    var isCurrentlyGenerating: Bool { fakeIsGenerating }
 
     // --- LocalLLMRuntime ---
 
@@ -49,6 +56,10 @@ private final class SpyLocalRuntime: LocalLLMRuntime, @unchecked Sendable {
     func handleBackground() async {
         backgroundCallCount += 1
         if shouldUnloadOnBackground { _loadedModel = nil }
+    }
+
+    func trimMemoryCaches() async {
+        trimCallCount += 1
     }
 }
 
@@ -219,6 +230,57 @@ final class RuntimeManagerLifecycleTests: XCTestCase {
         XCTAssertEqual(spy.memoryPressureCallCount, 1)
         XCTAssertEqual(spy.backgroundCallCount, 1)
         XCTAssertNil(manager.activeModel, "Background event should have triggered unload.")
+    }
+
+    // MARK: - Soft-trim path (two-tier pressure policy)
+
+    /// `handleSoftMemoryPressure()` must call `trimMemoryCaches()` on the
+    /// runtime without touching `handleMemoryPressure()` or unloading.
+    /// This is the "L1 warning → drop cheap scratch, keep weights" path
+    /// that prevents the unload banner on the first warning.
+    func testSoftPressureTrimsWithoutUnloading() async {
+        let (manager, spy) = await makeManager()
+        await manager.handleSoftMemoryPressure()
+        XCTAssertEqual(spy.trimCallCount, 1, "Soft path must invoke trimMemoryCaches.")
+        XCTAssertEqual(spy.memoryPressureCallCount, 0, "Soft path must NOT call handleMemoryPressure.")
+        XCTAssertNotNil(manager.activeModel, "Soft path must leave the model loaded.")
+        XCTAssertEqual(manager.state, .ready(modelID: LocalModel.lifecycleTestStub.id))
+    }
+
+    /// Multiple soft events in a row should keep adding trim calls — the
+    /// soft tier never escalates by itself. Escalation is `AppContainer`'s
+    /// job (debounce window + hard floor), not `RuntimeManager`'s.
+    func testSoftPressureIsIdempotentlyAccumulative() async {
+        let (manager, spy) = await makeManager()
+        await manager.handleSoftMemoryPressure()
+        await manager.handleSoftMemoryPressure()
+        await manager.handleSoftMemoryPressure()
+        XCTAssertEqual(spy.trimCallCount, 3)
+        XCTAssertNotNil(manager.activeModel)
+    }
+
+    /// `isGenerating` is the snapshot the two-tier policy reads to decide
+    /// whether to defer the hard unload. The manager just forwards the
+    /// runtime's value — exercise the wiring so a future refactor that
+    /// breaks the passthrough is caught by a test, not by users hitting
+    /// the "model unloaded mid-token" UX.
+    func testIsGeneratingForwardsRuntimeFlag() async {
+        let (manager, spy) = await makeManager()
+        XCTAssertFalse(manager.isGenerating)
+        spy.fakeIsGenerating = true
+        XCTAssertTrue(manager.isGenerating)
+        spy.fakeIsGenerating = false
+        XCTAssertFalse(manager.isGenerating)
+    }
+
+    /// Soft pressure is safe with nothing loaded — it must not crash and
+    /// must still forward the trim call (some runtimes track scratch
+    /// state even without weights).
+    func testSoftPressureWithNoModelLoaded() async {
+        let (manager, spy) = await makeManager(loaded: false)
+        await manager.handleSoftMemoryPressure()
+        XCTAssertEqual(spy.trimCallCount, 1)
+        XCTAssertNil(manager.activeModel)
     }
 }
 

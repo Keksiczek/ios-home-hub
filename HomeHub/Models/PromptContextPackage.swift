@@ -20,6 +20,22 @@ struct PromptContextPackage {
     /// and there are messages outside the 20-message window. Injected into
     /// the system prompt so older context isn't silently dropped.
     var conversationSummary: String? = nil
+
+    /// Semantically-recalled snippets from earlier turns the budgeter
+    /// trimmed out of `recentMessages`. Each entry is the *content* of
+    /// a past message that scored similar to the current user input.
+    /// `PromptAssemblyService` renders these as an "Earlier in this
+    /// conversation, you said:" block so the user can ask follow-ups
+    /// to specific old turns without needing them pinned as facts.
+    ///
+    /// Distinct from `conversationSummary`:
+    ///   - `conversationSummary` is a single paragraph paraphrasing the
+    ///     older half — loses specific wording.
+    ///   - `conversationRecall` preserves verbatim text of a few
+    ///     hand-picked old turns chosen by semantic similarity to
+    ///     the current query.
+    /// They cooperate: summary gives context, recall gives precision.
+    var conversationRecall: [String] = []
     /// Text extracted from attached documents in the current turn.
     var fileExcerpts: [String] = []
     /// Instructions derived from active skills to be injected into the system prompt.

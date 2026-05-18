@@ -50,6 +50,7 @@ struct SidebarMenuButton: View {
 struct SidebarMenuView: View {
     @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var runtime: RuntimeManager
+    @EnvironmentObject private var memory: MemoryService
     @Environment(\.dismiss) private var dismiss
     let onSelect: (MainTab) -> Void
 
@@ -125,6 +126,24 @@ struct SidebarMenuView: View {
                 .font(HHTheme.headline)
                 .foregroundStyle(HHTheme.textPrimary)
             Spacer()
+            // Per-tab pending-review badge. Memory tab surfaces the
+            // count of candidates AND auto-episodes awaiting approval
+            // — both the manual extraction flow and the new background
+            // episode write-back land here, so the user sees one
+            // unified "you have N things to review" number instead of
+            // discovering pending episodes only by opening the tab.
+            if tab == .memory {
+                let count = pendingReviewCount
+                if count > 0 {
+                    Text("\(count)")
+                        .font(HHTheme.caption.weight(.semibold))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(HHTheme.accent))
+                        .foregroundStyle(.white)
+                        .accessibilityLabel("\(count) položek k revizi")
+                }
+            }
             if isActive {
                 Image(systemName: "checkmark")
                     .foregroundStyle(HHTheme.accent)
@@ -133,5 +152,13 @@ struct SidebarMenuView: View {
         }
         .padding(.vertical, 4)
         .contentShape(Rectangle())
+    }
+
+    /// Sum of memory-review queues: extraction candidates plus
+    /// pending (not-yet-approved) auto-episodes. Both flows land in
+    /// the Memory tab's review pile, so showing them as one number
+    /// matches what the user actually does there ("clear the queue").
+    private var pendingReviewCount: Int {
+        memory.candidates.count + memory.episodes.filter { !$0.approved }.count
     }
 }

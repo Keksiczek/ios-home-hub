@@ -132,6 +132,15 @@ final class AppContainer: ObservableObject {
         let promptBudgetReporter = PromptBudgetReporter()
         let prompts = PromptAssemblyService(reporter: promptBudgetReporter)
         let summarizer = SummarizationService(runtime: runtimeManager, prompts: prompts)
+        // Forward-declared placeholders so the container instance can
+        // be captured by the callbacks below before `self` is fully
+        // formed. `Unmanaged` would be the most efficient route, but
+        // a weak holder via a small reference type keeps the
+        // ownership story obvious and avoids ARC subtleties for a
+        // path that fires at most once per generation.
+        final class WeakSelf { weak var value: AppContainer? }
+        let weakHolder = WeakSelf()
+
         let conversations = ConversationService(
             store: store,
             runtime: runtimeManager,
@@ -141,7 +150,14 @@ final class AppContainer: ObservableObject {
             personalization: personalization,
             userMemory: userMemory,
             summarizer: summarizer,
-            embeddingService: embedding
+            embeddingService: embedding,
+            promptBudgetReporter: promptBudgetReporter,
+            recentBackgroundTimestamp: { [weak weakHolder] in
+                weakHolder?.value?.lastBackgroundedAt
+            },
+            onBackgroundCompletion: { [weak weakHolder] in
+                weakHolder?.value?.recordBackgroundGenerationCompletion()
+            }
         )
         let onboarding = OnboardingService(
             store: store,
@@ -213,6 +229,13 @@ final class AppContainer: ObservableObject {
         runtimeManager.ggufMetadataProvider = { [weak catalog] modelID in
             catalog?.metadata(for: modelID)
         }
+
+        // Publish `self` to the weak holder consumed by the
+        // ConversationService callbacks. Done at the very end of
+        // init so every stored property is in place — accessing
+        // `self` earlier would trip Swift's "used before init"
+        // diagnostic since the storage isn't complete yet.
+        weakHolder.value = self
     }
 
     // MARK: - Spotlight subscriptions
@@ -459,17 +482,31 @@ final class AppContainer: ObservableObject {
         // The flag is cleared on every successful load, so a one-off
         // crash recovers on the second tap; only a persistent
         // load-time crash will leave the user on manual control.
-        if let pending = UserDefaults.standard.string(forKey: Self.autoLoadGuardKey) {
+        //
+        // Also detects watchdog SIGKILL during termination (0x8BADF00D):
+        // the flag is set at start, cleared at end. If the process is
+        // killed in between — by an actual crash OR by the OS watchdog
+        // failing to terminate gracefully — the flag survives.
+        if let record = readAutoLoadGuardRecord() {
             UserDefaults.standard.removeObject(forKey: Self.autoLoadGuardKey)
-            if pending == modelID {
+            // Stale records (> 1 hour) are treated as cleared. A user
+            // returning to the app a day later has likely freed memory,
+            // updated iOS, or otherwise changed conditions; we should
+            // try the load again rather than nag forever.
+            let staleAfter: TimeInterval = 60 * 60
+            let age = Date().timeIntervalSince(record.startedAt)
+            if record.modelID == modelID && age < staleAfter {
                 let log = Logger(subsystem: "HomeHub", category: "AppContainer")
-                log.warning("autoLoadSelectedModel: detected previous-launch crash while loading '\(modelID, privacy: .public)' — skipping auto-load")
+                log.warning("autoLoadSelectedModel: previous-launch load of '\(modelID, privacy: .public)' did not complete (started \(Int(age))s ago) — skipping auto-load")
                 lastAutoLoadCrash = AutoLoadCrash(modelID: modelID, occurredAt: .now)
                 return
+            } else if record.modelID == modelID {
+                let log = Logger(subsystem: "HomeHub", category: "AppContainer")
+                log.info("autoLoadSelectedModel: stale guard for '\(modelID, privacy: .public)' (age \(Int(age))s) — clearing and retrying")
             }
         }
 
-        UserDefaults.standard.set(modelID, forKey: Self.autoLoadGuardKey)
+        writeAutoLoadGuardRecord(.init(modelID: modelID, startedAt: .now))
         await runtimeManager.load(model)
         // Only clear when the load actually settled into .ready —
         // a load that failed cleanly (RuntimeError, no app crash)
@@ -484,8 +521,59 @@ final class AppContainer: ObservableObject {
         }
     }
 
-    /// UserDefaults key for the crash-loop guard.
-    private static let autoLoadGuardKey = "com.homehub.app.autoLoadInProgressModelID"
+    /// UserDefaults key for the crash-loop guard. The stored value is
+    /// a JSON-encoded `AutoLoadGuardRecord` so we can keep both the
+    /// model ID *and* a timestamp without inventing a sibling key.
+    /// Internal so tests can assert the persisted shape without
+    /// pulling in the whole AppContainer.
+    static let autoLoadGuardKey = "com.homehub.app.autoLoadGuardRecord"
+
+    /// Sticky marker written immediately before `runtime.load(...)` and
+    /// cleared on settled state. If the process dies in between (real
+    /// crash, watchdog kill, jetsam) the record survives and the next
+    /// launch can detect the failed attempt. The timestamp lets us
+    /// expire stale records so a load that crashed last week doesn't
+    /// keep blocking auto-load forever.
+    struct AutoLoadGuardRecord: Codable, Equatable {
+        let modelID: String
+        let startedAt: Date
+    }
+
+    /// Reads the guard record. Static so tests can call it against any
+    /// `UserDefaults` (production code passes `.standard`); the
+    /// instance helper below is the production entry point.
+    static func readAutoLoadGuardRecord(
+        from defaults: UserDefaults = .standard
+    ) -> AutoLoadGuardRecord? {
+        // Two-format read: prefer the new JSON record; fall back to the
+        // pre-existing bare-string key for users upgrading mid-flight.
+        // The legacy entry is migrated by being cleared on next clean
+        // load — no separate migration pass needed.
+        if let data = defaults.data(forKey: autoLoadGuardKey),
+           let rec = try? JSONDecoder().decode(AutoLoadGuardRecord.self, from: data) {
+            return rec
+        }
+        if let legacy = defaults.string(forKey: autoLoadGuardKey) {
+            return AutoLoadGuardRecord(modelID: legacy, startedAt: .now)
+        }
+        return nil
+    }
+
+    static func writeAutoLoadGuardRecord(
+        _ rec: AutoLoadGuardRecord,
+        to defaults: UserDefaults = .standard
+    ) {
+        guard let data = try? JSONEncoder().encode(rec) else { return }
+        defaults.set(data, forKey: autoLoadGuardKey)
+    }
+
+    private func readAutoLoadGuardRecord() -> AutoLoadGuardRecord? {
+        Self.readAutoLoadGuardRecord()
+    }
+
+    private func writeAutoLoadGuardRecord(_ rec: AutoLoadGuardRecord) {
+        Self.writeAutoLoadGuardRecord(rec)
+    }
 
     /// Snapshot of the most recent crash-loop event. Published so the
     /// Models screen can surface a "Last auto-load crashed — load
@@ -590,18 +678,75 @@ final class AppContainer: ObservableObject {
 
     /// Forward memory-pressure notification to the runtime via RuntimeManager.
     ///
-    /// `RuntimeManager.handleMemoryPressure()` calls through to the runtime's
-    /// own implementation (which respects its unload policy) and syncs
-    /// `activeModel` / `state` back to idle if an auto-unload occurred.
+    /// **Two-tier policy.** iOS level-1 warnings are hints, not commands —
+    /// other on-device LLM apps stay loaded across the first one or two.
+    /// We mirror that:
+    ///   1. **Soft tier** (first warning in a 30 s window): drop the
+    ///      embedding model, the KV-reuse `ChatSession`, and ask the
+    ///      runtime to trim cheap caches via `trimMemoryCaches()`. Keep
+    ///      the model weights resident. Typically reclaims 80–250 MB.
+    ///   2. **Hard tier** (second warning in window, or
+    ///      `os_proc_available_memory()` below `weights × 0.6`, or the
+    ///      runtime is idle and the system keeps warning): full unload.
+    ///   3. **Deferred** while a generation is mid-stream — interrupting
+    ///      a streaming reply is worse UX than completing the turn and
+    ///      unloading immediately after. The runtime's own pressure path
+    ///      runs again when the next L1 warning arrives, which on a
+    ///      genuinely tight device happens within a second.
     func handleMemoryPressure() async {
         memoryWarningCount += 1
-        // Drop the embedding model + cache *first*. It's the second
-        // largest retained allocation after the LLM runtime, and
-        // unloading it is essentially free (assets stay on disk,
-        // re-load is cheap). Doing this *before* the runtime
-        // unload sometimes avoids the runtime unload entirely if
-        // the embedding alone was the difference under pressure.
+
+        let now = Date()
+        let withinDebounceWindow = lastMemoryPressureAt.map {
+            now.timeIntervalSince($0) < Self.memoryPressureDebounceSeconds
+        } ?? false
+        lastMemoryPressureAt = now
+
+        let availableBytes = RuntimeManager.availableMemoryBytes()
+        let weightsBytes = runtimeManager.activeModel?.sizeBytes ?? 0
+        let belowHardFloor: Bool = {
+            guard let avail = availableBytes, weightsBytes > 0 else { return false }
+            return Double(avail) < Double(weightsBytes) * 0.6
+        }()
+
+        let isGenerating = runtimeManager.isGenerating
+        let escalate = (memoryWarningCount > 1 && withinDebounceWindow) || belowHardFloor
+
+        let log = Logger(subsystem: "HomeHub", category: "AppContainer")
+        log.warning("Memory pressure #\(self.memoryWarningCount) avail=\(availableBytes ?? -1) weights=\(weightsBytes) within=\(withinDebounceWindow, privacy: .public) hardFloor=\(belowHardFloor, privacy: .public) busy=\(isGenerating, privacy: .public) escalate=\(escalate, privacy: .public)")
+
+        // Surface to Diagnostics. Snapshotted *before* the soft trim so
+        // the reader sees the values that drove the decision, not the
+        // post-trim state. `escalatedToHard` reflects what *will*
+        // happen below — the guard at the bottom doesn't change this.
+        let snapshot = PressureEventSnapshot(
+            occurredAt: now,
+            availableBytes: availableBytes,
+            weightsBytes: weightsBytes,
+            inDebounceWindow: withinDebounceWindow,
+            belowHardFloor: belowHardFloor,
+            wasGenerating: isGenerating,
+            escalatedToHard: escalate && !isGenerating
+        )
+        lastPressureEvent = snapshot
+        // Newest-first append + bounded retention via the shared
+        // helper — keeps the live code and the unit tests on a single
+        // implementation. `@Published` triggers SwiftUI updates; we're
+        // already on the main actor so this is cheap.
+        Self.appendBoundedPressure(snapshot, to: &pressureHistory)
+
+        // Soft tier: always trim cheap caches. Embedding model + runtime
+        // session scratch combined usually frees 80–250 MB on the first
+        // warning, often enough to keep the model resident.
         await embeddingService.unload()
+        await runtimeManager.handleSoftMemoryPressure()
+
+        // Hard tier — escalate only when the policy says so AND the
+        // runtime isn't mid-token. If it's busy, leave the unload to
+        // the next L1 (the OS keeps sending them when memory is truly
+        // tight, so we don't lose the signal).
+        guard escalate, !isGenerating else { return }
+
         if let unloaded = await runtimeManager.handleMemoryPressure() {
             let time = DateFormatter.localizedString(from: .now, dateStyle: .none, timeStyle: .medium)
             lastUnloadNotification = "\(time) – '\(unloaded.displayName)' unloaded (memory pressure #\(memoryWarningCount))"
@@ -612,6 +757,101 @@ final class AppContainer: ObservableObject {
                 occurredAt: .now
             )
         }
+    }
+
+    /// Wall-clock of the most recent `scenePhase == .background`
+    /// transition. Read by `ConversationService` at stream-finish
+    /// time to detect "did this generation cross a background event?"
+    /// — if so the count below ticks and the user gets a quiet hint
+    /// that iOS let the model finish off-screen.
+    @Published private(set) var lastBackgroundedAt: Date?
+
+    /// Lifetime count of generations that ran across a background
+    /// transition and still completed successfully. Visible in
+    /// `DeveloperDiagnosticsView` so users (and the dev) can confirm
+    /// that the iOS background-task assertion is actually buying us
+    /// the extra 30s the entitlement promises. A repeated zero here
+    /// while users report "my reply got cut off on lock" is a strong
+    /// signal that backgrounding is killing streams earlier than
+    /// expected — likely a `BGProcessingTask` config issue.
+    @Published private(set) var backgroundGenerationCompletions: Int = 0
+
+    /// Records a successful background-spanning generation completion.
+    /// Public so `ConversationService` can call it from its stream
+    /// epilogue without needing to plumb a new telemetry channel.
+    func recordBackgroundGenerationCompletion() {
+        backgroundGenerationCompletions += 1
+    }
+
+    /// Sliding-window debounce for the two-tier pressure policy. iOS
+    /// can deliver bursts of L1 warnings ~1 s apart when the device is
+    /// truly tight; we want the *second* one in that burst to escalate
+    /// to a hard unload. A 30 s window is long enough to catch a real
+    /// memory-tight situation, short enough that a single warning from
+    /// switching apps doesn't leave the device "primed" for an unload
+    /// hours later.
+    private var lastMemoryPressureAt: Date?
+    private static let memoryPressureDebounceSeconds: TimeInterval = 30
+
+    /// Structured snapshot of the most recent memory-pressure decision.
+    /// Surfaced in `DeveloperDiagnosticsView` so the user can correlate
+    /// "I just saw a banner" with the policy inputs without needing
+    /// Xcode attached. Updated on every L1 warning regardless of tier.
+    @Published private(set) var lastPressureEvent: PressureEventSnapshot?
+
+    /// Bounded history of recent pressure events, newest first. Drives
+    /// the "Pressure history" disclosure in Diagnostics so the user can
+    /// see *trend* ("8× soft, 1× hard in the last hour") instead of
+    /// just the most recent line. Capped at `pressureHistoryCap` so a
+    /// long session under chronic pressure can't grow this unbounded —
+    /// when the cap is reached the oldest entry is dropped.
+    @Published private(set) var pressureHistory: [PressureEventSnapshot] = []
+    /// Cap is internal (not private) so tests can assert the contract
+    /// at the same value the runtime enforces — duplicating the
+    /// number in test code would let drift hide a regression.
+    static let pressureHistoryCap = 20
+
+    /// Bounded insert used by `handleMemoryPressure(...)` to keep the
+    /// ringbuffer invariants in one place. Newest-first ordering plus
+    /// hard cap (`pressureHistoryCap`). Exposed as a static so tests
+    /// can exercise it without bootstrapping a full container.
+    static func appendBoundedPressure(
+        _ snapshot: PressureEventSnapshot,
+        to history: inout [PressureEventSnapshot],
+        cap: Int = pressureHistoryCap
+    ) {
+        history.insert(snapshot, at: 0)
+        if history.count > cap {
+            history.removeLast(history.count - cap)
+        }
+    }
+
+    /// Wipes the in-memory pressure history and the "last event"
+    /// snapshot. Used by Diagnostics → "Clear" so a tester can start
+    /// fresh before reproducing a bug. The warning *count* is left
+    /// alone (it's the only running total we keep across resets).
+    func clearPressureHistory() {
+        pressureHistory.removeAll()
+        lastPressureEvent = nil
+    }
+
+    struct PressureEventSnapshot: Equatable {
+        let occurredAt: Date
+        /// `os_proc_available_memory()` at the moment of the warning.
+        /// `nil` when the sysctl returned 0 (rare; e.g. simulator).
+        let availableBytes: Int64?
+        /// `activeModel?.sizeBytes` at the moment of the warning.
+        /// 0 when no model was loaded.
+        let weightsBytes: Int64
+        /// `true` if the warning landed inside the debounce window.
+        let inDebounceWindow: Bool
+        /// `true` if `available < weights × 0.6`.
+        let belowHardFloor: Bool
+        /// `true` if the runtime was mid-token-stream.
+        let wasGenerating: Bool
+        /// `true` if the policy escalated to a hard unload. `false` for
+        /// soft-tier (trim-only) responses.
+        let escalatedToHard: Bool
     }
 
     /// Reacts to a `ProcessInfo.thermalStateDidChange` notification. On
@@ -650,6 +890,13 @@ final class AppContainer: ObservableObject {
 
         switch phase {
         case .background:
+            // Stamp the transition timestamp BEFORE any teardown work.
+            // ConversationService reads this in its stream epilogue
+            // to detect whether the in-flight generation crossed a
+            // background event; doing it first means a fast stream
+            // that finishes in the same micro-second as the
+            // background transition still gets counted correctly.
+            lastBackgroundedAt = .now
             if let unloaded = await runtimeManager.handleBackground() {
                 let time = DateFormatter.localizedString(from: .now, dateStyle: .none, timeStyle: .medium)
                 lastUnloadNotification = "\(time) – '\(unloaded.displayName)' unloaded (app backgrounded)"
@@ -666,6 +913,17 @@ final class AppContainer: ObservableObject {
             // jetsam in between loses it. Cheap when there's nothing
             // pending (no-op on `hasChanges == false`).
             await store.flushPendingChanges()
+            // Auto-episodize idle conversations as a fire-and-forget
+            // task. Runs *after* flushPendingChanges so any in-flight
+            // user turn is persisted before we summarize its
+            // conversation. Doesn't block backgrounding — iOS gives us
+            // ~5 s before it forces suspend, and the episode write is
+            // bounded by the auto-summarizer's own runtime. If iOS
+            // suspends mid-write, the partial episode just isn't
+            // persisted; the next background pass picks it up again.
+            Task { [weak self] in
+                await self?.conversationService.autoEpisodizeIdleConversations()
+            }
         case .active:
             // Reload model if it was unloaded while backgrounded.
             if runtimeManager.activeModel == nil {
@@ -683,9 +941,126 @@ final class AppContainer: ObservableObject {
                 UserDefaults.standard.removeObject(forKey: "homeHub.pendingNewChat")
                 await conversationService.createConversation()
             }
+            // Re-validate the HF token in the background if the last
+            // successful validation is older than the stale threshold.
+            // Tokens can be revoked or expire upstream without warning;
+            // catching it here means the user finds out at app launch
+            // rather than 30 s into a multi-GB download. Fire-and-
+            // forget — the result lands in the `huggingFaceTokenStatus`
+            // banner the next time Settings or a gated download is
+            // attempted, never blocks the foreground transition.
+            Task { await refreshHFTokenStatusIfStale() }
         default:
             break
         }
+    }
+
+    /// `nil` until the first re-validation completes. Once set,
+    /// reflects the freshest known state of the stored HF token —
+    /// surfaced in Diagnostics and used by the gated-download path to
+    /// route the user to Settings before a doomed attempt.
+    @Published private(set) var huggingFaceTokenStatus: HFTokenStatus?
+
+    enum HFTokenStatus: Equatable {
+        /// Validated successfully. `at` is wall-clock time of the probe.
+        case valid(username: String, at: Date)
+        /// HF rejected the token (401/403). Either revoked, expired,
+        /// or pasted wrong. The Settings UI should highlight the row.
+        case invalid(at: Date)
+        /// Couldn't reach HF — token might still be fine. Treated as
+        /// "don't show the alarm bell" by the UI; user retries on
+        /// better network.
+        case networkError(at: Date, detail: String)
+    }
+
+    /// How old the last successful validation can be before we re-probe
+    /// on foreground. A week is a sane default — HF tokens don't
+    /// silently rotate, but users sometimes revoke them weeks later
+    /// during a clean-up pass and we want to catch that. Configurable
+    /// only at compile time; expose it if users complain.
+    private static let hfTokenStaleThreshold: TimeInterval = 7 * 24 * 60 * 60
+
+    /// Minimum gap between two foreground-triggered token refreshes.
+    /// Prevents the "user toggles to Notification Center and back
+    /// every 10 s while doom-scrolling" case from blasting HF with
+    /// repeated whoami probes — most calls would already short-circuit
+    /// on the stale-threshold check anyway, but this is the belt-and-
+    /// braces for the *first* foreground after a stale verification:
+    /// without it, three quick foregrounds in 5 s = three identical
+    /// network probes in flight. 5 minutes is long enough to coalesce
+    /// scroll-back-and-forth, short enough that a user who left the
+    /// app for lunch (~hour) always gets a fresh check.
+    private static let hfRefreshMinInterval: TimeInterval = 5 * 60
+
+    /// Wall-clock of the most recent foreground-triggered HF refresh.
+    /// Explicit user actions (the Settings "Re-ověřit" button) bypass
+    /// this gate — they go through `forceRevalidateHFToken()` directly.
+    private var lastHFRefreshAt: Date?
+
+    /// Runs the re-validation iff the stored verification is older than
+    /// `hfTokenStaleThreshold` (or has never been recorded at all even
+    /// though a token is present — covers the "user typed it but
+    /// hasn't validated since a hotfix shipped" upgrade case).
+    /// No-op when no token is configured.
+    ///
+    /// Rate-limited via `hfRefreshMinInterval` — repeated foreground
+    /// transitions within 5 minutes don't re-probe HF a second time.
+    /// The published status from the prior probe stays accurate, so
+    /// the UI doesn't briefly flicker through "loading" states on
+    /// every scroll-back-to-app.
+    func refreshHFTokenStatusIfStale() async {
+        guard let token = HFTokenStore.load(), !token.isEmpty else {
+            // No token → clear any stale status so the UI doesn't
+            // render "valid" after the user cleared their token in
+            // a previous session.
+            huggingFaceTokenStatus = nil
+            return
+        }
+        if let last = lastHFRefreshAt,
+           Date().timeIntervalSince(last) < Self.hfRefreshMinInterval {
+            // Rate limiter: skip the probe entirely. The published
+            // status from the previous refresh stays — that's the
+            // freshest information we have, and re-running the probe
+            // wouldn't change the answer in <5 min anyway.
+            return
+        }
+        lastHFRefreshAt = Date()
+
+        let last = HFTokenStore.lastVerification()
+        if let last, Date().timeIntervalSince(last.at) < Self.hfTokenStaleThreshold {
+            // Fresh enough — surface the cached state without a
+            // network probe so the UI knows what we believe.
+            huggingFaceTokenStatus = .valid(username: last.username, at: last.at)
+            return
+        }
+        await forceRevalidateHFToken()
+    }
+
+    /// Unconditional re-validation. Used by the Settings "Re-ověřit"
+    /// button after the user rotates their token on huggingface.co
+    /// and wants confirmation. Updates `huggingFaceTokenStatus` for
+    /// every outcome (including `.invalid` / `.networkError`) — unlike
+    /// `refreshHFTokenStatusIfStale`, this path NEVER reads the
+    /// cached verification, so a stored-but-revoked token will be
+    /// correctly downgraded to `.invalid` even if the cached metadata
+    /// still says it was valid yesterday.
+    @discardableResult
+    func forceRevalidateHFToken() async -> HuggingFaceAPIClient.TokenValidation? {
+        guard let token = HFTokenStore.load(), !token.isEmpty else {
+            huggingFaceTokenStatus = nil
+            return nil
+        }
+        let result = await HuggingFaceAPIClient.validateToken(token)
+        switch result {
+        case .valid(let username):
+            HFTokenStore.recordVerification(username: username)
+            huggingFaceTokenStatus = .valid(username: username, at: Date())
+        case .invalid:
+            huggingFaceTokenStatus = .invalid(at: Date())
+        case .networkError(let detail):
+            huggingFaceTokenStatus = .networkError(at: Date(), detail: detail)
+        }
+        return result
     }
 
     // MARK: - Factories

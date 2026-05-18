@@ -195,6 +195,22 @@ actor EmbeddingService {
         cacheOrder.removeAll { $0 == content }
     }
 
+    /// Inserts a pre-computed vector into the LRU. Used by
+    /// `ConversationRecallService` when hydrating its persistent
+    /// per-message index — the vector was computed (and persisted)
+    /// in a previous session, and we'd rather inject it directly
+    /// than recompute from text. Float32 input is widened to Double
+    /// to match the cache's internal type; no precision loss for
+    /// cosine similarity given how aggressively NLContextualEmbedding
+    /// already quantizes its representation upstream.
+    ///
+    /// Safe to call repeatedly with the same key — refresh just
+    /// bumps the LRU position. Eviction policy is unchanged: the
+    /// least-recently-used entry leaves when capacity is hit.
+    func primeCache(content: String, vector: [Float]) {
+        cacheStore(vector.map(Double.init), for: content)
+    }
+
     /// Inserts (or refreshes) a cache entry, evicting the least-recently-
     /// used entry when the cache is at capacity. Centralised so every
     /// cache write goes through the same LRU bookkeeping.

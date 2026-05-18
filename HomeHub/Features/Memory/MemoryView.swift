@@ -28,7 +28,7 @@ struct MemoryView: View {
                 } else {
                     List {
                         if !memory.candidates.isEmpty {
-                            Section("Proposed") {
+                            Section {
                                 ForEach(memory.candidates) { candidate in
                                     CandidateRow(candidate: candidate) {
                                         HHHaptics.notification(.success, enabled: hapticsEnabled)
@@ -36,6 +36,53 @@ struct MemoryView: View {
                                     } onReject: {
                                         HHHaptics.impact(.light, enabled: hapticsEnabled)
                                         memory.reject(candidateID: candidate.id)
+                                    }
+                                }
+                                // Bulk-action row appears once there
+                                // are 2+ candidates — for a single
+                                // pending row the per-row Approve/
+                                // Reject buttons are already inline.
+                                // Two-candidate threshold prevents a
+                                // pointless "Approve all (1)" button.
+                                if memory.candidates.count >= 2 {
+                                    HStack(spacing: HHTheme.spaceM) {
+                                        Button {
+                                            HHHaptics.notification(.success, enabled: hapticsEnabled)
+                                            Task { await memory.acceptAllCandidates() }
+                                        } label: {
+                                            Label("Approve all (\(memory.candidates.count))",
+                                                  systemImage: "checkmark.circle.fill")
+                                                .frame(maxWidth: .infinity)
+                                        }
+                                        .buttonStyle(.borderedProminent)
+                                        .tint(HHTheme.accent)
+
+                                        Button(role: .destructive) {
+                                            HHHaptics.impact(.light, enabled: hapticsEnabled)
+                                            memory.rejectAllCandidates()
+                                        } label: {
+                                            Label("Dismiss all", systemImage: "xmark.circle")
+                                                .frame(maxWidth: .infinity)
+                                        }
+                                        .buttonStyle(.bordered)
+                                    }
+                                    .padding(.top, 4)
+                                }
+                            } header: {
+                                HStack {
+                                    Text("Proposed")
+                                    Spacer()
+                                    // Quick total chip — answers "how
+                                    // many things am I being asked to
+                                    // review?" without scanning the
+                                    // list manually.
+                                    if memory.candidates.count >= 2 {
+                                        Text("\(memory.candidates.count)")
+                                            .font(HHTheme.caption.weight(.semibold))
+                                            .foregroundStyle(HHTheme.accent)
+                                            .padding(.horizontal, 6)
+                                            .padding(.vertical, 2)
+                                            .background(HHTheme.accent.opacity(0.15), in: Capsule())
                                     }
                                 }
                             }
@@ -72,10 +119,22 @@ struct MemoryView: View {
                         if !memory.episodes.isEmpty {
                             Section("Episodes") {
                                 ForEach(memory.episodes) { episode in
-                                    EpisodeRow(episode: episode,
-                                               onToggleDisabled: {
-                                                   Task { await memory.setEpisodeDisabled(!episode.disabled, for: episode.id) }
-                                               })
+                                    EpisodeRow(
+                                        episode: episode,
+                                        onToggleDisabled: {
+                                            Task { await memory.setEpisodeDisabled(!episode.disabled, for: episode.id) }
+                                        },
+                                        onOpenSource: {
+                                            // Route through the central
+                                            // DeepLink machinery so the
+                                            // chat tab uses the same
+                                            // open-by-ID path that
+                                            // Spotlight + Shortcuts use.
+                                            appState.handle(
+                                                deepLink: .conversation(episode.sourceConversationID)
+                                            )
+                                        }
+                                    )
                                 }
                                 .onDelete { offsets in
                                     let targets = offsets.map { memory.episodes[$0] }
@@ -255,6 +314,11 @@ private struct FactRow: View {
 private struct EpisodeRow: View {
     let episode: MemoryEpisode
     let onToggleDisabled: () -> Void
+    /// Tap-on-row callback. Routes the user back to the source
+    /// conversation via the existing `DeepLink.conversation` path —
+    /// answers "where did this episode come from?" without making
+    /// the user remember which chat the gist describes.
+    var onOpenSource: (() -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -269,12 +333,26 @@ private struct EpisodeRow: View {
                         .font(HHTheme.caption)
                         .foregroundStyle(HHTheme.textSecondary)
                 }
+                if onOpenSource != nil {
+                    // Chevron hints "this row is tappable" without
+                    // adding a full disclosure indicator (which would
+                    // imply a separate detail screen, which we don't
+                    // have — the tap is a tab-switch + scroll).
+                    Image(systemName: "arrow.up.right.square")
+                        .font(.system(size: 12))
+                        .foregroundStyle(HHTheme.textSecondary)
+                        .accessibilityLabel("Open source conversation")
+                }
             }
             Text(episode.summary)
                 .font(HHTheme.body)
                 .foregroundStyle(episode.disabled ? HHTheme.textSecondary : HHTheme.textPrimary)
         }
         .padding(.vertical, 4)
+        .contentShape(Rectangle())  // make full row tappable, not just the text
+        .onTapGesture {
+            onOpenSource?()
+        }
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             Button(action: onToggleDisabled) {
                 Label(episode.disabled ? "Enable" : "Disable",

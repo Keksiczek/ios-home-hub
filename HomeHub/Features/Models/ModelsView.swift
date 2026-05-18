@@ -6,6 +6,7 @@ struct ModelsView: View {
     @EnvironmentObject private var downloads: ModelDownloadService
     @EnvironmentObject private var runtime:   RuntimeManager
     @EnvironmentObject private var settings:  SettingsService
+    @EnvironmentObject private var appState:  AppState
 
     /// Collapses multi-source state into per-row `ModelBrowserStatus` values
     /// and debounces at 50 ms so 10 Hz progress ticks don't rebuild the list.
@@ -22,6 +23,13 @@ struct ModelsView: View {
     @State private var downloadTarget: LocalModel?
     @State private var infoTarget:     LocalModel?
     @State private var deleteTarget:   LocalModel?
+    /// Set when the user taps Download on a `requiresAuth` model
+    /// *before* configuring an HF token. We surface a one-screen
+    /// "how to get a token" sheet instead of letting the download
+    /// fail 5 seconds later with the same advice in a tiny error
+    /// label — the sheet teaches the workflow once, then the user
+    /// can opt to either Cancel or Open Settings inline.
+    @State private var gatedHelpTarget: LocalModel?
     @State private var showAddFromURL  = false
     @State private var availableBytes: Int64 = 0
     @State private var searchText      = ""
@@ -287,7 +295,16 @@ struct ModelsView: View {
                             ModelBrowserRow(
                                 item:              item,
                                 isRunningOnPhone:  isRunningOnPhone,
-                                onDownload:        { downloadTarget = item.model },
+                                onDownload: {
+                                    // Pre-flight UX gate: gated repo +
+                                    // no token → teach the workflow
+                                    // before letting the download fail.
+                                    if item.model.requiresAuth, !HFTokenStore.hasToken {
+                                        gatedHelpTarget = item.model
+                                    } else {
+                                        downloadTarget = item.model
+                                    }
+                                },
                                 onCancel:          { downloads.cancel(item.model.id) },
                                 onLoad: {
                                     Task {
@@ -298,7 +315,8 @@ struct ModelsView: View {
                                 onUnload:          { Task { await runtime.unload() } },
                                 onCancelMLXLoad:   { runtime.cancelMLXLoad() },
                                 onDelete:          { deleteTarget = item.model },
-                                onInfo:            { infoTarget   = item.model }
+                                onInfo:            { infoTarget   = item.model },
+                                onOpenSettings:    { appState.selectedTab = .settings }
                             )
                         }
                     } header: {
@@ -366,6 +384,16 @@ struct ModelsView: View {
             }
             .sheet(isPresented: $showAddFromURL) {
                 AddFromURLSheet()
+            }
+            .sheet(item: $gatedHelpTarget) { model in
+                GatedModelHelpSheet(
+                    model: model,
+                    onOpenSettings: {
+                        gatedHelpTarget = nil
+                        appState.selectedTab = .settings
+                    },
+                    onDismiss: { gatedHelpTarget = nil }
+                )
             }
             // ── Download confirmation alert ─────────────────────────────────
             .alert(
@@ -496,6 +524,11 @@ private struct ModelBrowserRow: View {
     let onCancelMLXLoad:  () -> Void
     let onDelete:         () -> Void
     let onInfo:           () -> Void
+    /// Optional deep-link into Settings → Hugging Face. Surfaced as
+    /// an inline button on `downloadFailed` rows when the failure
+    /// reason looks like a missing/expired token. Optional so non-auth
+    /// failure paths render exactly as before.
+    var onOpenSettings:   (() -> Void)?
 
     private var model: LocalModel { item.model }
 
@@ -515,6 +548,9 @@ private struct ModelBrowserRow: View {
                         // on the long subtitle below.
                         if isRunningOnPhone && isIPadOnly {
                             experimentalBadge
+                        }
+                        if model.requiresAuth {
+                            authRequiredBadge
                         }
                         if model.isUserAdded {
                             Text("Custom")
@@ -555,6 +591,22 @@ private struct ModelBrowserRow: View {
         !model.recommendedFor.contains(.iPhone)
     }
 
+    /// Heuristic for "this failure was about authentication". Catches
+    /// both Czech-localised manifest errors ("chráněný", "Vyžaduje
+    /// přihlášení", "token") and English HTTP-shaped messages
+    /// ("HTTP 401/403"). False positives are cheap (an extra button
+    /// appears that the user can ignore); false negatives lose the
+    /// quick path to Settings, which is the whole point of the CTA.
+    private func isAuthRelatedFailure(_ reason: String) -> Bool {
+        let lc = reason.lowercased()
+        if lc.contains("token") { return true }
+        if lc.contains("přihlášení") || lc.contains("prihlaseni") { return true }
+        if lc.contains("chráněný") || lc.contains("chraneny")     { return true }
+        if lc.contains("hugging face") || lc.contains("huggingface") { return true }
+        if lc.contains("http 401") || lc.contains("http 403")        { return true }
+        return false
+    }
+
     private var backendBadge: some View {
         Text(model.backend.displayName)
             .font(.system(size: 10, weight: .semibold))
@@ -576,6 +628,24 @@ private struct ModelBrowserRow: View {
             .background(HHTheme.warning.opacity(0.18), in: Capsule())
             .foregroundStyle(HHTheme.warning)
             .accessibilityLabel("Experimentální na iPhonu, doporučeno pro iPad")
+    }
+
+    /// Lock pill shown for `requiresAuth` models (Gemma, Llama 3 8B+ …).
+    /// Mirrors the visual weight of `experimentalBadge` but uses a
+    /// neutral grey palette — these models aren't broken, they just
+    /// need the HF token from Settings before they can be fetched.
+    private var authRequiredBadge: some View {
+        HStack(spacing: 3) {
+            Image(systemName: "lock.fill")
+                .font(.system(size: 9, weight: .semibold))
+            Text("Vyžaduje přihlášení")
+                .font(.system(size: 10, weight: .semibold))
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 2)
+        .background(HHTheme.textSecondary.opacity(0.14), in: Capsule())
+        .foregroundStyle(HHTheme.textSecondary)
+        .accessibilityLabel("Vyžaduje Hugging Face token v Nastavení")
     }
 
     private var badgeFg: Color {
@@ -768,7 +838,7 @@ private struct ModelBrowserRow: View {
                 Label(reason, systemImage: "exclamationmark.triangle.fill")
                     .font(HHTheme.caption)
                     .foregroundStyle(HHTheme.warning)
-                    .lineLimit(3)
+                    .lineLimit(4)
                 HStack(spacing: HHTheme.spaceS) {
                     // Retry always re-triggers the download for both
                     // formats. The previous wiring routed MLX retry to
@@ -778,6 +848,18 @@ private struct ModelBrowserRow: View {
                     Button(item.hasResumeData ? "Resume" : "Retry", action: onDownload)
                         .buttonStyle(HHSecondaryButtonStyle())
                         .disabled(!item.actions.canDownload)
+                    // Surface the "go fix your token" path inline when
+                    // the failure is auth-shaped. We string-match on
+                    // the localized reason because both the manifest
+                    // path (`HFError.gatedRepository`) and the
+                    // download path (URLError 401/403) end up here as
+                    // text; threading a structured kind through the
+                    // catalog would mean restructuring the install
+                    // state enum for a single UI hint.
+                    if isAuthRelatedFailure(reason), onOpenSettings != nil {
+                        Button("Otevřít Nastavení") { onOpenSettings?() }
+                            .buttonStyle(HHSecondaryButtonStyle())
+                    }
                     deleteButton
                 }
             }
@@ -876,5 +958,91 @@ private struct ModelBrowserRow: View {
                 .imageScale(.medium)
         }
         .buttonStyle(.plain)
+    }
+}
+
+// MARK: - GatedModelHelpSheet
+
+/// One-screen "how to download a gated model" tutorial. Reached when
+/// the user taps Download on a `requiresAuth` model without an HF
+/// token configured. Three steps, plain language, no jargon — the
+/// goal is for a non-developer to follow it.
+///
+/// We keep this as a separate sheet (rather than baking it into the
+/// download alert) because alerts cap at ~3 lines of body before
+/// truncating on iPhone, and the workflow needs more breathing room.
+private struct GatedModelHelpSheet: View {
+    let model: LocalModel
+    let onOpenSettings: () -> Void
+    let onDismiss: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label("Tento model je chráněný", systemImage: "lock.fill")
+                            .font(.title3.weight(.semibold))
+                            .foregroundStyle(HHTheme.warning)
+                        Text("**\(model.displayName)** patří mezi modely, které autor (např. Google u Gemmy) zveřejňuje pouze pro registrované uživatele Hugging Face.")
+                            .font(.body)
+                            .foregroundStyle(HHTheme.textPrimary)
+                    }
+
+                    Divider()
+
+                    VStack(alignment: .leading, spacing: 14) {
+                        Text("Jak ho stáhnout (3 kroky)")
+                            .font(.headline)
+                        helpStep(
+                            number: 1,
+                            title: "Vytvoř HF účet a přijmi licenci",
+                            body: "Otevři huggingface.co, založ si bezplatný účet a na stránce modelu klikni \"Access repository\". U Gemma modelů musíš přijmout Google licenci, jinak token nepomůže."
+                        )
+                        helpStep(
+                            number: 2,
+                            title: "Vygeneruj Read-token",
+                            body: "Jdi na huggingface.co/settings/tokens, klikni \"New token\", vyber typ \"Read\" a token zkopíruj. Začíná `hf_`."
+                        )
+                        helpStep(
+                            number: 3,
+                            title: "Vlož token do Nastavení",
+                            body: "V této appce: Nastavení → App Experience → Hugging Face. Vlož token a klikni \"Ověřit a uložit\". Zelená ikona = funguje. Pak se vrať sem a stáhni model."
+                        )
+                    }
+
+                    Divider()
+
+                    Text("Token se ukládá zašifrovaně do Keychainu a nikdy neopouští zařízení kromě požadavků přímo na huggingface.co.")
+                        .font(.caption)
+                        .foregroundStyle(HHTheme.textSecondary)
+                }
+                .padding()
+            }
+            .navigationTitle("Vyžaduje přihlášení")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Zavřít", action: onDismiss)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Otevřít Nastavení", action: onOpenSettings)
+                }
+            }
+        }
+    }
+
+    private func helpStep(number: Int, title: String, body: String) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Text("\(number)")
+                .font(.headline)
+                .frame(width: 28, height: 28)
+                .background(HHTheme.accent.opacity(0.18), in: Circle())
+                .foregroundStyle(HHTheme.accent)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title).font(.subheadline.weight(.semibold))
+                Text(body).font(.callout).foregroundStyle(HHTheme.textPrimary)
+            }
+        }
     }
 }

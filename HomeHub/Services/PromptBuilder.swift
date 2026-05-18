@@ -100,6 +100,27 @@ enum PromptBuilder {
             "- Current date: \(df.string(from: ctx.now)) (\(weekday.string(from: ctx.now)))",
             "- Local time: \(tf.string(from: ctx.now)) \(ctx.timeZone.identifier)"
         ]
+
+        // Czech-locale ready phrase. Small Llama models butcher Czech
+        // case morphology (we've seen "Dnešný den je nedělinou" when
+        // asked "Co je dnes za den?"). Giving the model an explicit,
+        // grammatically correct Czech wording it can quote verbatim
+        // ("Dnes je neděle, 17. května 2026.") removes the failure mode
+        // without forcing a model swap.
+        if ctx.settings.language.resolved(locale: ctx.locale) == .cs {
+            let csWeekday = DateFormatter()
+            csWeekday.locale = Locale(identifier: "cs_CZ")
+            csWeekday.timeZone = ctx.timeZone
+            csWeekday.dateFormat = "EEEE"
+            let csDate = DateFormatter()
+            csDate.locale = Locale(identifier: "cs_CZ")
+            csDate.timeZone = ctx.timeZone
+            csDate.dateFormat = "d. MMMM yyyy"
+            let day = csWeekday.string(from: ctx.now).lowercased()
+            let date = csDate.string(from: ctx.now)
+            lines.append("- Když se uživatel zeptá na dnešní den nebo datum, použij přesně tuto formulaci: \"Dnes je \(day), \(date).\"")
+        }
+
         let loc = ctx.settings.locationHint.trimmingCharacters(in: .whitespacesAndNewlines)
         if !loc.isEmpty {
             lines.append("- Location: \(loc)")
