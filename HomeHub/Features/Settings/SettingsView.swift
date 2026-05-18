@@ -352,15 +352,23 @@ struct SettingsView: View {
 
     private var toolsSection: some View {
         Section {
-            ForEach(Array(AppSettings.defaultEnabledTools).sorted(), id: \.self) { toolName in
+            ForEach(Array(AppSettings.allKnownTools).sorted(), id: \.self) { toolName in
                 ToolRow(
                     toolName: toolName,
                     isEnabled: settings.current.enabledTools.contains(toolName),
                     availability: toolAvailability[toolName] ?? .enabled,
                     onToggle: { enabled in
-                        var current = settings.current.enabledTools
-                        if enabled { current.insert(toolName) } else { current.remove(toolName) }
-                        Task { await settings.set(\.enabledTools, to: current) }
+                        Task {
+                            // Route through AppContainer.setToolEnabled
+                            // so opt-in skills (WebSearch) get registered
+                            // / unregistered with SkillManager. A direct
+                            // mutation to enabledTools alone left
+                            // WebSearch toggled-on-but-not-registered,
+                            // and the model correctly reported "I can't
+                            // search the web."
+                            await container.setToolEnabled(toolName, enabled: enabled)
+                            await refreshToolAvailability()
+                        }
                     },
                     onGrantPermission: { openAppSettings() }
                 )
@@ -1061,7 +1069,7 @@ private struct ToolRow: View {
                     set: { value in onToggle(value) }
                 )) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(toolName)
+                        Text(Self.humanLabel(for: toolName))
                         Text(statusLine)
                             .font(HHTheme.caption)
                             .foregroundStyle(statusColor)
@@ -1083,6 +1091,20 @@ private struct ToolRow: View {
         case .enabled:                 return "Ready"
         case .unavailable(let reason): return "Unavailable — \(reason)"
         case .permission(let prompt):  return "Needs permission — \(prompt)"
+        }
+    }
+
+    /// Maps a raw skill name (used as the registry key + on the wire to
+    /// the LLM) into a human-friendly label for the toggle row. The
+    /// wire format keeps the CamelCase identifiers because changing
+    /// them would force every model to relearn the new names; the UI
+    /// just renders them prettier.
+    static func humanLabel(for skillName: String) -> String {
+        switch skillName {
+        case "WebSearch":  return "Web Search"
+        case "DeviceInfo": return "Device Info"
+        case "HomeKit":    return "HomeKit"
+        default:           return skillName
         }
     }
 

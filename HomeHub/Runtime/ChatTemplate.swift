@@ -56,7 +56,16 @@ enum ChatTemplate {
             let rendered: String
             switch arch {
             case "llama":           rendered = renderLlama3(prompt)
-            case "gemma3", "gemma": rendered = renderGemma3(prompt)
+            // Gemma 3n shares the surface `<start_of_turn>` envelope with
+            // Gemma 3 — only the model's internal MatFormer routing
+            // differs. Rendering Gemma 3n with the Gemma 3 template
+            // gives the model the exact prefix structure it was
+            // pre-trained on. Without this case the family-string
+            // "Gemma3n" used to fall through to ChatML, which the
+            // model then treated as free-form text and replied with
+            // mixed-language nonsense.
+            case "gemma3n", "gemma3", "gemma":
+                rendered = renderGemma3(prompt)
             case "gemma2":          rendered = renderGemma2(prompt)
             case "qwen2", "qwen3", "phi3", "phi2":
                 rendered = renderChatML(prompt)
@@ -72,7 +81,10 @@ enum ChatTemplate {
         let rendered: String
         switch key {
         case "llama":   rendered = renderLlama3(prompt)
-        case "gemma3":  rendered = renderGemma3(prompt)
+        // Mirror the architecture-side fix: catalog family "Gemma3n"
+        // should resolve to the Gemma 3 envelope, not ChatML.
+        case "gemma3n", "gemma3":
+            rendered = renderGemma3(prompt)
         case "gemma2":  rendered = renderGemma2(prompt)
         default:
             return (renderChatML(prompt), key.isEmpty ? .chatMLFallback : .catalogFamily(key))

@@ -633,6 +633,25 @@ final class AppContainer: ObservableObject {
         }
     }
 
+    /// Generic toggle endpoint used by the Settings UI. Persists the
+    /// allow-list change AND handles any side-effects for tools that
+    /// need conditional registration (currently WebSearch — registered
+    /// only when explicitly enabled, since its prompt-side privacy
+    /// rail flips based on registration presence in `SkillManager`).
+    ///
+    /// Always-registered skills (Calculator, Calendar, …) need no
+    /// side-effect here: the allow-list filter at call time already
+    /// hides disabled tools from the prompt.
+    func setToolEnabled(_ toolName: String, enabled: Bool) async {
+        if toolName.lowercased() == "websearch" {
+            await setWebSearchEnabled(enabled)
+            return
+        }
+        var current = settingsService.current.enabledTools
+        if enabled { current.insert(toolName) } else { current.remove(toolName) }
+        await settingsService.set(\.enabledTools, to: current)
+    }
+
     /// Convenience: toggle the WebSearch tool from Settings UI without
     /// reaching into both `SettingsService` and `SkillManager` directly.
     /// Persists the allow-list change AND registers/unregisters the skill

@@ -45,24 +45,55 @@ enum PromptMode: String, Sendable, Hashable, CaseIterable {
 
     /// Returns the `RuntimeParameters` appropriate for this mode.
     ///
-    /// Chat and tool-followup use the caller-supplied `settings`; the
-    /// other modes override temperature and max-tokens for deterministic,
-    /// tightly-scoped output.
+    /// Sampling precedence:
+    ///   1. If the user has customised any sampling field in Settings
+    ///      (detected by comparing against `AppSettings.factorySampling`),
+    ///      their values win — power users keep control.
+    ///   2. Otherwise the loaded model's `ModelCapabilityProfile`
+    ///      provides vendor-recommended values per family. This is
+    ///      critical for small models — Gemma 3n needs temp 0.4 +
+    ///      repetition_penalty 1.2 to stay on-language, while Qwen 2.5
+    ///      wants temp 0.7 + top_k 20. Sharing the cross-family default
+    ///      of temp 0.7 / no repetition penalty caused Gemma replies to
+    ///      drift into mixed-language gibberish in the field.
+    ///   3. Tool-followup forces near-deterministic sampling (temp 0.1)
+    ///      regardless — the model is just rendering an observation,
+    ///      not being creative.
     func defaultParameters(
         settings: AppSettings,
+        profile: ModelCapabilityProfile? = nil,
         stopSequences: [String] = []
     ) -> RuntimeParameters {
         switch self {
-        case .chat, .toolFollowup:
+        case .chat:
+            let s = Self.resolvedSampling(settings: settings, profile: profile)
             return RuntimeParameters(
                 maxTokens: settings.maxResponseTokens,
-                temperature: settings.temperature,
-                topP: settings.topP,
+                temperature: s.temperature,
+                topP: s.topP,
                 stopSequences: stopSequences,
-                topK: settings.topK,
-                minP: settings.minP,
-                repeatPenalty: settings.repeatPenalty,
-                repeatPenaltyLastN: settings.repeatPenaltyLastN
+                topK: s.topK,
+                minP: s.minP,
+                repeatPenalty: s.repeatPenalty,
+                repeatPenaltyLastN: s.repeatPenaltyLastN
+            )
+        case .toolFollowup:
+            // Deterministic: the model has the observation in context
+            // and just needs to render it. Creative sampling produced
+            // hallucinated outputs ("Takových 2 stupňů" appearing
+            // alongside a real calculator result). Keep top_p high so
+            // we don't constrain phrasing, but drop temperature low
+            // enough that the answer is essentially argmax over the
+            // top tokens.
+            return RuntimeParameters(
+                maxTokens: settings.maxResponseTokens,
+                temperature: 0.1,
+                topP: 0.95,
+                stopSequences: stopSequences,
+                topK: 20,
+                minP: 0.0,
+                repeatPenalty: profile?.recommendedRepeatPenalty ?? 1.05,
+                repeatPenaltyLastN: 64
             )
         case .summarization:
             // Tight, deterministic parameters; we still want a touch of repeat
@@ -91,5 +122,49 @@ enum PromptMode: String, Sendable, Hashable, CaseIterable {
                 repeatPenaltyLastN: 0
             )
         }
+    }
+
+    /// Compact bag of the six sampling knobs we route to the runtime.
+    /// Kept private because it only exists to make the precedence rules
+    /// in `resolvedSampling` readable.
+    private struct ResolvedSampling {
+        let temperature: Double
+        let topP: Double
+        let topK: Int
+        let minP: Double
+        let repeatPenalty: Double
+        let repeatPenaltyLastN: Int
+    }
+
+    /// Picks family-recommended sampling when the user is on the
+    /// factory defaults, user-customised sampling otherwise. The
+    /// detection uses field-by-field equality against
+    /// `AppSettings.factorySampling` — that way someone who tweaked
+    /// just the temperature still keeps their tweak while the
+    /// remaining fields can pick up family recommendations they
+    /// never explicitly chose.
+    private static func resolvedSampling(
+        settings: AppSettings,
+        profile: ModelCapabilityProfile?
+    ) -> ResolvedSampling {
+        guard let profile else {
+            return ResolvedSampling(
+                temperature: settings.temperature,
+                topP: settings.topP,
+                topK: settings.topK,
+                minP: settings.minP,
+                repeatPenalty: settings.repeatPenalty,
+                repeatPenaltyLastN: settings.repeatPenaltyLastN
+            )
+        }
+        let f = AppSettings.factorySampling
+        return ResolvedSampling(
+            temperature:        settings.temperature        == f.temperature        ? profile.recommendedTemperature        : settings.temperature,
+            topP:               settings.topP               == f.topP               ? profile.recommendedTopP               : settings.topP,
+            topK:               settings.topK               == f.topK               ? profile.recommendedTopK               : settings.topK,
+            minP:               settings.minP               == f.minP               ? profile.recommendedMinP               : settings.minP,
+            repeatPenalty:      settings.repeatPenalty      == f.repeatPenalty      ? profile.recommendedRepeatPenalty      : settings.repeatPenalty,
+            repeatPenaltyLastN: settings.repeatPenaltyLastN == f.repeatPenaltyLastN ? profile.recommendedRepeatPenaltyLastN : settings.repeatPenaltyLastN
+        )
     }
 }

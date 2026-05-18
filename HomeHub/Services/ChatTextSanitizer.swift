@@ -115,6 +115,10 @@ enum ChatTextSanitizer {
         // unchanged — tool-result rendering depends on them.
         let emptyEnvelopePatterns = [
             "<tool_call>\\s*</tool_call>",
+            "<function_call>\\s*</function_call>",
+            "<function>\\s*</function>",
+            "<tool>\\s*</tool>",
+            "\\[TOOL_CALLS\\]\\s*\\[/TOOL_CALLS\\]",
             "<Observation>\\s*</Observation>"
         ]
         for pattern in emptyEnvelopePatterns {

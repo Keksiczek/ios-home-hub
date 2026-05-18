@@ -1363,7 +1363,12 @@
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				INFOPLIST_KEY_BGTaskSchedulerPermittedIdentifiers = cz.keksiczek.homehub.ingest;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
+				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "Home Hub reads your calendar to answer 'what's on my calendar today?' when the Calendar tool is enabled. Events are read only; nothing is written or sent off-device.";
+				INFOPLIST_KEY_NSCalendarsUsageDescription = "Home Hub reads your calendar to answer date and schedule questions when the Calendar tool is enabled. Events stay on this device.";
+				INFOPLIST_KEY_NSHomeKitUsageDescription = "Home Hub uses HomeKit to control your accessories when the HomeKit tool is enabled. All actions stay within your Home network.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Home Hub uses the microphone for voice dictation when you tap the voice call control. Audio stays on this device.";
+				INFOPLIST_KEY_NSRemindersFullAccessUsageDescription = "Home Hub reads and writes Reminders when the Reminders tool is enabled. All changes happen on this device.";
+				INFOPLIST_KEY_NSRemindersUsageDescription = "Home Hub reads and writes Reminders when the Reminders tool is enabled. All changes happen on this device.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Home Hub uses on-device speech recognition to transcribe your voice into chat text. Recognition runs locally; no audio leaves the device.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -1452,7 +1457,12 @@
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				INFOPLIST_KEY_BGTaskSchedulerPermittedIdentifiers = cz.keksiczek.homehub.ingest;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
+				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "Home Hub reads your calendar to answer 'what's on my calendar today?' when the Calendar tool is enabled. Events are read only; nothing is written or sent off-device.";
+				INFOPLIST_KEY_NSCalendarsUsageDescription = "Home Hub reads your calendar to answer date and schedule questions when the Calendar tool is enabled. Events stay on this device.";
+				INFOPLIST_KEY_NSHomeKitUsageDescription = "Home Hub uses HomeKit to control your accessories when the HomeKit tool is enabled. All actions stay within your Home network.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Home Hub uses the microphone for voice dictation when you tap the voice call control. Audio stays on this device.";
+				INFOPLIST_KEY_NSRemindersFullAccessUsageDescription = "Home Hub reads and writes Reminders when the Reminders tool is enabled. All changes happen on this device.";
+				INFOPLIST_KEY_NSRemindersUsageDescription = "Home Hub reads and writes Reminders when the Reminders tool is enabled. All changes happen on this device.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Home Hub uses on-device speech recognition to transcribe your voice into chat text. Recognition runs locally; no audio leaves the device.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;

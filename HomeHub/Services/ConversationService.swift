@@ -835,15 +835,42 @@ final class ConversationService: ObservableObject {
     /// These are checked at the text level in addition to the EOS token check
     /// inside the active runtime, providing double-stop protection for models that use
     /// a turn-ending token distinct from their vocabulary EOS.
+    /// Stop sequences passed to the runtime. Includes both end-of-turn
+    /// markers AND tool-envelope close tags — the latter so weaker
+    /// models stop immediately after finishing the tool call instead
+    /// of continuing into hallucinated prose.
     private func stopSequences(for model: LocalModel?) -> [String] {
+        familyEndOfTurnStops(for: model) + Self.universalToolStops
+    }
+
+    /// Per-family end-of-turn markers ONLY. Used both as runtime stops
+    /// and as the post-stream strip set — these are structural turn
+    /// boundaries we don't want to leak into the user-facing bubble.
+    ///
+    /// Gemma 3n shares Gemma's surface envelope (`<end_of_turn>`); the
+    /// previous switch fell through to `default` for "gemma3n" and the
+    /// model kept generating past its own turn marker.
+    private func familyEndOfTurnStops(for model: LocalModel?) -> [String] {
         switch model?.family.lowercased() {
-        case "gemma3", "gemma2": return ["<end_of_turn>"]
-        case "llama":            return ["<|eot_id|>", "<|end_of_text|>"]
-        case "phi":              return ["<|end|>", "<|endoftext|>", "<|im_end|>"]
-        case "qwen":             return ["<|im_end|>", "<|endoftext|>"]
-        default:                 return []
+        case "gemma3n", "gemma3", "gemma2", "gemma":
+            return ["<end_of_turn>"]
+        case "llama":   return ["<|eot_id|>", "<|end_of_text|>"]
+        case "phi":     return ["<|end|>", "<|endoftext|>", "<|im_end|>"]
+        case "qwen":    return ["<|im_end|>", "<|endoftext|>"]
+        case "mistral": return ["</s>"]
+        default:        return []
         }
     }
+
+    /// Tool-envelope closes recognised across every family. Used ONLY
+    /// as runtime stops — we deliberately do NOT strip them from the
+    /// completed content because `SkillManager.parseAction` needs the
+    /// closing tag to delimit the JSON payload.
+    private static let universalToolStops: [String] = [
+        "</tool_call>",
+        "</function_call>",
+        "[/TOOL_CALLS]"
+    ]
 
     /// - Parameter skipUserMessage: `true` when called from `regenerate()` —
     ///   the user message is already in the list, don't add it again.
@@ -1102,12 +1129,19 @@ final class ConversationService: ObservableObject {
         // L2' block and starve other layers on small context windows.
         // Per-conversation embedding lookup is bounded by the
         // EmbeddingService LRU cap (separate from MemoryService).
+        // Tightened `minSimilarity` from the recall service's default
+        // 0.35 (loosely related) to 0.5 (topical). The lower threshold
+        // pulled in marginal matches that confused weak models —
+        // observed in the field as Gemma 3n quoting fragments of
+        // unrelated past turns instead of answering the current one.
+        // Strong models tolerate noise but don't benefit from it.
         let semanticRecall: [Message] = settings.current.memoryEnabled
             ? await recall.recall(
                 query: userInput,
                 from: historyWindow,
                 excluding: keptIDs,
-                limit: 3
+                limit: 3,
+                minSimilarity: 0.5
             )
             : []
         // Top up the recall block with intrinsically-important dropped
@@ -1155,8 +1189,19 @@ final class ConversationService: ObservableObject {
             promptMode: .chat
         )
         let stops = stopSequences(for: activeModelSnapshot)
-        var parameters = PromptMode.chat.defaultParameters(
-            settings: settings.current,
+        // `parameters` is re-picked at the top of every agentic-loop
+        // iteration (see the loop body) so the chat → toolFollowup
+        // mode transition gets the right sampling profile each time.
+        // Declared here just to extend its scope to the loop.
+        // Sampling defaults snap to the family's recommended values
+        // when the user is on the factory baseline — without this,
+        // every model got the cross-family default temp 0.7 which is
+        // wrong for Gemma 3n (causes language drift) and wrong for
+        // Qwen (over-permissive).
+        var parameters = RuntimeParameters(
+            maxTokens: settings.current.maxResponseTokens,
+            temperature: 0.7,
+            topP: 0.9,
             stopSequences: stops
         )
         parameters.conversationID = conversationID
@@ -1174,6 +1219,18 @@ final class ConversationService: ObservableObject {
             // `runtime.generate(...)`.
             if Task.isCancelled { break }
             currentLoop += 1
+
+            // Re-pick sampling params for the current loop's mode. The
+            // first iteration is `.chat`; subsequent iterations after a
+            // tool execution are `.toolFollowup` which forces near-
+            // deterministic sampling (no creative drift when the model
+            // is just rendering an observation).
+            parameters = loopPackage.promptMode.defaultParameters(
+                settings: settings.current,
+                profile: capabilityProfile,
+                stopSequences: stops
+            )
+            parameters.conversationID = conversationID
 
             let runtimePrompt = prompts.build(from: loopPackage)
             assistantMessage.status = .streaming
@@ -1297,13 +1354,15 @@ final class ConversationService: ObservableObject {
                 break
             }
 
-            // Strip any trailing stop-sequence token from the completed response.
-            // These are structural wire-format tokens (<|eot_id|>, <end_of_turn>, etc.)
-            // that MLX may not strip on its own when we hit a custom stop sequence.
-            // They must never be visible to the user or passed to the tool parser.
+            // Strip any trailing end-of-turn marker from the completed
+            // response. Only the per-family EOT tokens get stripped —
+            // we deliberately leave tool-envelope closes (`</tool_call>`,
+            // `</function_call>`, `[/TOOL_CALLS]`) intact because the
+            // tool parser needs the closing tag to delimit the payload.
             if assistantMessage.status == .complete {
+                let familyStops = familyEndOfTurnStops(for: activeModelSnapshot)
                 var content = assistantMessage.content
-                for stop in stops where content.hasSuffix(stop) {
+                for stop in familyStops where content.hasSuffix(stop) {
                     content = String(content.dropLast(stop.count))
                         .trimmingCharacters(in: .whitespacesAndNewlines)
                     break
