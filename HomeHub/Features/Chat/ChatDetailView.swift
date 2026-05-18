@@ -52,34 +52,7 @@ struct ChatDetailView: View {
                                 filterStatusBar
                             }
                             ForEach(displayedMessages) { message in
-                                MessageBubbleView(
-                                    message: message,
-                                    onRegenerate: canRegenerate(message)
-                                        ? { conversations.regenerate(in: conversationID) }
-                                        : nil,
-                                    onDelete: isStreaming ? nil : {
-                                        Task {
-                                            await conversations.deleteMessage(
-                                                messageID: message.id,
-                                                in: conversationID
-                                            )
-                                        }
-                                    },
-                                    onEdit: canEdit(message) ? {
-                                        editingMessageID = message.id
-                                        editingText = message.content
-                                    } : nil,
-                                    onToggleBookmark: canBookmark(message) ? {
-                                        Task {
-                                            await conversations.toggleBookmark(
-                                                messageID: message.id,
-                                                in: conversationID
-                                            )
-                                        }
-                                    } : nil,
-                                    isPrefill: isPrefillBubble(message)
-                                )
-                                .id(message.id)
+                                bubble(for: message).id(message.id)
                             }
                             if isFilteringChat && displayedMessages.isEmpty {
                                 emptyFilterPlaceholder
@@ -730,6 +703,45 @@ struct ChatDetailView: View {
         guard message.role != .system else { return false }
         guard message.status == .complete else { return false }
         return true
+    }
+
+    // MARK: - Bubble factory
+    //
+    // Split out of the body so SwiftUI's type-checker doesn't have to
+    // resolve all five conditional closures inline — the inline form
+    // hits the per-expression complexity budget on Xcode 16 with this
+    // many `?:` branches. Pre-resolving each callback to a concrete
+    // `(() -> Void)?` keeps the type of the `MessageBubbleView` call
+    // trivial and the body fast to compile.
+
+    @ViewBuilder
+    private func bubble(for message: Message) -> some View {
+        let regenerate: (() -> Void)? = canRegenerate(message)
+            ? { conversations.regenerate(in: conversationID) }
+            : nil
+        let delete: (() -> Void)? = isStreaming ? nil : { [conversationID] in
+            Task { await conversations.deleteMessage(messageID: message.id, in: conversationID) }
+        }
+        let edit: (() -> Void)? = canEdit(message)
+            ? {
+                editingMessageID = message.id
+                editingText = message.content
+            }
+            : nil
+        let bookmark: (() -> Void)? = canBookmark(message)
+            ? { [conversationID] in
+                Task { await conversations.toggleBookmark(messageID: message.id, in: conversationID) }
+            }
+            : nil
+
+        MessageBubbleView(
+            message: message,
+            onRegenerate: regenerate,
+            onDelete: delete,
+            onEdit: edit,
+            onToggleBookmark: bookmark,
+            isPrefill: isPrefillBubble(message)
+        )
     }
 
     /// `true` for the placeholder assistant bubble that is currently in
