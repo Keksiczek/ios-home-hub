@@ -12,6 +12,11 @@ struct MessageBubbleView: View {
     /// The handler is responsible for showing an editor, then invoking
     /// `ConversationService.editAndResend(...)` with the new text.
     var onEdit: (() -> Void)? = nil
+    /// Called when the user toggles the bookmark on this message via
+    /// the context menu. `nil` hides the menu entry (e.g. for the
+    /// streaming placeholder where bookmarking partial content
+    /// doesn't make sense).
+    var onToggleBookmark: (() -> Void)? = nil
     /// `true` for the currently-streaming assistant bubble while the
     /// runtime is still in the prefill phase (no tokens yet). When
     /// `true`, the typing indicator is replaced by a "Čte kontext…"
@@ -124,6 +129,17 @@ struct MessageBubbleView: View {
                     }
                 }
 
+                if let onToggleBookmark {
+                    Button {
+                        onToggleBookmark()
+                    } label: {
+                        Label(
+                            message.isBookmarked ? "Remove bookmark" : "Bookmark",
+                            systemImage: message.isBookmarked ? "bookmark.slash" : "bookmark"
+                        )
+                    }
+                }
+
                 if let onRegenerate {
                     Divider()
                     Button {
@@ -198,6 +214,15 @@ struct MessageBubbleView: View {
             Text(Self.timestampFormatter.string(from: message.createdAt))
                 .font(HHTheme.caption.monospacedDigit())
                 .foregroundStyle(HHTheme.textSecondary)
+            // Visible bookmark dot — small enough that it doesn't
+            // shift the header layout, but obvious in a scroll-by so
+            // users can spot the saved turn without opening a menu.
+            if message.isBookmarked {
+                Image(systemName: "bookmark.fill")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(HHTheme.warning)
+                    .accessibilityLabel("Bookmarked")
+            }
         }
         .opacity(0.9)
     }

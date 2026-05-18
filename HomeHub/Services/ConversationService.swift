@@ -183,6 +183,115 @@ final class ConversationService: ObservableObject {
         messagesByConversation[conversationID] ?? []
     }
 
+    // MARK: - Full-text search
+
+    /// Most recent deep-search results keyed by the lowercased trimmed
+    /// query string. Set to `nil` when no search has run or the user
+    /// cleared the query. Read by `ChatListView` to merge with the
+    /// instant title/preview filter so chats matching only on body
+    /// content also appear in the filtered list.
+    ///
+    /// The cache lives for one query lifetime — entering a different
+    /// query clears it before the new scan begins, so stale matches
+    /// from a previous query never leak into the list.
+    @Published private(set) var lastDeepSearchQuery: String?
+    @Published private(set) var lastDeepSearchMatches: Set<UUID> = []
+    @Published private(set) var isDeepSearching: Bool = false
+
+    private var deepSearchTask: Task<Void, Never>?
+
+    /// Cancels any pending deep search and clears the published match
+    /// set. Call from the UI when the user clears the search field so
+    /// stale match highlights aren't carried over into the unfiltered
+    /// list.
+    func clearDeepSearch() {
+        deepSearchTask?.cancel()
+        deepSearchTask = nil
+        lastDeepSearchQuery = nil
+        lastDeepSearchMatches = []
+        isDeepSearching = false
+    }
+
+    /// Searches inside message bodies across every conversation,
+    /// loading from the store for chats not currently in the LRU
+    /// cache. Cached results are scanned synchronously; cold
+    /// conversations are streamed in batches so the UI sees matches
+    /// land progressively rather than blocking on the full sweep.
+    ///
+    /// Empty / whitespace-only queries short-circuit to `clearDeepSearch`
+    /// so the caller can wire this directly to a `searchable` text
+    /// binding without guarding for blank input.
+    ///
+    /// Repeated calls cancel any in-flight scan — typing into a search
+    /// field naturally fires this once per keystroke, so de-duping is
+    /// the caller's responsibility (debounce on the UI side); we just
+    /// make sure two overlapping scans don't double-publish.
+    func searchInMessages(query: String) {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            clearDeepSearch()
+            return
+        }
+        let needle = trimmed.lowercased()
+        deepSearchTask?.cancel()
+        lastDeepSearchQuery = needle
+        // Seed with whatever is already in cache so the UI gets instant
+        // partial results; cold conversations append below.
+        var matches: Set<UUID> = []
+        for (id, msgs) in messagesByConversation
+            where msgs.contains(where: { $0.content.lowercased().contains(needle) }) {
+            matches.insert(id)
+        }
+        lastDeepSearchMatches = matches
+
+        // Snapshot the conversation IDs we still need to scan. Capturing
+        // by value keeps the Task isolated from mutations to
+        // `conversations` mid-scan.
+        let coldIDs = conversations
+            .map(\.id)
+            .filter { messagesByConversation[$0] == nil }
+
+        guard !coldIDs.isEmpty else {
+            isDeepSearching = false
+            return
+        }
+
+        isDeepSearching = true
+        let storeRef = store
+        deepSearchTask = Task { [weak self] in
+            // Publish in small batches so the list animates as matches
+            // come in rather than freezing the user until the full scan
+            // completes. Batch size of 8 keeps update frequency under
+            // ~30Hz even on the largest realistic chat library.
+            var batch: Set<UUID> = []
+            var processed = 0
+            for id in coldIDs {
+                if Task.isCancelled { return }
+                let loaded = (try? await storeRef.loadMessages(conversationID: id)) ?? []
+                if loaded.contains(where: { $0.content.lowercased().contains(needle) }) {
+                    batch.insert(id)
+                }
+                processed += 1
+                if batch.count >= 8 || processed == coldIDs.count {
+                    let flushed = batch
+                    batch.removeAll(keepingCapacity: true)
+                    await MainActor.run {
+                        guard let self else { return }
+                        // Drop late results if the user already moved
+                        // on to a different query.
+                        guard self.lastDeepSearchQuery == needle else { return }
+                        self.lastDeepSearchMatches.formUnion(flushed)
+                    }
+                }
+            }
+            await MainActor.run {
+                guard let self else { return }
+                guard self.lastDeepSearchQuery == needle else { return }
+                self.isDeepSearching = false
+            }
+        }
+    }
+
     /// Marks a conversation as recently-viewed for LRU bookkeeping.
     /// Call from `ChatDetailView.onAppear`. Cheap (no @Published
     /// emission) so calling multiple times is harmless.
@@ -275,6 +384,36 @@ final class ConversationService: ObservableObject {
         guard let idx = conversations.firstIndex(where: { $0.id == conversationID }) else { return }
         conversations[idx].title = newTitle
         conversations[idx].updatedAt = .now
+        try? await store.save(conversation: conversations[idx])
+    }
+
+    /// Sets the pinned flag on a conversation. Pinned conversations are
+    /// rendered in their own section at the top of `ChatListView` so
+    /// frequently-used threads don't drift down the list as new chats
+    /// arrive. Idempotent; no-op when the flag already matches.
+    ///
+    /// Intentionally does not bump `updatedAt` — pinning is a UI
+    /// affordance, not a content change, and using `updatedAt` for
+    /// sort would mean pinning silently jumps the chat ahead of newer
+    /// activity in the un-pinned section's secondary sort.
+    func setPinned(_ pinned: Bool, conversationID: UUID) async {
+        guard let idx = conversations.firstIndex(where: { $0.id == conversationID }) else { return }
+        guard conversations[idx].pinned != pinned else { return }
+        conversations[idx].pinned = pinned
+        try? await store.save(conversation: conversations[idx])
+    }
+
+    /// Sets the archived flag on a conversation. Archived conversations
+    /// are hidden from the default chat list view but kept on disk so
+    /// the user can restore them later. Surfacing archived chats is
+    /// the UI's responsibility (a dedicated "Archived" section / toggle).
+    func setArchived(_ archived: Bool, conversationID: UUID) async {
+        guard let idx = conversations.firstIndex(where: { $0.id == conversationID }) else { return }
+        guard conversations[idx].archived != archived else { return }
+        conversations[idx].archived = archived
+        // Archiving an unread pinned chat is contradictory — the user
+        // is moving it out of the active set, so drop the pin too.
+        if archived { conversations[idx].pinned = false }
         try? await store.save(conversation: conversations[idx])
     }
 
@@ -397,6 +536,23 @@ final class ConversationService: ObservableObject {
     /// Removes a single message from the in-memory list and backing store.
     /// No-op if a generation is currently streaming in this conversation —
     /// the caller should gate the UI action on `streamingConversationIDs`.
+    /// Toggles the bookmark flag on a single message and persists the
+    /// change. Bookmarking is a pure UI affordance — it doesn't touch
+    /// the runtime, the KV-cache session, or the conversation's
+    /// `updatedAt`, so users can bookmark mid-stream without
+    /// destabilising anything downstream.
+    func toggleBookmark(messageID: UUID, in conversationID: UUID) async {
+        var list = messagesByConversation[conversationID] ?? []
+        guard let idx = list.firstIndex(where: { $0.id == messageID }) else { return }
+        let newValue = !list[idx].isBookmarked
+        // Store `nil` when clearing so the persisted JSON stays minimal
+        // and older readers (without the field) don't see a redundant
+        // `false` they have to ignore.
+        list[idx].bookmarked = newValue ? true : nil
+        messagesByConversation[conversationID] = list
+        try? await store.save(message: list[idx])
+    }
+
     func deleteMessage(messageID: UUID, in conversationID: UUID) async {
         guard activeStreams[conversationID] == nil else { return }
 

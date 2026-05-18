@@ -23,6 +23,16 @@ struct ChatDetailView: View {
     /// than nagging continuously.
     @State private var contextBannerDismissed: Bool = false
 
+    /// Free-text in-chat finder. Filters the displayed bubbles by
+    /// content match while preserving order. Empty string disables
+    /// the filter so the chat returns to its normal state.
+    @State private var inChatSearch: String = ""
+
+    /// When true, the bubble list is filtered to only bookmarked
+    /// messages. Useful for revisiting saved turns without scrolling
+    /// the entire thread.
+    @State private var showBookmarksOnly: Bool = false
+
     /// Follow-mode flag for the chat scroll view. While true (default),
     /// new tokens scroll the view to the bottom every yield. The user's
     /// drag gesture flips this to false so they can scroll up to re-read
@@ -38,7 +48,10 @@ struct ChatDetailView: View {
                 ZStack(alignment: .bottomTrailing) {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: HHTheme.spaceM) {
-                            ForEach(messages) { message in
+                            if isFilteringChat {
+                                filterStatusBar
+                            }
+                            ForEach(displayedMessages) { message in
                                 MessageBubbleView(
                                     message: message,
                                     onRegenerate: canRegenerate(message)
@@ -56,9 +69,20 @@ struct ChatDetailView: View {
                                         editingMessageID = message.id
                                         editingText = message.content
                                     } : nil,
+                                    onToggleBookmark: canBookmark(message) ? {
+                                        Task {
+                                            await conversations.toggleBookmark(
+                                                messageID: message.id,
+                                                in: conversationID
+                                            )
+                                        }
+                                    } : nil,
                                     isPrefill: isPrefillBubble(message)
                                 )
                                 .id(message.id)
+                            }
+                            if isFilteringChat && displayedMessages.isEmpty {
+                                emptyFilterPlaceholder
                             }
                         }
                         .padding(.horizontal, HHTheme.spaceL)
@@ -186,6 +210,16 @@ struct ChatDetailView: View {
         .background(HHTheme.canvas)
         .navigationTitle(conversationTitle)
         .navigationBarTitleDisplayMode(.inline)
+        // In-chat finder. Filters the bubble list to matching content
+        // while still rendering each match inline (preserving the
+        // conversational flow that a separate "results screen" would
+        // break). Placement is the navigation bar drawer so it pops
+        // out of the way when not in use.
+        .searchable(
+            text: $inChatSearch,
+            placement: .navigationBarDrawer(displayMode: .automatic),
+            prompt: "Find in chat"
+        )
         .toolbar {
             if settings.current.showTokenUsage {
                 ToolbarItem(placement: .principal) {
@@ -213,6 +247,20 @@ struct ChatDetailView: View {
                         } label: {
                             Label("Rename…", systemImage: "pencil")
                         }
+
+                        // Toggle the bookmark filter from the same
+                        // menu that hosts Rename / Export — discoverable
+                        // alongside the other per-chat actions without
+                        // adding a top-level toolbar button.
+                        Button {
+                            showBookmarksOnly.toggle()
+                        } label: {
+                            Label(
+                                showBookmarksOnly ? "Show all messages" : "Show bookmarks only",
+                                systemImage: showBookmarksOnly ? "bookmark.slash" : "bookmark.fill"
+                            )
+                        }
+                        .disabled(!hasAnyBookmark && !showBookmarksOnly)
 
                         ShareLink(item: exportText) {
                             Label("Export", systemImage: "square.and.arrow.up")
@@ -551,6 +599,93 @@ struct ChatDetailView: View {
         conversations.messages(in: conversationID)
     }
 
+    /// Messages after the per-chat finder + bookmark-only filter have
+    /// been applied. Both filters compose: searching for "auth" while
+    /// in bookmark-only mode shows just the bookmarked messages that
+    /// also contain "auth". Streaming bubbles are kept visible during
+    /// in-chat search so the user can watch a new reply land even
+    /// while a filter is active — otherwise the just-arriving answer
+    /// would silently miss the filter window.
+    private var displayedMessages: [Message] {
+        let trimmed = inChatSearch.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard isFilteringChat else { return messages }
+        return messages.filter { msg in
+            if msg.status == .streaming { return true }
+            if showBookmarksOnly && !msg.isBookmarked { return false }
+            if !trimmed.isEmpty, !msg.content.lowercased().contains(trimmed) {
+                return false
+            }
+            return true
+        }
+    }
+
+    private var isFilteringChat: Bool {
+        showBookmarksOnly
+            || !inChatSearch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var hasAnyBookmark: Bool {
+        messages.contains(where: { $0.isBookmarked })
+    }
+
+    /// Small banner shown above the bubble list while either chat
+    /// filter is active. Surfaces the active filter state + a
+    /// single-tap clear so the user is never stranded inside a
+    /// silent filter they forgot about.
+    @ViewBuilder
+    private var filterStatusBar: some View {
+        HStack(spacing: HHTheme.spaceS) {
+            Image(systemName: showBookmarksOnly ? "bookmark.fill" : "magnifyingglass")
+                .foregroundStyle(showBookmarksOnly ? HHTheme.warning : HHTheme.accent)
+            Text(filterStatusText)
+                .font(HHTheme.caption)
+                .foregroundStyle(HHTheme.textSecondary)
+            Spacer(minLength: 0)
+            Button("Clear") {
+                inChatSearch = ""
+                showBookmarksOnly = false
+            }
+            .font(HHTheme.caption.weight(.semibold))
+            .buttonStyle(.plain)
+            .foregroundStyle(HHTheme.accent)
+        }
+        .padding(.horizontal, HHTheme.spaceM)
+        .padding(.vertical, HHTheme.spaceS)
+        .background(HHTheme.surface, in: Capsule())
+        .overlay(Capsule().stroke(HHTheme.stroke, lineWidth: 0.5))
+    }
+
+    private var filterStatusText: String {
+        let matchCount = displayedMessages.filter { $0.status != .streaming }.count
+        let total = messages.count
+        switch (showBookmarksOnly, !inChatSearch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) {
+        case (true, true):
+            return "\(matchCount) bookmarked match \"\(inChatSearch)\""
+        case (true, false):
+            return "\(matchCount) bookmarked of \(total)"
+        case (false, true):
+            return "\(matchCount) of \(total) match \"\(inChatSearch)\""
+        case (false, false):
+            return ""
+        }
+    }
+
+    @ViewBuilder
+    private var emptyFilterPlaceholder: some View {
+        VStack(spacing: HHTheme.spaceS) {
+            Image(systemName: showBookmarksOnly ? "bookmark" : "magnifyingglass")
+                .font(.system(size: 28))
+                .foregroundStyle(HHTheme.textSecondary)
+            Text(showBookmarksOnly && inChatSearch.isEmpty
+                 ? "No bookmarked messages."
+                 : "No messages match.")
+                .font(HHTheme.footnote)
+                .foregroundStyle(HHTheme.textSecondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, HHTheme.spaceXL)
+    }
+
     private var conversationTitle: String {
         conversations.conversations.first { $0.id == conversationID }?.title ?? "Chat"
     }
@@ -585,6 +720,16 @@ struct ChatDetailView: View {
     private func canEdit(_ message: Message) -> Bool {
         guard message.role == .user, !isStreaming else { return false }
         return messages.last(where: { $0.role == .user })?.id == message.id
+    }
+
+    /// Bookmarking is allowed on any completed user or assistant
+    /// message. System bubbles and in-flight streaming placeholders
+    /// are excluded — bookmarking partial content would surface a
+    /// half-finished thought when the filter is reopened.
+    private func canBookmark(_ message: Message) -> Bool {
+        guard message.role != .system else { return false }
+        guard message.status == .complete else { return false }
+        return true
     }
 
     /// `true` for the placeholder assistant bubble that is currently in

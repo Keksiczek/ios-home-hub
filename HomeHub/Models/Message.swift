@@ -9,6 +9,16 @@ struct Message: Identifiable, Codable, Equatable, Hashable {
     var status: Status
     var tokenCount: Int?
     var attachments: [Attachment]?
+    /// User-set bookmark flag. Optional (with implicit-false read via
+    /// `isBookmarked`) so older persisted messages decode without
+    /// requiring a migration — Swift's synthesized `Codable` treats a
+    /// missing key as `nil` for optionals, but would throw on a
+    /// missing non-optional `Bool`.
+    var bookmarked: Bool?
+
+    /// Convenience for "is this message bookmarked?" so the UI doesn't
+    /// have to repeat the `?? false` defaulting at every call site.
+    var isBookmarked: Bool { bookmarked == true }
 
     struct Attachment: Codable, Equatable, Hashable, Identifiable {
         let id: UUID
