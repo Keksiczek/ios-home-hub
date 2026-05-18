@@ -12,19 +12,70 @@ struct ChatListView: View {
     /// has finished loading — ChatDetailView already takes the ID,
     /// so the destination resolves itself.
     @State private var path: [UUID] = []
+    /// When true, the list reveals archived conversations in a
+    /// dedicated section beneath the active ones. Off by default so
+    /// archiving actually clears the chat away from the user's
+    /// everyday surface — re-enabling here is the audited way back in.
+    @State private var showArchived: Bool = false
 
-    /// Filters conversations by title and last-message preview, case
-    /// insensitively. Empty `searchText` returns the full list so the
-    /// search field doesn't change behaviour until the user actually
-    /// types something.
+    /// Filters conversations by title, last-message preview, and full
+    /// message body content (case insensitive). Empty `searchText`
+    /// returns the full list so the search field doesn't change
+    /// behaviour until the user actually types something.
+    ///
+    /// Title/preview matches are evaluated synchronously here; body
+    /// matches come from `ConversationService.lastDeepSearchMatches`
+    /// which the service populates incrementally as it loads cold
+    /// conversations from the store. Merging both sources means a chat
+    /// matching only on a buried message still appears in the list,
+    /// while title-only matches don't have to wait for the async scan.
     private var filteredConversations: [Conversation] {
         let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return conversations.conversations }
         let needle = trimmed.lowercased()
+        let deepMatches = conversations.lastDeepSearchMatches
         return conversations.conversations.filter { convo in
             convo.title.lowercased().contains(needle)
                 || (convo.lastMessagePreview?.lowercased().contains(needle) ?? false)
+                || deepMatches.contains(convo.id)
         }
+    }
+
+    // MARK: - Section partitioning
+
+    /// True while the user is actively filtering — collapses the
+    /// pin/archive sectioning into a single flat list so matches don't
+    /// disappear into a hidden "Archived" section just because the
+    /// user happens to be searching for an archived chat.
+    private var isSearching: Bool {
+        !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// Conversations to display in the unfiltered case, partitioned
+    /// into (pinned, recent, archived). Each bucket is sorted by
+    /// `updatedAt` descending so the most recent activity is at the
+    /// top of its own section.
+    private struct Buckets {
+        var pinned: [Conversation]
+        var recent: [Conversation]
+        var archived: [Conversation]
+    }
+
+    private var buckets: Buckets {
+        var pinned: [Conversation] = []
+        var recent: [Conversation] = []
+        var archived: [Conversation] = []
+        for c in conversations.conversations {
+            if c.archived { archived.append(c) }
+            else if c.pinned { pinned.append(c) }
+            else { recent.append(c) }
+        }
+        let byRecent: (Conversation, Conversation) -> Bool = { $0.updatedAt > $1.updatedAt }
+        return Buckets(
+            pinned:   pinned.sorted(by: byRecent),
+            recent:   recent.sorted(by: byRecent),
+            archived: archived.sorted(by: byRecent)
+        )
     }
 
     var body: some View {
@@ -42,27 +93,61 @@ struct ChatListView: View {
                         .buttonStyle(HHPrimaryButtonStyle())
                     }
                 } else if filteredConversations.isEmpty {
+                    // While the body-text scan is still streaming
+                    // matches in, hint that the result may grow
+                    // momentarily — otherwise the empty state reads
+                    // as "no matches" even when work is in flight.
                     HHEmptyState(
-                        icon: "magnifyingglass",
-                        title: "No matches",
-                        subtitle: "No conversations match \"\(searchText)\"."
+                        icon: conversations.isDeepSearching ? "ellipsis.circle" : "magnifyingglass",
+                        title: conversations.isDeepSearching ? "Searching messages…" : "No matches",
+                        subtitle: conversations.isDeepSearching
+                            ? "Scanning older chats for \"\(searchText)\"."
+                            : "No conversations match \"\(searchText)\"."
                     )
                 } else {
                     List {
-                        ForEach(filteredConversations) { convo in
-                            // Value-based NavigationLink so the
-                            // destination is keyed by `UUID` and
-                            // can be pushed from outside the view
-                            // (Spotlight deep link → `path` mutation).
-                            NavigationLink(value: convo.id) {
-                                ChatRowView(conversation: convo)
+                        if isSearching {
+                            // Flat list during search — sectioning into
+                            // pinned/recent/archived would only hide
+                            // matches that happen to live in another
+                            // bucket.
+                            Section {
+                                ForEach(filteredConversations) { convo in
+                                    chatRow(convo)
+                                }
                             }
-                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                                Button(role: .destructive) {
-                                    HHHaptics.notification(.warning, enabled: settings.current.haptics)
-                                    Task { await conversations.deleteConversation(convo.id) }
-                                } label: {
-                                    Label("Delete", systemImage: "trash")
+                        } else {
+                            let b = buckets
+                            if !b.pinned.isEmpty {
+                                Section("Pinned") {
+                                    ForEach(b.pinned) { convo in
+                                        chatRow(convo)
+                                    }
+                                }
+                            }
+                            Section(b.pinned.isEmpty ? "" : "Recent") {
+                                ForEach(b.recent) { convo in
+                                    chatRow(convo)
+                                }
+                            }
+                            if !b.archived.isEmpty {
+                                Section {
+                                    if showArchived {
+                                        ForEach(b.archived) { convo in
+                                            chatRow(convo)
+                                        }
+                                    }
+                                } header: {
+                                    HStack {
+                                        Text("Archived")
+                                        Spacer()
+                                        Button(showArchived ? "Hide" : "Show (\(b.archived.count))") {
+                                            withAnimation { showArchived.toggle() }
+                                        }
+                                        .font(HHTheme.caption.weight(.semibold))
+                                        .buttonStyle(.plain)
+                                        .foregroundStyle(HHTheme.accent)
+                                    }
                                 }
                             }
                         }
@@ -80,6 +165,18 @@ struct ChatListView: View {
                 }
             }
             .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Search chats")
+            // Kick off the async body-text scan whenever the query
+            // changes. The service debounces internally by cancelling
+            // any in-flight scan before starting the new one, so a
+            // burst of keystrokes coalesces to a single sweep.
+            .onChange(of: searchText) { _, newValue in
+                conversations.searchInMessages(query: newValue)
+            }
+            .onDisappear {
+                // Free the in-flight scan + match cache when the user
+                // leaves the chat tab so the next visit starts clean.
+                conversations.clearDeepSearch()
+            }
             .navigationTitle("Chats")
             // Deep-link consumer: Spotlight tap or
             // `homehub://conversation/<UUID>` URL pushes the matching
@@ -112,6 +209,51 @@ struct ChatListView: View {
                     }
                 }
             }
+        }
+    }
+
+    /// Single row builder shared by every section (pinned / recent /
+    /// archived / search results) so swipe actions and the
+    /// NavigationLink wiring stay consistent across them.
+    ///
+    /// Three swipe affordances:
+    ///   - leading: pin / unpin
+    ///   - trailing (full-swipe): delete
+    ///   - trailing (manual): archive / unarchive
+    ///
+    /// Archive is intentionally NOT full-swipe — destructive-looking
+    /// gestures should require an explicit tap so the user doesn't
+    /// nuke a chat away from view while just trying to scroll.
+    @ViewBuilder
+    private func chatRow(_ convo: Conversation) -> some View {
+        NavigationLink(value: convo.id) {
+            ChatRowView(conversation: convo)
+        }
+        .swipeActions(edge: .leading, allowsFullSwipe: false) {
+            Button {
+                HHHaptics.impact(.light, enabled: settings.current.haptics)
+                Task { await conversations.setPinned(!convo.pinned, conversationID: convo.id) }
+            } label: {
+                Label(convo.pinned ? "Unpin" : "Pin",
+                      systemImage: convo.pinned ? "pin.slash" : "pin.fill")
+            }
+            .tint(HHTheme.accent)
+        }
+        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+            Button(role: .destructive) {
+                HHHaptics.notification(.warning, enabled: settings.current.haptics)
+                Task { await conversations.deleteConversation(convo.id) }
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+            Button {
+                HHHaptics.impact(.light, enabled: settings.current.haptics)
+                Task { await conversations.setArchived(!convo.archived, conversationID: convo.id) }
+            } label: {
+                Label(convo.archived ? "Unarchive" : "Archive",
+                      systemImage: convo.archived ? "tray.and.arrow.up" : "archivebox")
+            }
+            .tint(.gray)
         }
     }
 
@@ -170,9 +312,24 @@ private struct ChatRowView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(conversation.title)
-                .font(HHTheme.headline)
-                .lineLimit(1)
+            HStack(spacing: 6) {
+                if conversation.pinned {
+                    Image(systemName: "pin.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(HHTheme.accent)
+                        .accessibilityLabel("Pinned")
+                }
+                Text(conversation.title)
+                    .font(HHTheme.headline)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                if conversation.archived {
+                    Image(systemName: "archivebox")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(HHTheme.textSecondary)
+                        .accessibilityLabel("Archived")
+                }
+            }
             if let preview = conversation.lastMessagePreview, !preview.isEmpty {
                 Text(preview)
                     .font(HHTheme.footnote)

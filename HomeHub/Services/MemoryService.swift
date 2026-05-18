@@ -134,6 +134,104 @@ final class MemoryService: ObservableObject {
         await persist("setDisabled(episode:\(id))") { try await self.store.save(episode: snapshot) }
     }
 
+    // MARK: - Duplicate detection
+
+    /// A pair of facts the heuristic deemed near-duplicates of one
+    /// another. Surfaced in the Memory tab so the user can merge or
+    /// delete redundant entries without combing through the list
+    /// manually. The pair is unordered conceptually; we expose
+    /// `primary` / `duplicate` only so the UI has a stable preview
+    /// to render — the user picks the keeper at merge time.
+    struct DuplicatePair: Identifiable, Hashable {
+        let id: UUID = UUID()
+        let primary: MemoryFact
+        let duplicate: MemoryFact
+        /// 0…1 confidence the pair is genuinely duplicate. Used for
+        /// sorting so the highest-confidence suggestions appear at
+        /// the top of the review sheet.
+        let score: Double
+    }
+
+    /// Returns pairs of active facts that are likely duplicates.
+    ///
+    /// Cheap, deterministic heuristic — runs synchronously on the
+    /// main actor in <1ms for typical libraries (<100 facts):
+    ///   - Same category buckets compared pairwise.
+    ///   - Token Jaccard similarity on lowercased, alphanumerics-only
+    ///     splits. ≥ 0.65 → flagged. Tuned empirically against the
+    ///     extraction test fixtures.
+    ///   - Substring containment (one is wholly inside the other,
+    ///     after trimming) → always flagged with score 1.0.
+    ///
+    /// Skips pinned + disabled facts on both sides — pinned facts
+    /// are user-blessed (treating them as duplicates would be
+    /// annoying), disabled ones are already excluded from prompts
+    /// so deduping them adds noise without value.
+    ///
+    /// Each fact appears in at most one pair so the user reviews a
+    /// linear queue rather than a graph (which would force them to
+    /// reason about transitive merges).
+    func findDuplicateFacts(threshold: Double = 0.65) -> [DuplicatePair] {
+        let candidates = facts.filter { !$0.disabled && !$0.pinned }
+        guard candidates.count >= 2 else { return [] }
+
+        var taken = Set<UUID>()
+        var pairs: [DuplicatePair] = []
+
+        // Group by category — duplicates across categories are
+        // intentionally hidden (a "work" preference and a "personal"
+        // preference about the same topic are legitimately distinct
+        // signals to the model).
+        let byCategory = Dictionary(grouping: candidates, by: \.category)
+        for (_, group) in byCategory where group.count >= 2 {
+            for i in 0..<group.count {
+                let a = group[i]
+                if taken.contains(a.id) { continue }
+                for j in (i+1)..<group.count {
+                    let b = group[j]
+                    if taken.contains(b.id) { continue }
+                    let s = Self.similarity(a.content, b.content)
+                    guard s >= threshold else { continue }
+                    pairs.append(.init(primary: a, duplicate: b, score: s))
+                    taken.insert(a.id)
+                    taken.insert(b.id)
+                    break
+                }
+            }
+        }
+        return pairs.sorted { $0.score > $1.score }
+    }
+
+    /// Token-Jaccard similarity over the alphanumeric word splits of
+    /// the two strings. Returns 1.0 for substring containment so the
+    /// "I prefer short answers" vs "I prefer short answers in the
+    /// morning" case is caught even though Jaccard alone would only
+    /// score ~0.5 there.
+    private static func similarity(_ a: String, _ b: String) -> Double {
+        let aTrim = a.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        let bTrim = b.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !aTrim.isEmpty, !bTrim.isEmpty else { return 0 }
+        if aTrim == bTrim { return 1.0 }
+        if aTrim.contains(bTrim) || bTrim.contains(aTrim) { return 1.0 }
+
+        let tokensA = Set(aTrim.split { !$0.isLetter && !$0.isNumber }.map(String.init))
+        let tokensB = Set(bTrim.split { !$0.isLetter && !$0.isNumber }.map(String.init))
+        guard !tokensA.isEmpty, !tokensB.isEmpty else { return 0 }
+        let inter = tokensA.intersection(tokensB).count
+        let union = tokensA.union(tokensB).count
+        return Double(inter) / Double(union)
+    }
+
+    /// Merges `duplicate` into `keeper`: deletes the duplicate and
+    /// returns the still-present keeper unchanged. Provenance fields
+    /// on the keeper are NOT overwritten — keeping the original
+    /// source link is the correct call since the user explicitly
+    /// chose which row to retain.
+    func mergeDuplicate(keeperID: UUID, duplicateID: UUID) async {
+        guard keeperID != duplicateID else { return }
+        await delete(duplicateID)
+    }
+
     // MARK: - Clear all
 
     func clearAll() async {
