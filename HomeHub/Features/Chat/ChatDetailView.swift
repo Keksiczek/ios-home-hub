@@ -22,6 +22,7 @@ struct ChatDetailView: View {
     /// under 90% so the banner reappears on the next overflow rather
     /// than nagging continuously.
     @State private var contextBannerDismissed: Bool = false
+    @State private var showingPersonaPicker: Bool = false
 
     /// Free-text in-chat finder. Filters the displayed bubbles by
     /// content match while preserving order. Empty string disables
@@ -53,7 +54,7 @@ struct ChatDetailView: View {
                             }
                             summaryIndicator
                             ForEach(displayedMessages) { message in
-                                bubble(for: message).id(message.id)
+                                messageRow(for: message)
                             }
                             if isFilteringChat && displayedMessages.isEmpty {
                                 emptyFilterPlaceholder
@@ -102,6 +103,13 @@ struct ChatDetailView: View {
                         // off-screen.
                         if newValue == false {
                             isAutoScrollEnabled = true
+                            
+                            // Premium UX: Add a subtle haptic tap when generation finishes
+                            if settings.current.haptics {
+                                let generator = UIImpactFeedbackGenerator(style: .rigid)
+                                generator.prepare()
+                                generator.impactOccurred()
+                            }
                         }
                     }
 
@@ -206,7 +214,17 @@ struct ChatDetailView: View {
                 }
             }
             ToolbarItem(placement: .topBarTrailing) {
-                HStack(spacing: 4) {
+                HStack(spacing: 8) {
+                    Button {
+                        showingPersonaPicker = true
+                    } label: {
+                        let activeColorHex = settings.current.activeSystemPromptPreset.colorHex ?? "007AFF"
+                        let activeColor = Color(hex: activeColorHex) ?? .blue
+                        Image(systemName: settings.current.activeSystemPromptPreset.icon ?? "sparkles")
+                            .foregroundStyle(activeColor)
+                    }
+                    .disabled(isStreaming)
+
                     Button {
                         showingVoiceCall = true
                     } label: {
@@ -288,6 +306,11 @@ struct ChatDetailView: View {
         }
         .sheet(isPresented: $showingVoiceCall) {
             VoiceCallView(conversationID: conversationID)
+        }
+        .sheet(isPresented: $showingPersonaPicker) {
+            PersonaPickerSheet()
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
         }
         .confirmationDialog(
             "Clear this conversation?",
@@ -777,6 +800,18 @@ struct ChatDetailView: View {
     // many `?:` branches. Pre-resolving each callback to a concrete
     // `(() -> Void)?` keeps the type of the `MessageBubbleView` call
     // trivial and the body fast to compile.
+
+    @ViewBuilder
+    private func messageRow(for message: Message) -> some View {
+        if isStreaming && message.role == .assistant && message.content.isEmpty && message.id == messages.last?.id {
+            TypingIndicatorView()
+                .transition(.opacity.combined(with: .scale(scale: 0.9, anchor: .bottomLeading)))
+                .id(message.id)
+        } else {
+            bubble(for: message)
+                .id(message.id)
+        }
+    }
 
     @ViewBuilder
     private func bubble(for message: Message) -> some View {

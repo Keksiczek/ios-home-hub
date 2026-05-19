@@ -639,43 +639,52 @@ struct CodeBlockView: View {
             // Header: language + copy button
             HStack {
                 if let lang = language {
-                    Text(lang)
-                        .font(HHTheme.caption)
-                        .foregroundStyle(.secondary)
+                    Text(lang.uppercased())
+                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        .foregroundStyle(Color.white.opacity(0.8))
+                } else {
+                    Text("CODE")
+                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        .foregroundStyle(Color.white.opacity(0.5))
                 }
                 Spacer()
                 Button(action: copyCode) {
-                    Label(
-                        copied ? "Copied" : "Copy",
-                        systemImage: copied ? "checkmark" : "doc.on.doc"
-                    )
-                    .font(HHTheme.caption)
-                    .foregroundStyle(copied ? HHTheme.success : HHTheme.textSecondary)
+                    HStack(spacing: 4) {
+                        Image(systemName: copied ? "checkmark" : "doc.on.clipboard")
+                        Text(copied ? "Copied" : "Copy")
+                    }
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(copied ? HHTheme.success : Color.white.opacity(0.7))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.white.opacity(0.1), in: Capsule())
                     .animation(.easeInOut(duration: 0.15), value: copied)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(copied ? "Copied to clipboard" : "Copy code")
             }
-            .padding(.horizontal, 12)
+            .padding(.horizontal, HHTheme.spaceM)
             .padding(.vertical, 8)
-            .background(Color(.systemGray5))
+            .background(Color(white: 0.15))
 
-            // Code body — horizontal scroll for long lines
+            // Code body
             ScrollView(.horizontal, showsIndicators: false) {
                 Text(code.isEmpty ? " " : code)
                     .font(.system(size: 13, weight: .regular, design: .monospaced))
-                    .foregroundStyle(Color(.label))
-                    .padding(12)
+                    .foregroundStyle(Color(white: 0.95))
+                    .padding(HHTheme.spaceM)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .background(Color(.systemGray6))
+            .background(Color(white: 0.1))
         }
-        .clipShape(RoundedRectangle(cornerRadius: HHTheme.cornerSmall, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: HHTheme.cornerMedium, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: HHTheme.cornerSmall, style: .continuous)
-                .stroke(HHTheme.stroke, lineWidth: 1)
+            RoundedRectangle(cornerRadius: HHTheme.cornerMedium, style: .continuous)
+                .stroke(Color.white.opacity(0.1), lineWidth: 1)
         )
+        // Add a subtle drop shadow to pop the dark code block off the chat bubble
+        .shadow(color: Color.black.opacity(0.2), radius: 5, x: 0, y: 2)
     }
 
     private func copyCode() {

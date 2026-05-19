@@ -128,6 +128,39 @@ final class ModelBrowserViewModel: ObservableObject {
 
     @Published private(set) var sections: [ModelBrowserSection] = []
 
+    enum BackendFilter: String, CaseIterable, Identifiable {
+        case all = "Vše"
+        case mlx = "MLX"
+        case gguf = "GGUF"
+        var id: String { rawValue }
+    }
+
+    enum CompatibilityFilter: String, CaseIterable, Identifiable {
+        case all = "Všechny"
+        case iPhoneSafe = "iPhone Safe"
+        var id: String { rawValue }
+    }
+
+    enum SourceFilter: String, CaseIterable, Identifiable {
+        case curated = "Curated Catalog"
+        case huggingFace = "Explore Hugging Face"
+        var id: String { rawValue }
+    }
+
+    @Published var selectedBackend: BackendFilter = .all {
+        didSet { recompute() }
+    }
+    @Published var selectedCompatibility: CompatibilityFilter = .all {
+        didSet { recompute() }
+    }
+    @Published var selectedSource: SourceFilter = .curated {
+        didSet { recompute() }
+    }
+
+    @Published private(set) var isSearchingHF = false
+    @Published var hfError: String? = nil
+    private var rawHFModels: [LocalModel] = []
+
     // Services – assigned once by connect().
     private weak var catalog:   ModelCatalogService?
     private weak var downloads: ModelDownloadService?
@@ -198,8 +231,10 @@ final class ModelBrowserViewModel: ObservableObject {
         if case .unloading = runtimeState { unloadingID = runtime.activeModel?.id }
         else                              { unloadingID = nil }
 
+        let sourceModels = selectedSource == .curated ? catalog.models : rawHFModels
+
         let newSections = buildSections(
-            models:         catalog.models,
+            models:         sourceModels,
             activeModelID:  activeModelID,
             runtimeState:   runtimeState,
             unloadingID:    unloadingID,
@@ -213,6 +248,37 @@ final class ModelBrowserViewModel: ObservableObject {
         if newSections != sections { sections = newSections }
     }
 
+    /// Fetches models from Hugging Face based on the query.
+    func fetchDynamicCatalog(query: String?) async {
+        guard isConnected else { return }
+        isSearchingHF = true
+        hfError = nil
+        
+        do {
+            let items = try await HuggingFaceAPIClient.fetchPopularModels(query: query)
+            let memoryProfile = DeviceMemoryProvider.shared.profile
+            let mapped = items.map { item -> LocalModel in
+                let model = HFModelMapper.mapToLocalModel(item: item)
+                var adjusted = model
+                adjusted.contextLength = ModelCatalogService.adjustContextLength(
+                    base: model.contextLength,
+                    family: model.family,
+                    recommendedFor: model.recommendedFor,
+                    memoryProfile: memoryProfile
+                )
+                return adjusted
+            }
+            self.rawHFModels = mapped
+            self.recompute()
+        } catch {
+            self.hfError = error.localizedDescription
+            self.rawHFModels = []
+            self.recompute()
+        }
+        
+        isSearchingHF = false
+    }
+
     private func buildSections(
         models:          [LocalModel],
         activeModelID:   String?,
@@ -223,6 +289,8 @@ final class ModelBrowserViewModel: ObservableObject {
         downloads:       ModelDownloadService,
         performanceProfile: PerformanceProfile
     ) -> [ModelBrowserSection] {
+        guard let catalog = catalog else { return [] }
+        
         var onDevice:  [ModelBrowserItem] = []
         var available: [ModelBrowserItem] = []
 
@@ -235,7 +303,35 @@ final class ModelBrowserViewModel: ObservableObject {
         // neighbour with similar size.
         let availableMemory = RuntimeManager.availableMemoryBytes()
 
+        // 1. Reconcile HF search models against local catalog to get installed states
+        var resolvedModels = [LocalModel]()
         for model in models {
+            if let local = catalog.models.first(where: { $0.id == model.id }) {
+                resolvedModels.append(local)
+            } else {
+                resolvedModels.append(model)
+            }
+        }
+
+        // 2. Apply Backend Filter
+        switch selectedBackend {
+        case .all:
+            break
+        case .mlx:
+            resolvedModels = resolvedModels.filter { $0.backend == .mlx }
+        case .gguf:
+            resolvedModels = resolvedModels.filter { $0.backend == .llamaCpp }
+        }
+
+        // 3. Apply Compatibility Filter
+        switch selectedCompatibility {
+        case .all:
+            break
+        case .iPhoneSafe:
+            resolvedModels = resolvedModels.filter { $0.recommendedFor.contains(.iPhone) }
+        }
+
+        for model in resolvedModels {
             let status = computeStatus(
                 model:           model,
                 activeModelID:   activeModelID,

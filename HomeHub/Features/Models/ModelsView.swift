@@ -101,6 +101,86 @@ struct ModelsView: View {
         )
     }
 
+    @ViewBuilder
+    private var filterSection: some View {
+        VStack(spacing: HHTheme.spaceS) {
+            Picker("Zdroj", selection: $vm.selectedSource) {
+                Text("Curated Catalog").tag(ModelBrowserViewModel.SourceFilter.curated)
+                Text("Explore Hugging Face").tag(ModelBrowserViewModel.SourceFilter.huggingFace)
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 2)
+            
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: HHTheme.spaceS) {
+                    ForEach(ModelBrowserViewModel.BackendFilter.allCases) { filter in
+                        Button {
+                            vm.selectedBackend = filter
+                        } label: {
+                            HStack(spacing: 4) {
+                                if vm.selectedBackend == filter {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .font(.system(size: 11, weight: .bold))
+                                }
+                                Text(filter.rawValue)
+                                    .font(HHTheme.caption.weight(.medium))
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(
+                                Capsule()
+                                    .fill(vm.selectedBackend == filter ? HHTheme.accent.opacity(0.15) : Color.primary.opacity(0.05))
+                            )
+                            .overlay(
+                                Capsule()
+                                    .stroke(vm.selectedBackend == filter ? HHTheme.accent : Color.primary.opacity(0.1), lineWidth: 0.5)
+                            )
+                            .foregroundStyle(vm.selectedBackend == filter ? HHTheme.accent : HHTheme.textPrimary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    
+                    Divider()
+                        .frame(height: 16)
+                    
+                    ForEach(ModelBrowserViewModel.CompatibilityFilter.allCases) { filter in
+                        Button {
+                            vm.selectedCompatibility = filter
+                        } label: {
+                            HStack(spacing: 4) {
+                                if filter == .iPhoneSafe {
+                                    Image(systemName: "checkmark.shield.fill")
+                                        .font(.system(size: 11, weight: .bold))
+                                        .foregroundStyle(vm.selectedCompatibility == filter ? Color.green : Color.primary.opacity(0.5))
+                                } else if vm.selectedCompatibility == filter {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .font(.system(size: 11, weight: .bold))
+                                }
+                                Text(filter.rawValue)
+                                    .font(HHTheme.caption.weight(.medium))
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(
+                                Capsule()
+                                    .fill(vm.selectedCompatibility == filter ? (filter == .iPhoneSafe ? Color.green.opacity(0.15) : HHTheme.accent.opacity(0.15)) : Color.primary.opacity(0.05))
+                            )
+                            .overlay(
+                                Capsule()
+                                    .stroke(vm.selectedCompatibility == filter ? (filter == .iPhoneSafe ? Color.green : HHTheme.accent) : Color.primary.opacity(0.1), lineWidth: 0.5)
+                            )
+                            .foregroundStyle(vm.selectedCompatibility == filter ? (filter == .iPhoneSafe ? Color.green : HHTheme.accent) : HHTheme.textPrimary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+        }
+        .listRowBackground(Color.clear)
+        .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 8, trailing: 16))
+    }
+
     private func headroomLabel(for h: RuntimeManager.MemoryHeadroom?) -> String {
         guard let h else { return "počítá se…" }
         return h.localizedLabel
@@ -304,6 +384,9 @@ struct ModelsView: View {
                     .listSectionSpacing(.compact)
                 }
 
+                // Premium glassmorphic filter bar section
+                filterSection
+
                 ForEach(filteredSections) { section in
                     Section {
                         ForEach(section.items) { item in
@@ -392,6 +475,19 @@ struct ModelsView: View {
             .onChange(of: container.memoryWarningCount) { _, _ in
                 Task { await refreshMemoryHeadroom() }
             }
+            .task(id: searchText) {
+                if vm.selectedSource == .huggingFace {
+                    do {
+                        try await Task.sleep(nanoseconds: 300_000_000)
+                        await vm.fetchDynamicCatalog(query: searchText.isEmpty ? nil : searchText)
+                    } catch {}
+                }
+            }
+            .task(id: vm.selectedSource) {
+                if vm.selectedSource == .huggingFace {
+                    await vm.fetchDynamicCatalog(query: searchText.isEmpty ? nil : searchText)
+                }
+            }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     SidebarMenuButton()
@@ -435,6 +531,9 @@ struct ModelsView: View {
                         // ("Stáhnout přesto") signals the user is opting in
                         // to a non-guaranteed run.
                         Button("Stáhnout přesto") {
+                            if model.isUserAdded && catalog.model(withID: model.id) == nil {
+                                catalog.addUserModel(model)
+                            }
                             if model.format == .mlx {
                                 Task { await downloads.startMLXDownload(model) }
                             } else {
@@ -446,6 +545,9 @@ struct ModelsView: View {
                     } else {
                         let label = model.sizeBytes > 0 ? "Download \(model.sizeFormatted)" : "Download"
                         Button(label) {
+                            if model.isUserAdded && catalog.model(withID: model.id) == nil {
+                                catalog.addUserModel(model)
+                            }
                             if model.format == .mlx {
                                 Task { await downloads.startMLXDownload(model) }
                             } else {
@@ -586,6 +688,7 @@ private struct ModelBrowserRow: View {
                         }
                     }
                     modelSubtitle
+                    statsRow
                     if let line = feasibilityLine {
                         Text(line)
                             .font(HHTheme.caption)
@@ -773,6 +876,48 @@ private struct ModelBrowserRow: View {
             Text("Context: \(model.contextLength) tokens · \(model.license)")
                 .font(HHTheme.caption)
                 .foregroundStyle(HHTheme.textSecondary)
+        }
+    }
+
+    @ViewBuilder
+    private var statsRow: some View {
+        if model.downloads != nil || model.likes != nil {
+            HStack(spacing: 8) {
+                if let dl = model.downloads {
+                    HStack(spacing: 3) {
+                        Image(systemName: "arrow.down.circle")
+                        Text(formatStat(dl))
+                    }
+                    .font(.system(size: 10, weight: .semibold))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.primary.opacity(0.06), in: Capsule())
+                    .foregroundStyle(HHTheme.textSecondary)
+                }
+                if let lk = model.likes {
+                    HStack(spacing: 3) {
+                        Image(systemName: "heart.fill")
+                            .foregroundStyle(Color.red.opacity(0.8))
+                        Text(formatStat(lk))
+                    }
+                    .font(.system(size: 10, weight: .semibold))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.primary.opacity(0.06), in: Capsule())
+                    .foregroundStyle(HHTheme.textSecondary)
+                }
+            }
+            .padding(.top, 2)
+        }
+    }
+
+    private func formatStat(_ count: Int) -> String {
+        if count >= 1_000_000 {
+            return String(format: "%.1fM", Double(count) / 1_000_000.0)
+        } else if count >= 1_000 {
+            return String(format: "%.1fk", Double(count) / 1_000.0)
+        } else {
+            return "\(count)"
         }
     }
 

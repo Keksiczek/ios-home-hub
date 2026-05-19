@@ -15,7 +15,7 @@ final class AppState: ObservableObject {
     }
 
     @Published var phase: Phase = .launching
-    @Published var selectedTab: MainTab = .chat
+    @Published var selectedTab: MainTab = .dashboard
 
     /// Pending deep-link request from a Spotlight tap, custom URL,
     /// or App Intent. Set by `HomeHubApp.onContinueUserActivity`
@@ -34,11 +34,7 @@ final class AppState: ObservableObject {
     func handle(deepLink: DeepLink) {
         switch deepLink {
         case .document:
-            // Document detail lives under Settings → Developer → KB
-            // for now; opening the Settings tab and surfacing the
-            // pending link there keeps routing honest until KB
-            // becomes a top-level tab.
-            selectedTab = .settings
+            selectedTab = .knowledgeBase
         case .conversation:
             selectedTab = .chat
         case .memoryFact:
@@ -57,7 +53,9 @@ final class AppState: ObservableObject {
 }
 
 enum MainTab: Hashable, CaseIterable, Identifiable {
+    case dashboard
     case chat
+    case knowledgeBase
     case memory
     case models
     case settings
@@ -66,19 +64,23 @@ enum MainTab: Hashable, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .chat:     return "Chat"
-        case .memory:   return "Memory"
-        case .models:   return "Models"
-        case .settings: return "Settings"
+        case .dashboard:     return "Home"
+        case .chat:          return "Chat"
+        case .knowledgeBase: return "Documents"
+        case .memory:        return "Memory"
+        case .models:        return "Models"
+        case .settings:      return "Settings"
         }
     }
 
     var symbol: String {
         switch self {
-        case .chat:     return "bubble.left.and.bubble.right"
-        case .memory:   return "sparkles"
-        case .models:   return "cube.box"
-        case .settings: return "gearshape"
+        case .dashboard:     return "house.fill"
+        case .chat:          return "bubble.left.and.bubble.right"
+        case .knowledgeBase: return "doc.text.fill"
+        case .memory:        return "sparkles"
+        case .models:        return "cube.box"
+        case .settings:      return "gearshape"
         }
     }
 }

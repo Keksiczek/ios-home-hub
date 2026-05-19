@@ -46,6 +46,8 @@ struct LocalModel: Identifiable, Codable, Equatable, Hashable {
     /// fetch when no HF token is configured (showing a clearer error
     /// than `401 Unauthorized`).
     var requiresAuth: Bool
+    var downloads: Int?
+    var likes: Int?
 
     var sizeFormatted: String {
         guard sizeBytes > 0 else { return "Unknown size" }
@@ -77,6 +79,7 @@ struct LocalModel: Identifiable, Codable, Equatable, Hashable {
         case sizeBytes, contextLength, downloadURL, sha256
         case installState, recommendedFor, license, isUserAdded
         case backend, format, installedRepoSHA, requiresAuth
+        case downloads, likes
     }
 
     init(
@@ -96,7 +99,9 @@ struct LocalModel: Identifiable, Codable, Equatable, Hashable {
         format: ModelFormat = .mlx,
         isUserAdded: Bool = false,
         installedRepoSHA: String? = nil,
-        requiresAuth: Bool = false
+        requiresAuth: Bool = false,
+        downloads: Int? = nil,
+        likes: Int? = nil
     ) {
         self.id = id
         self.displayName = displayName
@@ -115,6 +120,8 @@ struct LocalModel: Identifiable, Codable, Equatable, Hashable {
         self.isUserAdded = isUserAdded
         self.installedRepoSHA = installedRepoSHA
         self.requiresAuth = requiresAuth
+        self.downloads = downloads
+        self.likes = likes
     }
 
     init(from decoder: Decoder) throws {
@@ -136,6 +143,8 @@ struct LocalModel: Identifiable, Codable, Equatable, Hashable {
         isUserAdded   = try c.decodeIfPresent(Bool.self, forKey: .isUserAdded) ?? false
         installedRepoSHA = try c.decodeIfPresent(String.self, forKey: .installedRepoSHA)
         requiresAuth  = try c.decodeIfPresent(Bool.self, forKey: .requiresAuth) ?? false
+        downloads     = try c.decodeIfPresent(Int.self, forKey: .downloads)
+        likes         = try c.decodeIfPresent(Int.self, forKey: .likes)
     }
 }
 

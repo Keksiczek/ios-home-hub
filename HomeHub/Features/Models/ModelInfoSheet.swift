@@ -82,6 +82,17 @@ struct ModelInfoSheet: View {
                 Section("Source") {
                     row("License", model.license)
                     row("Host",    downloadHost)
+                    if let repoId = model.repoId {
+                        Link(destination: URL(string: "https://huggingface.co/\(repoId)")!) {
+                            HStack {
+                                Label("Open Hugging Face", systemImage: "safari")
+                                Spacer()
+                                Image(systemName: "arrow.up.forward.app")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
                 }
 
                 // ── Supported devices ─────────────────────────────────────────

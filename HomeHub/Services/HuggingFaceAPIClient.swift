@@ -24,6 +24,22 @@ struct HFModelManifest: Sendable {
     let sha: String?
 }
 
+struct HFModelSearchItem: Codable, Sendable {
+    let id: String
+    let author: String?
+    let downloads: Int
+    let likes: Int
+    let tags: [String]?
+    let pipelineTag: String?
+    let siblings: [HFFileEntry]?
+
+    private enum CodingKeys: String, CodingKey {
+        case id, author, downloads, likes, tags
+        case pipelineTag = "pipeline_tag"
+        case siblings
+    }
+}
+
 private struct HFModelInfo: Codable {
     let siblings: [HFFileEntry]
     /// Optional in the API response; old or unverified repos may
@@ -283,6 +299,60 @@ enum HuggingFaceAPIClient {
         // means every attempt threw with a non-transient error or the last
         // transient retry exhausted. Re-raise the last seen error so the
         // caller gets a real diagnostic, not a generic "out of attempts".
+        throw lastError ?? URLError(.unknown)
+    }
+
+    /// Fetches a list of popular models from Hugging Face based on download count.
+    /// If a query is provided, performs a search. If not, defaults to fetching
+    /// the most popular models from the mlx-community organization.
+    static func fetchPopularModels(query: String? = nil, limit: Int = 30) async throws -> [HFModelSearchItem] {
+        var urlString = apiBase
+        if let query = query, !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let encodedQuery = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+            urlString += "?search=\(encodedQuery)&sort=downloads&direction=-1&limit=\(limit)&full=true"
+        } else {
+            urlString += "?author=mlx-community&sort=downloads&direction=-1&limit=\(limit)&full=true"
+        }
+
+        guard let url = URL(string: urlString) else {
+            throw URLError(.badURL)
+        }
+
+        var request = URLRequest(url: url, timeoutInterval: 10)
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        applyAuthorization(to: &request)
+
+        let maxAttempts = 3
+        var attempt = 0
+        var lastError: Error?
+
+        while attempt < maxAttempts {
+            attempt += 1
+            do {
+                let (data, response) = try await URLSession.shared.data(for: request)
+                if let http = response as? HTTPURLResponse,
+                   !(200..<300).contains(http.statusCode) {
+                    if isTransientStatus(http.statusCode), attempt < maxAttempts {
+                        let delaySec = retryDelay(
+                            attempt: attempt,
+                            retryAfterHeader: http.value(forHTTPHeaderField: "Retry-After")
+                        )
+                        try? await Task.sleep(nanoseconds: UInt64(delaySec * 1_000_000_000))
+                        continue
+                    }
+                    throw URLError(
+                        .badServerResponse,
+                        userInfo: [NSLocalizedDescriptionKey: "HF API returned HTTP \(http.statusCode) for search"]
+                    )
+                }
+                return try JSONDecoder().decode([HFModelSearchItem].self, from: data)
+            } catch let urlError as URLError where isTransientURLError(urlError) && attempt < maxAttempts {
+                lastError = urlError
+                let delaySec = retryDelay(attempt: attempt, retryAfterHeader: nil)
+                try? await Task.sleep(nanoseconds: UInt64(delaySec * 1_000_000_000))
+                continue
+            }
+        }
         throw lastError ?? URLError(.unknown)
     }
 

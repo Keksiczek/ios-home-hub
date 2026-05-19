@@ -24,10 +24,12 @@ struct MainTabView: View {
     private var phoneLayout: some View {
         Group {
             switch appState.selectedTab {
-            case .chat:     ChatListView()
-            case .memory:   MemoryView()
-            case .models:   ModelsView()
-            case .settings: SettingsView()
+            case .dashboard:     DashboardView()
+            case .chat:          ChatListView()
+            case .knowledgeBase: KnowledgeBaseView()
+            case .memory:        MemoryView()
+            case .models:        ModelsView()
+            case .settings:      SettingsView()
             }
         }
         .overlay(alignment: .bottom) {
@@ -70,10 +72,12 @@ struct MainTabView: View {
         } detail: {
             // Each tab is a full NavigationStack so deep-links work correctly.
             switch appState.selectedTab {
-            case .chat:     ChatListView()
-            case .memory:   MemoryView()
-            case .models:   ModelsView()
-            case .settings: SettingsView()
+            case .dashboard:     DashboardView()
+            case .chat:          ChatListView()
+            case .knowledgeBase: KnowledgeBaseView()
+            case .memory:        MemoryView()
+            case .models:        ModelsView()
+            case .settings:      SettingsView()
             }
         }
         .overlay(alignment: .bottom) {

@@ -75,7 +75,7 @@ struct AppSettings: Codable, Equatable {
         haptics: true,
         theme: .system,
         selectedModelID: nil,
-        systemPromptPresets: [.defaultBuiltIn],
+        systemPromptPresets: SystemPromptPreset.builtIns,
         activeSystemPromptPresetID: SystemPromptPreset.defaultBuiltInID,
         showTokenUsage: false,
         language: .auto,
@@ -227,13 +227,16 @@ struct AppSettings: Codable, Equatable {
         self.theme              = try c.decodeIfPresent(AppTheme.self, forKey: .theme)             ?? fallback.theme
         self.selectedModelID    = try c.decodeIfPresent(String.self,  forKey: .selectedModelID)
 
-        let presets = try c.decodeIfPresent([SystemPromptPreset].self, forKey: .systemPromptPresets) ?? []
-        // Always guarantee at least one built-in preset exists.
-        if presets.contains(where: { $0.id == SystemPromptPreset.defaultBuiltInID }) {
-            self.systemPromptPresets = presets
-        } else {
-            self.systemPromptPresets = [.defaultBuiltIn] + presets
+        let decodedPresets = try c.decodeIfPresent([SystemPromptPreset].self, forKey: .systemPromptPresets) ?? []
+        // We must merge built-ins. If a built-in is missing from the decoded payload (because
+        // the app was upgraded), append it so the user gets the new Personas.
+        var mergedPresets = decodedPresets
+        for builtIn in SystemPromptPreset.builtIns {
+            if !mergedPresets.contains(where: { $0.id == builtIn.id }) {
+                mergedPresets.insert(builtIn, at: 0)
+            }
         }
+        self.systemPromptPresets = mergedPresets
 
         let activeID = try c.decodeIfPresent(UUID.self, forKey: .activeSystemPromptPresetID) ?? SystemPromptPreset.defaultBuiltInID
         self.activeSystemPromptPresetID = self.systemPromptPresets.contains(where: { $0.id == activeID })
