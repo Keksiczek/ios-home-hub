@@ -105,8 +105,8 @@ struct ModelsView: View {
     private var filterSection: some View {
         VStack(spacing: HHTheme.spaceS) {
             Picker("Zdroj", selection: $vm.selectedSource) {
-                Text("Curated Catalog").tag(ModelBrowserViewModel.SourceFilter.curated)
-                Text("Explore Hugging Face").tag(ModelBrowserViewModel.SourceFilter.huggingFace)
+                Text("Doporučené").tag(ModelBrowserViewModel.SourceFilter.curated)
+                Text("Hugging Face").tag(ModelBrowserViewModel.SourceFilter.huggingFace)
             }
             .pickerStyle(.segmented)
             .padding(.horizontal, 2)
@@ -177,8 +177,27 @@ struct ModelsView: View {
                 .padding(.vertical, 4)
             }
         }
-        .listRowBackground(Color.clear)
-        .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 8, trailing: 16))
+    }
+
+    @ViewBuilder
+    private var hfStatusRow: some View {
+        if vm.isSearchingHF {
+            HStack(spacing: HHTheme.spaceS) {
+                ProgressView().controlSize(.small)
+                Text("Načítám modely z Hugging Face…")
+                    .font(HHTheme.caption)
+                    .foregroundStyle(HHTheme.textSecondary)
+            }
+        } else if let err = vm.hfError {
+            HStack(spacing: HHTheme.spaceS) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(HHTheme.warning)
+                Text(err)
+                    .font(HHTheme.caption)
+                    .foregroundStyle(HHTheme.textSecondary)
+                    .lineLimit(2)
+            }
+        }
     }
 
     private func headroomLabel(for h: RuntimeManager.MemoryHeadroom?) -> String {
@@ -384,8 +403,24 @@ struct ModelsView: View {
                     .listSectionSpacing(.compact)
                 }
 
-                // Premium glassmorphic filter bar section
-                filterSection
+                // Source / backend / compatibility filter bar.
+                Section {
+                    filterSection
+                        .listRowBackground(Color.clear)
+                        .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 8, trailing: 16))
+                        .listRowSeparator(.hidden)
+                }
+                .listSectionSpacing(.compact)
+
+                if vm.selectedSource == .huggingFace {
+                    Section {
+                        hfStatusRow
+                            .listRowBackground(Color.clear)
+                            .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 4, trailing: 16))
+                            .listRowSeparator(.hidden)
+                    }
+                    .listSectionSpacing(.compact)
+                }
 
                 ForEach(filteredSections) { section in
                     Section {

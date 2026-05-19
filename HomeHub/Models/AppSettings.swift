@@ -228,15 +228,24 @@ struct AppSettings: Codable, Equatable {
         self.selectedModelID    = try c.decodeIfPresent(String.self,  forKey: .selectedModelID)
 
         let decodedPresets = try c.decodeIfPresent([SystemPromptPreset].self, forKey: .systemPromptPresets) ?? []
-        // We must merge built-ins. If a built-in is missing from the decoded payload (because
-        // the app was upgraded), append it so the user gets the new Personas.
-        var mergedPresets = decodedPresets
-        for builtIn in SystemPromptPreset.builtIns {
-            if !mergedPresets.contains(where: { $0.id == builtIn.id }) {
-                mergedPresets.insert(builtIn, at: 0)
-            }
+        // Merge built-ins. Built-ins always render first in their declared
+        // order so new app versions can introduce additional personas without
+        // shuffling the existing user-created presets that follow.
+        let decodedByID = Dictionary(uniqueKeysWithValues: decodedPresets.map { ($0.id, $0) })
+        let builtInIDs  = Set(SystemPromptPreset.builtIns.map(\.id))
+        let mergedBuiltIns: [SystemPromptPreset] = SystemPromptPreset.builtIns.map { template in
+            guard var existing = decodedByID[template.id] else { return template }
+            // Backfill icon / color / short description on legacy persisted
+            // built-ins so users who upgraded before personas shipped pick up
+            // the new visual metadata without losing any local edits to the
+            // prompt body or name.
+            if existing.icon == nil             { existing.icon = template.icon }
+            if existing.colorHex == nil         { existing.colorHex = template.colorHex }
+            if existing.shortDescription == nil { existing.shortDescription = template.shortDescription }
+            return existing
         }
-        self.systemPromptPresets = mergedPresets
+        let customPresets = decodedPresets.filter { !builtInIDs.contains($0.id) }
+        self.systemPromptPresets = mergedBuiltIns + customPresets
 
         let activeID = try c.decodeIfPresent(UUID.self, forKey: .activeSystemPromptPresetID) ?? SystemPromptPreset.defaultBuiltInID
         self.activeSystemPromptPresetID = self.systemPromptPresets.contains(where: { $0.id == activeID })

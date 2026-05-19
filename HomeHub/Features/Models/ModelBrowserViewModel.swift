@@ -137,13 +137,13 @@ final class ModelBrowserViewModel: ObservableObject {
 
     enum CompatibilityFilter: String, CaseIterable, Identifiable {
         case all = "Všechny"
-        case iPhoneSafe = "iPhone Safe"
+        case iPhoneSafe = "iPhone friendly"
         var id: String { rawValue }
     }
 
     enum SourceFilter: String, CaseIterable, Identifiable {
-        case curated = "Curated Catalog"
-        case huggingFace = "Explore Hugging Face"
+        case curated = "Doporučené"
+        case huggingFace = "Hugging Face"
         var id: String { rawValue }
     }
 

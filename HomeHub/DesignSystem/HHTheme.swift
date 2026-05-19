@@ -158,3 +158,20 @@ extension View {
             .animation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true), value: isActive)
     }
 }
+
+// MARK: - Hex Color
+
+extension Color {
+    /// Convenience initializer accepting `#RRGGBB` or `RRGGBB` strings.
+    /// Used by persisted presets that store colour as a hex token so the
+    /// value survives Codable round-trips without depending on UIKit.
+    init?(hex: String) {
+        var s = hex.trimmingCharacters(in: .whitespacesAndNewlines)
+        s = s.replacingOccurrences(of: "#", with: "")
+        guard s.count == 6, let rgb = UInt64(s, radix: 16) else { return nil }
+        let r = Double((rgb & 0xFF0000) >> 16) / 255.0
+        let g = Double((rgb & 0x00FF00) >> 8)  / 255.0
+        let b = Double(rgb & 0x0000FF)         / 255.0
+        self.init(red: r, green: g, blue: b)
+    }
+}
