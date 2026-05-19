@@ -1,6 +1,10 @@
 # macOS
 .DS_Store
 
+# Claude Code session artifacts (worktree-local state)
+.claude/scheduled_tasks.lock
+.claude/settings.local.json
+
 # Xcode / SwiftPM build output
 build/
 DerivedData/
