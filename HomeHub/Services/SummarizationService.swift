@@ -42,7 +42,8 @@ final class SummarizationService {
         let transcript = lines.joined(separator: "\n")
 
         let capabilityProfile = ModelCapabilityProfile.resolve(
-            family: runtime.activeModel?.family ?? ""
+            family: runtime.activeModel?.family ?? "",
+            parameterCount: runtime.activeModel?.parameterCount
         )
 
         let package = PromptContextPackage(

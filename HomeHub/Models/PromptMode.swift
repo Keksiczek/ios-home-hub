@@ -67,8 +67,40 @@ enum PromptMode: String, Sendable, Hashable, CaseIterable {
         switch self {
         case .chat:
             let s = Self.resolvedSampling(settings: settings, profile: profile)
+            // Dynamic maxTokens cap.
+            //
+            // **Always honour user intent first.** If the slider was
+            // moved off factory, return it verbatim — power users tuning
+            // long-form replies must not be silently overridden.
+            //
+            // **Profile-derived ceiling.** When the user is on the
+            // factory baseline, cap at `profile.generationReserveTokens`.
+            // That value is already calibrated per family / device tier
+            // (`ModelCapabilityProfile.dynamicHistoryBudget` could be
+            // extended to scale it; today it's a static per-family hint
+            // — 512 for chat-tuned small models, larger for code models
+            // when those land). The factory `maxResponseTokens = 768`
+            // is the "I haven't thought about it" ceiling — we trade
+            // 256 of those for guaranteed prefill headroom on small-
+            // memory tiers without ever forcing a hard limit on users
+            // who actually want a long reply.
+            //
+            // This replaces a prior hardcoded `min(maxResponseTokens, 512)
+            // when isWeak`; the dynamic form scales with whatever the
+            // profile knows (Gemma 3n reserves 512, a future 70B chat
+            // profile could reserve 2048) instead of carrying a magic
+            // number in this file.
+            let userOverrode = settings.maxResponseTokens != AppSettings.factorySampling.maxResponseTokens
+            let maxTokens: Int
+            if userOverrode {
+                maxTokens = settings.maxResponseTokens
+            } else if let profile {
+                maxTokens = min(settings.maxResponseTokens, profile.generationReserveTokens)
+            } else {
+                maxTokens = settings.maxResponseTokens
+            }
             return RuntimeParameters(
-                maxTokens: settings.maxResponseTokens,
+                maxTokens: maxTokens,
                 temperature: s.temperature,
                 topP: s.topP,
                 stopSequences: stopSequences,

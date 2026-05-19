@@ -102,7 +102,32 @@ final class ConversationService: ObservableObject {
     private let onBackgroundCompletion: @MainActor () -> Void
 
     private var activeStreams: [UUID: Task<Void, Never>] = [:]
-    private var summaryByConversation: [UUID: ConversationSummary] = [:]
+    private var summaryByConversation: [UUID: ConversationSummary] = [:] {
+        didSet {
+            // Bump `summaryRevision` whenever any conversation's summary
+            // is added, replaced, or removed. SwiftUI views observe this
+            // through `@Published` and re-read `summary(for:)` to refresh
+            // their "X turns condensed" indicator. Without this signal
+            // the indicator stayed stale until another `@Published`
+            // tick happened (sending a message, switching chats…).
+            summaryRevision &+= 1
+        }
+    }
+    /// Monotonic counter incremented every time the summary store
+    /// mutates. Public so SwiftUI views can declare a `@Published`
+    /// dependency on summary state without exposing the dictionary
+    /// itself. Wraps on overflow — view diff is cheap.
+    @Published private(set) var summaryRevision: UInt64 = 0
+
+    /// Read-only snapshot of the cached condensed summary for a
+    /// conversation, if any. `nil` while the chat is still raw history
+    /// (no summarisation has fired yet) or after `clearSummary(for:)`.
+    /// Views display the number of turns folded into the summary so the
+    /// user understands why earlier messages "disappeared" from the
+    /// recent window.
+    func summary(for conversationID: UUID) -> ConversationSummary? {
+        summaryByConversation[conversationID]
+    }
     /// Keyed by conversationID; set to `true` by the timeout watchdog task
     /// before it calls `cancelStream`. Cleared in `performSend`'s defer block.
     private var timedOutConversations: Set<UUID> = []
@@ -434,6 +459,15 @@ final class ConversationService: ObservableObject {
         // absent from every lifecycle dictionary — no orphan windows
         // while the cancelled Task unwinds.
         endGenerationLifecycle(for: id, cancellingTask: true)
+        // Also tear down ancillary background tasks tied to this
+        // conversation. Without this, a prefetch or summarization
+        // launched moments before delete keeps running with no
+        // observer — wastes CPU + tokenizer work, and the write-back
+        // dictionaries leak entries until app teardown.
+        prefetchTasks[id]?.cancel()
+        prefetchTasks[id] = nil
+        summarizationTasks[id]?.cancel()
+        summarizationTasks[id] = nil
         conversations.removeAll { $0.id == id }
         messagesByConversation[id] = nil
         summaryByConversation[id] = nil
@@ -1110,7 +1144,8 @@ final class ConversationService: ObservableObject {
         // re-read after a swap.
         let activeModelSnapshot = runtime.activeModel
         let capabilityProfile = ModelCapabilityProfile.resolve(
-            family: activeModelSnapshot?.family ?? ""
+            family: activeModelSnapshot?.family ?? "",
+            parameterCount: activeModelSnapshot?.parameterCount
         )
 
         // Semantic recall over the *truncated* tail of message history.
@@ -1528,13 +1563,37 @@ final class ConversationService: ObservableObject {
         guard messages.count >= Self.minMessagesForSummary else { return }
 
         let profile = ModelCapabilityProfile.resolve(
-            family: runtime.activeModel?.family ?? ""
+            family: runtime.activeModel?.family ?? "",
+            parameterCount: runtime.activeModel?.parameterCount
         )
+        // Use the NSCache-backed `TokenEstimator.cachedTokens(in:)`
+        // path here instead of looping `budgeter.tokensForMessage` —
+        // on a 50-message conversation the cached path avoids
+        // re-scanning ~10 000 Unicode scalars on every `send`. Add the
+        // per-message chat-template overhead separately since the
+        // cached helper counts raw content only.
         let budgeter = PromptTokenBudgeter(profile: profile)
-        let estimatedTokens = messages.reduce(0) {
-            $0 + budgeter.tokensForMessage(content: $1.content)
-        }
-        let threshold = Int(Double(profile.safeHistoryTokenBudget) * 0.7)
+        let estimatedTokens = TokenEstimator.cachedTokens(in: messages)
+            + messages.count * profile.messageTokenOverhead
+        // Dynamic summarization trigger.
+        //
+        // Linearly interpolate between **45% (very tight budgets)** and
+        // **75% (very generous budgets)** based on `safeHistoryTokenBudget`:
+        // a 400-token budget on a tight-memory iPhone fires at 180
+        // tokens; a 2800-token budget on a generous-tier device only
+        // fires at 2100. Weak instruction-followers shift the curve
+        // ~10 points earlier — they degrade quality faster as raw
+        // history grows. No more binary 0.55 / 0.7 switch.
+        //
+        // The curve avoids the previous "weak == fixed 55%" foot-gun
+        // where an iPad Pro running Gemma 3n with a 3200-token budget
+        // would summarise prematurely at 1760 tokens even though the
+        // device had headroom for the full 2400-token window.
+        let triggerFraction = Self.summarizationTriggerFraction(
+            budget: profile.safeHistoryTokenBudget,
+            isWeak: profile.isWeakInstructionFollower
+        )
+        let threshold = Int(Double(profile.safeHistoryTokenBudget) * triggerFraction)
         guard estimatedTokens > threshold else { return }
 
         // Slice: older half is messages[0..<midpoint]. The newer half
@@ -1659,6 +1718,42 @@ final class ConversationService: ObservableObject {
     /// room for history and generation. 400 tokens is roughly a
     /// long paragraph — usable as context, not bloated.
     private static let summaryRecondenseTokenThreshold = 400
+
+    /// Continuous summarisation trigger curve.
+    ///
+    /// **Inputs:**
+    /// - `budget`: `profile.safeHistoryTokenBudget`. Already
+    ///   device-scaled by `ModelCapabilityProfile.dynamicHistoryBudget`
+    ///   so a tight-tier iPhone sees a smaller value than an M-series
+    ///   iPad on the same model.
+    /// - `isWeak`: shifts the curve ~10 points earlier for models
+    ///   that lose coherence on long raw history.
+    ///
+    /// **Output:** fraction of the budget at which auto-summarise
+    /// fires. Linear from `0.45 @ 400-token budget` to
+    /// `0.75 @ 2800-token budget`, clamped at the ends. The slope is
+    /// calibrated against empirical chat-quality samples: below 400
+    /// tokens any context bleed is fatal so we summarise aggressively;
+    /// above 2800 tokens (generous tier) the model has enough working
+    /// memory that summarising prematurely wastes the buffer.
+    ///
+    /// Pure function — exposed `static` for direct unit testing
+    /// without spinning up the surrounding actor.
+    static func summarizationTriggerFraction(budget: Int, isWeak: Bool) -> Double {
+        let lo = 400.0
+        let hi = 2800.0
+        let loFraction = 0.45
+        let hiFraction = 0.75
+        let b = max(lo, min(hi, Double(budget)))
+        let t = (b - lo) / (hi - lo)        // 0 … 1
+        let base = loFraction + (hiFraction - loFraction) * t
+        // Weak models shift the curve ~0.10 earlier but never below 0.40
+        // (summarising under 40% of budget is wasted work — the
+        // summariser itself needs enough raw context to produce a
+        // sensible condensed output).
+        let adjusted = isWeak ? max(0.40, base - 0.10) : base
+        return adjusted
+    }
 
     // MARK: - Episode auto-write-back
 
@@ -1925,7 +2020,8 @@ final class ConversationService: ObservableObject {
         guard messages.count >= 4 else { return false }
 
         let profile = ModelCapabilityProfile.resolve(
-            family: runtime.activeModel?.family ?? ""
+            family: runtime.activeModel?.family ?? "",
+            parameterCount: runtime.activeModel?.parameterCount
         )
         let budgeter = PromptTokenBudgeter(profile: profile)
 

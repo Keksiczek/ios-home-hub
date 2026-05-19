@@ -561,15 +561,69 @@ private struct HorizontalRuleView: View {
 /// links work inside any block. Falls back to a plain string when the
 /// parser rejects the input (rare — happens on partial streaming where
 /// a code-span backtick is unmatched).
+///
+/// **Cache**: `AttributedString(markdown:)` is a heavy call (Foundation
+/// allocates a parser, scans for `*` / `_` / `` ` `` / `[...](...)`,
+/// constructs runs). During streaming, SwiftUI re-evaluates the view
+/// body ~10× per second × N paragraphs × N tokens = O(N²) parse work.
+/// A static content-keyed LRU cuts that to O(N): the same paragraph
+/// text only gets parsed once and subsequent renders reuse the result.
+/// Cap at 512 entries (≈ 50-message scrollback × 10 blocks/msg);
+/// dropping oldest by insertion order is fine because hot entries
+/// (the actively streaming message + visible history) get re-inserted
+/// on every render and stay near the top.
 enum InlineMarkdownText {
+    private static let lock = NSLock()
+    // `nonisolated(unsafe)` is the standard pattern for "shared mutable
+    // state guarded by my own lock". Swift 6 strict concurrency can't
+    // see the NSLock invariant — this annotation tells it the
+    // synchronisation is the developer's responsibility.
+    nonisolated(unsafe) private static var cache: [String: AttributedString] = [:]
+    nonisolated(unsafe) private static var insertionOrder: [String] = []
+    private static let cap = 512
+
     static func attributed(_ text: String) -> AttributedString {
+        lock.lock()
+        if let hit = cache[text] {
+            lock.unlock()
+            return hit
+        }
+        lock.unlock()
+
+        let result: AttributedString
         if let attributed = try? AttributedString(
             markdown: text,
             options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
         ) {
-            return attributed
+            result = attributed
+        } else {
+            result = AttributedString(text)
         }
-        return AttributedString(text)
+
+        lock.lock()
+        if cache[text] == nil {
+            cache[text] = result
+            insertionOrder.append(text)
+            if insertionOrder.count > cap {
+                // Drop ~25% in one sweep to amortise the eviction cost
+                // rather than churning the dictionary on every insert.
+                let dropCount = cap / 4
+                let evicted = insertionOrder.prefix(dropCount)
+                for key in evicted { cache.removeValue(forKey: key) }
+                insertionOrder.removeFirst(dropCount)
+            }
+        }
+        lock.unlock()
+        return result
+    }
+
+    /// Clear the cache. Called from memory-pressure handlers so we
+    /// don't keep parsed AttributedStrings resident under jetsam risk.
+    static func purgeCache() {
+        lock.lock()
+        cache.removeAll(keepingCapacity: false)
+        insertionOrder.removeAll(keepingCapacity: false)
+        lock.unlock()
     }
 }
 

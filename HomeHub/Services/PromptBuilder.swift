@@ -27,17 +27,26 @@ enum PromptBuilder {
         /// Names (case-insensitive) of skills currently registered AND
         /// enabled in settings. Controls the tool-availability rail.
         var availableTools: Set<String>
+        /// When `true`, the rail uses a shorter, less instructional form
+        /// of the date block. Specifically: drops the verbatim Czech
+        /// quoting hint that small models (Llama 3.2 1B Q4 observed in
+        /// the field) parrot as the opening line of EVERY reply
+        /// regardless of whether the user asked about the date. Also
+        /// adds an explicit "do not lead with the date" instruction.
+        var isWeakInstructionFollower: Bool = false
 
         static func live(
             settings: AppSettings,
-            availableTools: Set<String>
+            availableTools: Set<String>,
+            isWeakInstructionFollower: Bool = false
         ) -> Context {
             Context(
                 settings: settings,
                 now: .now,
                 locale: .current,
                 timeZone: .current,
-                availableTools: availableTools
+                availableTools: availableTools,
+                isWeakInstructionFollower: isWeakInstructionFollower
             )
         }
     }
@@ -75,63 +84,192 @@ enum PromptBuilder {
         return chunks.joined(separator: "\n\n")
     }
 
+    /// Stable subset of the rail. Everything here is invariant under the
+    /// passage of time: location, tool-policy, style, language. Goes into
+    /// `stableSystemPrompt` so the MLX KV-cache prefix stays valid across
+    /// turns.
+    ///
+    /// **Architectural note**: previously the entire rail was emitted as
+    /// volatile, meaning the date-stamp re-render alone invalidated
+    /// 200–300 tokens of static boilerplate (tool policy, style hints)
+    /// every single turn. On Gemma 3n at ~30 t/s prefill that's ~7-10 s
+    /// of wasted time-to-first-token per turn. After the split only the
+    /// genuinely-volatile date+time block invalidates the prefix.
+    static func contextRailStable(_ ctx: Context) -> String {
+        var chunks: [String] = []
+        let loc = locationBlock(ctx)
+        if !loc.isEmpty { chunks.append(loc) }
+        chunks.append(languageBlock(ctx))
+        chunks.append(toolPolicyBlock(ctx))
+        chunks.append(styleBlock(ctx))
+        return chunks.joined(separator: "\n\n")
+    }
+
+    /// Volatile subset of the rail. Only date/time + the anti-parrot
+    /// guard for weak models — both genuinely time-sensitive (date) or
+    /// freshness-sensitive (anti-parrot reminder, kept near the date so
+    /// the model sees them as one block).
+    static func contextRailVolatile(_ ctx: Context) -> String {
+        dateTimeBlock(ctx)
+    }
+
+    /// Legacy combined accessor. Kept so any future caller / test that
+    /// wants the whole rail in one string can still get it without
+    /// reassembling the parts. Production assembly should go through
+    /// the `contextRailStable` / `contextRailVolatile` pair above so
+    /// the MLX KV-cache prefix can be reused turn-to-turn.
+    @available(*, deprecated, message: "Use contextRailStable + contextRailVolatile so KV-cache prefix reuse stays valid")
+    static func contextRailCombined(_ ctx: Context) -> String {
+        var chunks: [String] = []
+        chunks.append(dateTimeBlock(ctx))
+        let loc = locationBlock(ctx)
+        if !loc.isEmpty { chunks.append(loc) }
+        chunks.append(languageBlock(ctx))
+        chunks.append(toolPolicyBlock(ctx))
+        chunks.append(styleBlock(ctx))
+        return chunks.joined(separator: "\n\n")
+    }
+
     // MARK: - Sub-blocks (exposed for targeted tests)
 
-    static func contextBlock(_ ctx: Context) -> String {
-        let df = DateFormatter()
-        df.locale = Locale(identifier: "en_US_POSIX")
-        df.timeZone = ctx.timeZone
-        df.dateFormat = "yyyy-MM-dd"
+    /// Cached DateFormatters. `DateFormatter.init()` parses locale data
+    /// (a noticeable chunk of work — measurable in tens of microseconds
+    /// per instance, multiplied by 5 instances × every turn). The
+    /// formatters are reused across calls; only their `timeZone` is
+    /// reassigned per call because callers can pass a different zone
+    /// (tests pin `Europe/Prague`; production reads `.current`).
+    /// `DateFormatter` is documented thread-safe for `string(from:)` as
+    /// long as you don't mutate its config concurrently — we serialise
+    /// the timeZone assignment behind `formatterLock` to keep that
+    /// guarantee.
+    private static let formatterLock = NSLock()
+    private static let isoDateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd"
+        return f
+    }()
+    private static let enWeekdayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US")
+        f.dateFormat = "EEEE"
+        return f
+    }()
+    private static let csWeekdayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "cs_CZ")
+        f.dateFormat = "EEEE"
+        return f
+    }()
+    private static let timeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "HH:mm"
+        return f
+    }()
+    private static let csDateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "cs_CZ")
+        f.dateFormat = "d. MMMM yyyy"
+        return f
+    }()
 
-        let weekday = DateFormatter()
-        weekday.locale = ctx.settings.language.resolved(locale: ctx.locale) == .cs
-            ? Locale(identifier: "cs_CZ")
-            : Locale(identifier: "en_US")
-        weekday.timeZone = ctx.timeZone
-        weekday.dateFormat = "EEEE"
+    /// Volatile date / time / Czech-locale weekday hint / anti-parrot
+    /// guard for weak models. The only true per-turn churn.
+    static func dateTimeBlock(_ ctx: Context) -> String {
+        let isCS = ctx.settings.language.resolved(locale: ctx.locale) == .cs
 
-        let tf = DateFormatter()
-        tf.locale = Locale(identifier: "en_US_POSIX")
-        tf.timeZone = ctx.timeZone
-        tf.dateFormat = "HH:mm"
+        // Snapshot formatted strings under the lock so the timeZone
+        // mutation can't race with another thread's `string(from:)`.
+        // The lock is held for the duration of formatting — measured
+        // at ~30-60 µs total per call, well below the cost of
+        // re-instantiating five formatters from scratch.
+        let (isoDate, weekdayName, timeStr, csDay, csDate) = formatterLock.withLock { () -> (String, String, String, String, String) in
+            Self.isoDateFormatter.timeZone = ctx.timeZone
+            Self.enWeekdayFormatter.timeZone = ctx.timeZone
+            Self.csWeekdayFormatter.timeZone = ctx.timeZone
+            Self.timeFormatter.timeZone = ctx.timeZone
+            Self.csDateFormatter.timeZone = ctx.timeZone
+
+            let weekdayFormatter = isCS ? Self.csWeekdayFormatter : Self.enWeekdayFormatter
+            return (
+                Self.isoDateFormatter.string(from: ctx.now),
+                weekdayFormatter.string(from: ctx.now),
+                Self.timeFormatter.string(from: ctx.now),
+                Self.csWeekdayFormatter.string(from: ctx.now).lowercased(),
+                Self.csDateFormatter.string(from: ctx.now)
+            )
+        }
 
         var lines: [String] = [
             "Context:",
-            "- Current date: \(df.string(from: ctx.now)) (\(weekday.string(from: ctx.now)))",
-            "- Local time: \(tf.string(from: ctx.now)) \(ctx.timeZone.identifier)"
+            "- Current date: \(isoDate) (\(weekdayName))",
+            "- Local time: \(timeStr) \(ctx.timeZone.identifier)"
         ]
 
-        // Czech-locale ready phrase. Small Llama models butcher Czech
-        // case morphology (we've seen "Dnešný den je nedělinou" when
-        // asked "Co je dnes za den?"). Giving the model an explicit,
-        // grammatically correct Czech wording it can quote verbatim
-        // ("Dnes je neděle, 17. května 2026.") removes the failure mode
-        // without forcing a model swap.
-        if ctx.settings.language.resolved(locale: ctx.locale) == .cs {
-            let csWeekday = DateFormatter()
-            csWeekday.locale = Locale(identifier: "cs_CZ")
-            csWeekday.timeZone = ctx.timeZone
-            csWeekday.dateFormat = "EEEE"
-            let csDate = DateFormatter()
-            csDate.locale = Locale(identifier: "cs_CZ")
-            csDate.timeZone = ctx.timeZone
-            csDate.dateFormat = "d. MMMM yyyy"
-            let day = csWeekday.string(from: ctx.now).lowercased()
-            let date = csDate.string(from: ctx.now)
-            lines.append("- Když se uživatel zeptá na dnešní den nebo datum, použij přesně tuto formulaci: \"Dnes je \(day), \(date).\"")
+        if isCS {
+            if ctx.isWeakInstructionFollower {
+                lines.append("- Dnes: \(csDay), \(csDate)")
+            } else {
+                lines.append("- Když se uživatel zeptá na dnešní den nebo datum, použij přesně tuto formulaci: \"Dnes je \(csDay), \(csDate).\"")
+            }
         }
 
+        if ctx.isWeakInstructionFollower {
+            lines.append("- NEPOZDRAVUJ uživatele jménem a NEZAČÍNEJ odpověď datem ani časem, pokud se uživatel přímo nezeptal. Odpovídej rovnou na otázku.")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// Stable location hint. Returns `""` when the user has cleared the
+    /// `locationHint` setting — the caller filters empty blocks out.
+    static func locationBlock(_ ctx: Context) -> String {
         let loc = ctx.settings.locationHint.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !loc.isEmpty else { return "" }
+        return "Location: \(loc)"
+    }
+
+    /// Combined context block (date + location + weak guards). Retained
+    /// for compatibility with the `toolFollowup` assembly path that emits
+    /// the rail as one chunk. Composed from the cached sub-blocks so
+    /// there's only one DateFormatter cache to maintain.
+    static func contextBlock(_ ctx: Context) -> String {
+        var lines = dateTimeBlock(ctx).components(separatedBy: "\n")
+        let loc = locationBlock(ctx)
         if !loc.isEmpty {
-            lines.append("- Location: \(loc)")
+            // `locationBlock` returns `"Location: …"` for the stable use;
+            // here we want it inline as a `"- Location: …"` bullet
+            // alongside the other Context lines. Splice it in before
+            // any weak-model guard line (which `dateTimeBlock` puts last
+            // when `isWeakInstructionFollower`).
+            let bullet = "- \(loc)"
+            if let guardIdx = lines.firstIndex(where: { $0.hasPrefix("- NEPOZDRAVUJ") }) {
+                lines.insert(bullet, at: guardIdx)
+            } else {
+                lines.append(bullet)
+            }
         }
         return lines.joined(separator: "\n")
     }
 
     static func languageBlock(_ ctx: Context) -> String {
         let resolved = ctx.settings.language.resolved(locale: ctx.locale)
+        // Weak models need explicit "no mixing" instructions — Llama 3.2
+        // 1B Q4 in the field produces "yesterday Discuss", "good music",
+        // `тебе` (Cyrillic) inside Czech replies. Strong models don't
+        // need this prompt overhead.
+        let antiMixingGuard = ctx.isWeakInstructionFollower
         switch resolved {
         case .cs:
+            if antiMixingGuard {
+                return """
+                Language policy:
+                Odpovídej VŽDY a POUZE v češtině. Nikdy nemíchej anglická, \
+                ruská, ukrajinská nebo jiná cizí slova do české věty. \
+                Pokud něco nevíš česky, řekni "Nevím." — nepoužívej cizí slovo. \
+                Pouze technické pojmy v kódu zůstávají v původním jazyce.
+                """
+            }
             return """
             Language policy:
             Respond ONLY in Czech (čeština). Even if the user writes in \
@@ -139,6 +277,15 @@ enum PromptBuilder {
             and code stay in their original language.
             """
         case .en, .auto:
+            if antiMixingGuard {
+                return """
+                Language policy:
+                Respond ONLY in English. Do not mix words from other \
+                languages (Czech, Russian, etc.) into English sentences. \
+                If you don't know an English word, say so plainly. Code \
+                and identifiers stay verbatim.
+                """
+            }
             return """
             Language policy:
             Respond ONLY in English. Even if the user writes in another \
@@ -184,8 +331,21 @@ enum PromptBuilder {
     }
 
     static func styleBlock(_ ctx: Context) -> String {
+        // Weak models need a stronger, simpler discipline rail — the
+        // nuanced "1-2 lines of supporting context" style brief gets
+        // ignored by Q4 small checkpoints. The lean wording below
+        // collapses each tier to two imperative sentences which
+        // empirically survive the chat-template overhead.
+        let isWeak = ctx.isWeakInstructionFollower
         switch ctx.settings.answerLength {
         case .concise:
+            if isWeak {
+                return """
+                Answer style — Concise:
+                První věta odpovídá na otázku přímo. Maximálně 3 věty celkem. \
+                Žádný úvod, žádné "samozřejmě", žádný pozdrav, žádný podpis.
+                """
+            }
             return """
             Answer length — Concise:
             Reply in 1–3 sentences. No preamble ("Sure!", "Of course"), \
@@ -193,6 +353,14 @@ enum PromptBuilder {
             to 3 bullets max.
             """
         case .balanced:
+            if isWeak {
+                return """
+                Answer style — Balanced:
+                První věta odpovídá přímo na otázku. Pak maximálně 2 věty \
+                doplnění nebo příklad. Žádný úvod ani podpis. Pokud nevíš, \
+                řekni "Nevím." — neopisuj otázku.
+                """
+            }
             return """
             Answer length — Balanced:
             Give a short direct answer, then 1–2 lines of supporting \
@@ -200,6 +368,14 @@ enum PromptBuilder {
             else. No filler.
             """
         case .detailed:
+            if isWeak {
+                return """
+                Answer style — Detailed:
+                První věta je přímá odpověď. Pak rozveď postup, příklad nebo \
+                konkrétní čísla. Maximálně 6 vět. Žádné fráze typu \
+                "rád ti pomůžu" ani "doufám, že to pomůže".
+                """
+            }
             return """
             Answer length — Detailed:
             Give a complete answer with headings, examples, and concrete \

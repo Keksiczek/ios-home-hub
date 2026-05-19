@@ -172,4 +172,17 @@ final class RoutingRuntime: LocalLLMRuntime, @unchecked Sendable {
     func averageThroughput(for modelID: String) -> (tps: Double, samples: Int)? {
         activeBackend?.averageThroughput(for: modelID)
     }
+
+    /// Forwards the active backend's percentile distribution. Without
+    /// this explicit override the protocol default returns `nil`
+    /// because `RoutingRuntime` itself doesn't store samples — they
+    /// live on the concrete backend (`MLXRuntime`/`LlamaCppRuntime`).
+    func throughputPercentiles(for modelID: String) -> (p50: Double, p95: Double, samples: Int)? {
+        activeBackend?.throughputPercentiles(for: modelID)
+    }
+
+    /// Forwards the active backend's first-token-latency distribution.
+    func firstTokenLatencyPercentiles(for modelID: String) -> (p50Ms: Int, p95Ms: Int, samples: Int)? {
+        activeBackend?.firstTokenLatencyPercentiles(for: modelID)
+    }
 }

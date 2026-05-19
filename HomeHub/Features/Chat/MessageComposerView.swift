@@ -25,16 +25,13 @@ struct MessageComposerView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Context usage bar — visible only when context is getting full
+            // Context usage strip. The bar appears at 50% fill (early
+            // warning, no label yet); above 70% we tint it amber and
+            // show a percentage chip so the user knows *how* full
+            // before summarisation kicks in around 55–75% (the curve
+            // in `ConversationService.summarizationTriggerFraction`).
             if tokenFill > 0.5 {
-                GeometryReader { geo in
-                    Rectangle()
-                        .fill(contextBarColor)
-                        .frame(width: geo.size.width * tokenFill)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .animation(.easeInOut(duration: 0.3), value: tokenFill)
-                }
-                .frame(height: 2)
+                contextFillStrip
             }
 
             Divider().overlay(HHTheme.stroke)
@@ -252,6 +249,57 @@ struct MessageComposerView: View {
         if tokenFill > 0.9 { return HHTheme.danger }
         if tokenFill > 0.75 { return HHTheme.warning }
         return HHTheme.accent.opacity(0.6)
+    }
+
+    /// The context-fill strip rendered above the divider. Two layers:
+    /// a 3 px progress bar that animates as the conversation grows,
+    /// and a small percentage / state chip that surfaces once the
+    /// fill crosses 70% so the user knows it's getting tight without
+    /// needing to enable the dev-only `TokenUsageBadge`.
+    @ViewBuilder
+    private var contextFillStrip: some View {
+        VStack(spacing: 0) {
+            if tokenFill > 0.7 {
+                HStack(spacing: 6) {
+                    Image(systemName: tokenFill > 0.9
+                          ? "exclamationmark.circle.fill"
+                          : "circle.lefthalf.filled")
+                        .imageScale(.small)
+                    Text(contextFillLabel)
+                        .font(.system(size: 11, weight: .medium))
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                }
+                .foregroundStyle(contextBarColor)
+                .padding(.horizontal, HHTheme.spaceM)
+                .padding(.vertical, 3)
+                .transition(.opacity)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("Kontext zaplněn z \(Int(tokenFill * 100)) procent")
+            }
+            GeometryReader { geo in
+                Rectangle()
+                    .fill(contextBarColor)
+                    .frame(width: geo.size.width * tokenFill)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .animation(.easeInOut(duration: 0.3), value: tokenFill)
+            }
+            .frame(height: 3)
+        }
+    }
+
+    /// One-line description for the chip. We avoid raw "85 %" by
+    /// itself — pair it with a hint about what happens next so the
+    /// number is actionable instead of just alarming.
+    private var contextFillLabel: String {
+        let pct = Int((tokenFill * 100).rounded())
+        if tokenFill > 0.9 {
+            return "Kontext skoro plný (\(pct) %) — starší zprávy se brzy zhustí do shrnutí"
+        }
+        if tokenFill > 0.75 {
+            return "Kontext \(pct) % — udržuju historii čistou"
+        }
+        return "Kontext \(pct) %"
     }
 
     /// Maximum dimension the resulting `UIImage` should have on its

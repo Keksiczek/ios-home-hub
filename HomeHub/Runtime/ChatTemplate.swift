@@ -81,9 +81,13 @@ enum ChatTemplate {
         let rendered: String
         switch key {
         case "llama":   rendered = renderLlama3(prompt)
-        // Mirror the architecture-side fix: catalog family "Gemma3n"
-        // should resolve to the Gemma 3 envelope, not ChatML.
-        case "gemma3n", "gemma3":
+        // Mirror the architecture-side fix: catalog families
+        // "Gemma3n" / "Gemma3" / bare "Gemma" all share the Gemma 3
+        // envelope (no native system role; system prompt is prepended
+        // to the first user turn). Without "gemma" here a user-added
+        // model labelled simply "gemma" fell through to ChatML which
+        // emitted wrong tokens.
+        case "gemma3n", "gemma3", "gemma":
             rendered = renderGemma3(prompt)
         case "gemma2":  rendered = renderGemma2(prompt)
         default:
@@ -136,24 +140,43 @@ enum ChatTemplate {
         return out
     }
 
-    // MARK: - Gemma 3  (Google, supports system role)
+    // MARK: - Gemma 3 / 3n  (Google, system prompt prepended to first user turn)
 
-    /// `<bos><start_of_turn>system\n{sys}<end_of_turn>\n<start_of_turn>user\n…`
+    /// `<bos><start_of_turn>user\n{sys}\n\n{first_user}<end_of_turn>\n<start_of_turn>model\n…`
     ///
-    /// Gemma 3 natively supports a `system` turn before the first user message.
+    /// **Important**: despite the previous version of this file, Gemma 3 and
+    /// Gemma 3n have **no native system role**. Google's official chat
+    /// template (see `google/gemma-3n-E4B-it/tokenizer_config.json` →
+    /// `chat_template` Jinja) prepends the system prompt to the first user
+    /// turn separated by `\n\n`, exactly like Gemma 2. The previous output
+    /// emitted `<start_of_turn>system` tokens that Google never trained the
+    /// model on — manifested as language drift, garbled tool-call wrappers,
+    /// and inconsistent output on Gemma 3n in the field.
+    ///
+    /// Inline `.system` turns (rare — produced when the prompt assembler
+    /// emits multiple system blocks) are silently dropped, matching the
+    /// Gemma 2 path. The top-level `prompt.systemPrompt` is the canonical
+    /// system surface for this family.
     private static func renderGemma3(_ prompt: RuntimePrompt) -> String {
         var out = "<bos>"
-        if !prompt.systemPrompt.isEmpty {
-            out += "<start_of_turn>system\n\(prompt.systemPrompt)<end_of_turn>\n"
-        }
+        var systemPrepended = false
         for msg in prompt.messages {
             switch msg.role {
-            case .system:
-                out += "<start_of_turn>system\n\(msg.content)<end_of_turn>\n"
             case .user:
-                out += "<start_of_turn>user\n\(msg.content)<end_of_turn>\n"
+                out += "<start_of_turn>user\n"
+                if !systemPrepended && !prompt.systemPrompt.isEmpty {
+                    out += prompt.systemPrompt + "\n\n"
+                    systemPrepended = true
+                }
+                out += msg.content + "<end_of_turn>\n"
             case .assistant:
                 out += "<start_of_turn>model\n\(msg.content)<end_of_turn>\n"
+            case .system:
+                // Inline `.system` is not a representable role in Gemma 3/3n.
+                // Drop silently — the canonical system prompt is on
+                // `prompt.systemPrompt` and gets prepended above the first
+                // user turn.
+                break
             }
         }
         out += "<start_of_turn>model\n"

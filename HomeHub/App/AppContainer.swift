@@ -759,6 +759,12 @@ final class AppContainer: ObservableObject {
         // warning, often enough to keep the model resident.
         await embeddingService.unload()
         await runtimeManager.handleSoftMemoryPressure()
+        // Markdown attributed-string LRU is a few MB at most but it's
+        // free to drop and the next-render rebuild is fast. Doing it on
+        // every L1 keeps the eviction policy honest (the user is in
+        // pressure right now — nothing in the cache is "hot enough" to
+        // earn its keep).
+        InlineMarkdownText.purgeCache()
 
         // Hard tier — escalate only when the policy says so AND the
         // runtime isn't mid-token. If it's busy, leave the unload to
