@@ -9,6 +9,8 @@ struct DashboardView: View {
     @EnvironmentObject private var settings: SettingsService
     @EnvironmentObject private var conversationService: ConversationService
 
+    @Environment(\.showSidebarMenu) private var showSidebarMenu
+
     @State private var memoryHeadroom: RuntimeManager.MemoryHeadroom?
     @State private var isStartingNewChat = false
 
@@ -25,13 +27,12 @@ struct DashboardView: View {
                 .padding(.vertical, HHTheme.spaceM)
             }
             .background(HHTheme.canvas)
-            .navigationTitle("Domů")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    SidebarMenuButton()
-                }
-            }
+            // The Dashboard is the landing tab and the user must always
+            // be able to navigate away. The toolbar button alone proved
+            // unreliable in some scrolled / split-view states, so the
+            // nav bar is hidden entirely and a bulletproof header bar is
+            // baked into `greetingSection` instead.
+            .toolbar(.hidden, for: .navigationBar)
             .task {
                 await refreshMemoryHeadroom()
             }
@@ -42,10 +43,33 @@ struct DashboardView: View {
     }
 
     // MARK: - Greeting Section
-    
+
     @ViewBuilder
     private var greetingSection: some View {
-        HStack {
+        VStack(alignment: .leading, spacing: HHTheme.spaceM) {
+            // Always-visible header row: menu trigger (left) + persona
+            // pill (right). Lives in the content so the user can never
+            // get stuck on the dashboard if the nav-bar toolbar fails
+            // to render for any reason (regular-width split, scrolled
+            // state, etc.).
+            HStack(spacing: HHTheme.spaceM) {
+                Button {
+                    showSidebarMenu()
+                } label: {
+                    Image(systemName: "sidebar.left")
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(HHTheme.textPrimary)
+                        .frame(width: 36, height: 36)
+                        .background(HHTheme.surface, in: Circle())
+                        .overlay(Circle().stroke(HHTheme.stroke, lineWidth: 1))
+                }
+                .accessibilityLabel("Menu")
+
+                Spacer()
+
+                personaPill
+            }
+
             VStack(alignment: .leading, spacing: 4) {
                 Text(greetingTimeOfDay)
                     .font(HHTheme.title.weight(.bold))
@@ -55,9 +79,26 @@ struct DashboardView: View {
                     .font(HHTheme.body)
                     .foregroundStyle(HHTheme.textSecondary)
             }
-            Spacer()
         }
         .padding(.top, HHTheme.spaceS)
+    }
+
+    @ViewBuilder
+    private var personaPill: some View {
+        let preset = settings.current.activeSystemPromptPreset
+        let color = Color(hex: preset.colorHex ?? "007AFF") ?? .blue
+        HStack(spacing: 6) {
+            Image(systemName: preset.icon ?? "sparkles")
+                .font(.caption.weight(.semibold))
+            Text(preset.name)
+                .font(HHTheme.caption.weight(.semibold))
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .foregroundStyle(color)
+        .background(color.opacity(0.12), in: Capsule())
+        .overlay(Capsule().stroke(color.opacity(0.25), lineWidth: 0.5))
     }
     
     private var greetingTimeOfDay: String {

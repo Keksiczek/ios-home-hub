@@ -13,6 +13,18 @@ struct KnowledgeBaseView: View {
     @State private var showDeveloperOptions = false
 
     var body: some View {
+        // Wrap in our own NavigationStack so the toolbar (with the
+        // SidebarMenuButton) actually attaches. `MainTabView` deliberately
+        // doesn't host a top-level stack on phone, so each destination is
+        // responsible for its own — Knowledge Base previously relied on
+        // one provided by the `#Preview`, which made the menu button
+        // silently disappear in production.
+        NavigationStack {
+            content
+        }
+    }
+
+    private var content: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(spacing: HHTheme.spaceXL) {
