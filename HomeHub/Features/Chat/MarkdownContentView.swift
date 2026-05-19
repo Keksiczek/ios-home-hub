@@ -633,6 +633,23 @@ struct CodeBlockView: View {
     let language: String?
     let code: String
     @State private var copied = false
+    @Environment(\.colorScheme) private var colorScheme
+
+    // Code blocks always read as "IDE-style" — monospace on a dark
+    // canvas — but the original fixed `Color(white: 0.1)` background
+    // merged into the chat bubble in dark mode, leaving the block
+    // visually indistinguishable from the message body. Pick slightly
+    // different shades per scheme so contrast survives both modes.
+    private var bodyBackground: Color {
+        colorScheme == .dark ? Color(white: 0.18) : Color(white: 0.10)
+    }
+    private var headerBackground: Color {
+        colorScheme == .dark ? Color(white: 0.24) : Color(white: 0.16)
+    }
+    private var foreground: Color { Color(white: 0.95) }
+    private var borderColor: Color {
+        colorScheme == .dark ? Color.white.opacity(0.15) : Color.white.opacity(0.10)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -641,50 +658,50 @@ struct CodeBlockView: View {
                 if let lang = language {
                     Text(lang.uppercased())
                         .font(.system(size: 11, weight: .bold, design: .monospaced))
-                        .foregroundStyle(Color.white.opacity(0.8))
+                        .foregroundStyle(foreground.opacity(0.8))
                 } else {
                     Text("CODE")
                         .font(.system(size: 11, weight: .bold, design: .monospaced))
-                        .foregroundStyle(Color.white.opacity(0.5))
+                        .foregroundStyle(foreground.opacity(0.5))
                 }
                 Spacer()
                 Button(action: copyCode) {
                     HStack(spacing: 4) {
                         Image(systemName: copied ? "checkmark" : "doc.on.clipboard")
-                        Text(copied ? "Copied" : "Copy")
+                        Text(copied ? "Zkopírováno" : "Kopírovat")
                     }
                     .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(copied ? HHTheme.success : Color.white.opacity(0.7))
+                    .foregroundStyle(copied ? HHTheme.success : foreground.opacity(0.75))
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
-                    .background(Color.white.opacity(0.1), in: Capsule())
+                    .background(foreground.opacity(0.12), in: Capsule())
                     .animation(.easeInOut(duration: 0.15), value: copied)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(copied ? "Copied to clipboard" : "Copy code")
+                .accessibilityLabel(copied ? "Zkopírováno do schránky" : "Zkopírovat kód")
             }
             .padding(.horizontal, HHTheme.spaceM)
             .padding(.vertical, 8)
-            .background(Color(white: 0.15))
+            .background(headerBackground)
 
             // Code body
             ScrollView(.horizontal, showsIndicators: false) {
                 Text(code.isEmpty ? " " : code)
                     .font(.system(size: 13, weight: .regular, design: .monospaced))
-                    .foregroundStyle(Color(white: 0.95))
+                    .foregroundStyle(foreground)
                     .padding(HHTheme.spaceM)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .background(Color(white: 0.1))
+            .background(bodyBackground)
         }
         .clipShape(RoundedRectangle(cornerRadius: HHTheme.cornerMedium, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: HHTheme.cornerMedium, style: .continuous)
-                .stroke(Color.white.opacity(0.1), lineWidth: 1)
+                .stroke(borderColor, lineWidth: 1)
         )
-        // Add a subtle drop shadow to pop the dark code block off the chat bubble
-        .shadow(color: Color.black.opacity(0.2), radius: 5, x: 0, y: 2)
+        .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.35 : 0.18),
+                radius: 5, x: 0, y: 2)
     }
 
     private func copyCode() {

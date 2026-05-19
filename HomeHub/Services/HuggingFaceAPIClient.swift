@@ -302,16 +302,24 @@ enum HuggingFaceAPIClient {
         throw lastError ?? URLError(.unknown)
     }
 
-    /// Fetches a list of popular models from Hugging Face based on download count.
-    /// If a query is provided, performs a search. If not, defaults to fetching
-    /// the most popular models from the mlx-community organization.
-    static func fetchPopularModels(query: String? = nil, limit: Int = 30) async throws -> [HFModelSearchItem] {
+    /// Fetches a list of popular models from Hugging Face based on
+    /// download count. If a `query` is provided, performs a free-text
+    /// search. Otherwise scopes by `author` (defaults to
+    /// `mlx-community`) so the result list contains repos the
+    /// `HFModelMapper` can actually consume — generic HF repos rarely
+    /// conform to MLX/GGUF on-device requirements.
+    static func fetchPopularModels(
+        query: String? = nil,
+        author: String? = "mlx-community",
+        limit: Int = 30
+    ) async throws -> [HFModelSearchItem] {
         var urlString = apiBase
         if let query = query, !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             let encodedQuery = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
             urlString += "?search=\(encodedQuery)&sort=downloads&direction=-1&limit=\(limit)&full=true"
         } else {
-            urlString += "?author=mlx-community&sort=downloads&direction=-1&limit=\(limit)&full=true"
+            let scopedAuthor = author ?? "mlx-community"
+            urlString += "?author=\(scopedAuthor)&sort=downloads&direction=-1&limit=\(limit)&full=true"
         }
 
         guard let url = URL(string: urlString) else {

@@ -20,6 +20,15 @@ struct MainTabView: View {
     // v2: no tab bar. One destination fills the screen; switching
     // happens through a sheet-style sidebar menu triggered by the
     // hamburger button that each destination hosts in its nav bar.
+    //
+    // **Navigation contract** — every destination listed below MUST
+    // host its own `NavigationStack` at the root of its body. This
+    // layout deliberately does not provide one (path-driven destinations
+    // like ChatListView need their own `NavigationStack(path:)`). If
+    // you add a new tab, wrap its body in `NavigationStack { … }` and
+    // attach `.toolbar { ToolbarItem(placement: .topBarLeading) {
+    // SidebarMenuButton() } }` so the user can navigate away — KB and
+    // Dashboard both shipped broken before this comment existed.
 
     private var phoneLayout: some View {
         Group {

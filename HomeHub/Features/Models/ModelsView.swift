@@ -510,18 +510,25 @@ struct ModelsView: View {
             .onChange(of: container.memoryWarningCount) { _, _ in
                 Task { await refreshMemoryHeadroom() }
             }
-            .task(id: searchText) {
-                if vm.selectedSource == .huggingFace {
-                    do {
-                        try await Task.sleep(nanoseconds: 300_000_000)
-                        await vm.fetchDynamicCatalog(query: searchText.isEmpty ? nil : searchText)
-                    } catch {}
+            // HF catalog refresh. Triggered by source switch, backend
+            // switch, or debounced search-text edits. The VM dedupes
+            // in-flight fetches internally so racing triggers can't
+            // overwrite each other.
+            .task(id: HFFetchTrigger(
+                source:  vm.selectedSource,
+                backend: vm.selectedBackend,
+                query:   searchText
+            )) {
+                guard vm.selectedSource == .huggingFace else { return }
+                // 300 ms debounce so each keystroke doesn't fire a
+                // request. If the trigger changes during the sleep,
+                // SwiftUI cancels this task and we silently bail.
+                do {
+                    try await Task.sleep(nanoseconds: 300_000_000)
+                } catch {
+                    return
                 }
-            }
-            .task(id: vm.selectedSource) {
-                if vm.selectedSource == .huggingFace {
-                    await vm.fetchDynamicCatalog(query: searchText.isEmpty ? nil : searchText)
-                }
+                vm.fetchDynamicCatalog(query: searchText.isEmpty ? nil : searchText)
             }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -673,6 +680,16 @@ struct ModelsView: View {
 }
 
 // MARK: - ModelBrowserRow
+
+/// Composite key for `.task(id:)` HF refresh trigger. Lets one `.task`
+/// modifier cover all three independent inputs (source / backend /
+/// query) without spawning duplicate parallel fetches the way two
+/// separate `.task(id:)` modifiers did.
+private struct HFFetchTrigger: Equatable {
+    let source: ModelBrowserViewModel.SourceFilter
+    let backend: ModelBrowserViewModel.BackendFilter
+    let query: String
+}
 
 private struct ModelBrowserRow: View {
     let item:             ModelBrowserItem

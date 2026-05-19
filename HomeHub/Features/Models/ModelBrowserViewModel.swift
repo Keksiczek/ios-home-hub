@@ -160,6 +160,11 @@ final class ModelBrowserViewModel: ObservableObject {
     @Published private(set) var isSearchingHF = false
     @Published var hfError: String? = nil
     private var rawHFModels: [LocalModel] = []
+    /// In-flight fetch task. Cancelled and replaced whenever the
+    /// query/backend changes so two parallel `.task(id:)` triggers
+    /// (search-text vs source-change) don't race and overwrite each
+    /// other with stale results.
+    private var hfFetchTask: Task<Void, Never>?
 
     // Services – assigned once by connect().
     private weak var catalog:   ModelCatalogService?
@@ -248,35 +253,71 @@ final class ModelBrowserViewModel: ObservableObject {
         if newSections != sections { sections = newSections }
     }
 
-    /// Fetches models from Hugging Face based on the query.
-    func fetchDynamicCatalog(query: String?) async {
+    /// Fetches models from Hugging Face based on the query. Auto-scopes
+    /// the search to a backend-appropriate author when no query is given
+    /// (`mlx-community` for MLX, `bartowski` for GGUF) so the catalog
+    /// returns repos the mapper can actually consume. Free-text search
+    /// is left unscoped — that's the explicit user-intent path. Any
+    /// in-flight fetch is cancelled before a new one starts so racing
+    /// `.task(id:)` triggers can't overwrite each other with stale
+    /// results.
+    func fetchDynamicCatalog(query: String?) {
         guard isConnected else { return }
+        hfFetchTask?.cancel()
+
+        let trimmed = query?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let isSearch = !(trimmed?.isEmpty ?? true)
+        let backend  = selectedBackend
+        let memoryProfile = DeviceMemoryProvider.shared.profile
+
         isSearchingHF = true
         hfError = nil
-        
-        do {
-            let items = try await HuggingFaceAPIClient.fetchPopularModels(query: query)
-            let memoryProfile = DeviceMemoryProvider.shared.profile
-            let mapped = items.map { item -> LocalModel in
-                let model = HFModelMapper.mapToLocalModel(item: item)
-                var adjusted = model
-                adjusted.contextLength = ModelCatalogService.adjustContextLength(
-                    base: model.contextLength,
-                    family: model.family,
-                    recommendedFor: model.recommendedFor,
-                    memoryProfile: memoryProfile
+
+        hfFetchTask = Task { [weak self] in
+            defer { Task { @MainActor in self?.isSearchingHF = false } }
+            do {
+                let items = try await HuggingFaceAPIClient.fetchPopularModels(
+                    query:  isSearch ? trimmed : nil,
+                    author: isSearch ? nil : Self.defaultAuthor(for: backend)
                 )
-                return adjusted
+                if Task.isCancelled { return }
+                let mapped = items.map { item -> LocalModel in
+                    var model = HFModelMapper.mapToLocalModel(item: item)
+                    model.contextLength = ModelCatalogService.adjustContextLength(
+                        base: model.contextLength,
+                        family: model.family,
+                        recommendedFor: model.recommendedFor,
+                        memoryProfile: memoryProfile
+                    )
+                    return model
+                }
+                if Task.isCancelled { return }
+                await MainActor.run {
+                    guard let self else { return }
+                    self.rawHFModels = mapped
+                    self.recompute()
+                }
+            } catch is CancellationError {
+                // Superseded by a newer fetch — silently drop.
+            } catch {
+                await MainActor.run {
+                    guard let self else { return }
+                    self.hfError = error.localizedDescription
+                    self.rawHFModels = []
+                    self.recompute()
+                }
             }
-            self.rawHFModels = mapped
-            self.recompute()
-        } catch {
-            self.hfError = error.localizedDescription
-            self.rawHFModels = []
-            self.recompute()
         }
-        
-        isSearchingHF = false
+    }
+
+    /// Default author scope when no query is provided. Picks repos
+    /// whose layout the `HFModelMapper` can actually parse — generic
+    /// HF repos rarely conform to MLX/GGUF on-device requirements.
+    private static func defaultAuthor(for backend: BackendFilter) -> String {
+        switch backend {
+        case .gguf: return "bartowski"
+        case .mlx, .all: return "mlx-community"
+        }
     }
 
     private func buildSections(

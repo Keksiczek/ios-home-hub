@@ -63,12 +63,14 @@ struct DashboardView: View {
                         .background(HHTheme.surface, in: Circle())
                         .overlay(Circle().stroke(HHTheme.stroke, lineWidth: 1))
                 }
-                .accessibilityLabel("Menu")
+                .accessibilityLabel("Otevřít menu")
+                .accessibilityHint("Přepnutí mezi sekcemi aplikace")
 
                 Spacer()
 
                 personaPill
             }
+            .accessibilityElement(children: .contain)
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(greetingTimeOfDay)
@@ -99,6 +101,9 @@ struct DashboardView: View {
         .foregroundStyle(color)
         .background(color.opacity(0.12), in: Capsule())
         .overlay(Capsule().stroke(color.opacity(0.25), lineWidth: 0.5))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Aktivní osobnost: \(preset.name)")
+        .accessibilityHint("Změnit lze v detailu chatu")
     }
     
     private var greetingTimeOfDay: String {
@@ -124,48 +129,56 @@ struct DashboardView: View {
         Button {
             appState.selectedTab = .models
         } label: {
-            VStack(alignment: .leading, spacing: HHTheme.spaceM) {
-                HStack {
-                    Label("Stav modelu", systemImage: "cpu")
-                        .font(HHTheme.headline)
-                        .foregroundStyle(HHTheme.textPrimary)
-                    Spacer()
-                    hhGlowIndicator(isActive: runtime.activeModel != nil)
-                }
-
-                HStack(alignment: .top, spacing: HHTheme.spaceL) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Aktivní model")
-                            .font(HHTheme.caption)
-                            .foregroundStyle(HHTheme.textSecondary)
-                        Text(runtime.activeModel?.displayName ?? "Žádný model nenačten")
-                            .font(HHTheme.subheadline.weight(.semibold))
-                            .foregroundStyle(HHTheme.textPrimary)
-                            .lineLimit(1)
-                    }
-
-                    Spacer()
-
-                    VStack(alignment: .trailing, spacing: 2) {
-                        Text("Paměťová rezerva")
-                            .font(HHTheme.caption)
-                            .foregroundStyle(HHTheme.textSecondary)
-                        HStack(spacing: 4) {
-                            Image(systemName: headroomIcon(for: memoryHeadroom))
-                                .font(.caption2)
-                            Text(headroomLabel(for: memoryHeadroom))
-                                .font(HHTheme.subheadline.weight(.semibold))
-                        }
-                        .foregroundStyle(headroomColor(for: memoryHeadroom))
-                    }
-                }
-            }
-            .padding(HHTheme.spaceL)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .hhGlassCard()
-            .contentShape(Rectangle())
+            hardwareStatusBody
         }
         .buttonStyle(.plain)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Stav modelu — \(runtime.activeModel?.displayName ?? "žádný model nenačten"). Paměťová rezerva: \(headroomLabel(for: memoryHeadroom)).")
+        .accessibilityHint("Otevře sekci modelů")
+    }
+
+    @ViewBuilder
+    private var hardwareStatusBody: some View {
+        VStack(alignment: .leading, spacing: HHTheme.spaceM) {
+            HStack {
+                Label("Stav modelu", systemImage: "cpu")
+                    .font(HHTheme.headline)
+                    .foregroundStyle(HHTheme.textPrimary)
+                Spacer()
+                hhGlowIndicator(isActive: runtime.activeModel != nil)
+            }
+
+            HStack(alignment: .top, spacing: HHTheme.spaceL) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Aktivní model")
+                        .font(HHTheme.caption)
+                        .foregroundStyle(HHTheme.textSecondary)
+                    Text(runtime.activeModel?.displayName ?? "Žádný model nenačten")
+                        .font(HHTheme.subheadline.weight(.semibold))
+                        .foregroundStyle(HHTheme.textPrimary)
+                        .lineLimit(1)
+                }
+
+                Spacer()
+
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text("Paměťová rezerva")
+                        .font(HHTheme.caption)
+                        .foregroundStyle(HHTheme.textSecondary)
+                    HStack(spacing: 4) {
+                        Image(systemName: headroomIcon(for: memoryHeadroom))
+                            .font(.caption2)
+                        Text(headroomLabel(for: memoryHeadroom))
+                            .font(HHTheme.subheadline.weight(.semibold))
+                    }
+                    .foregroundStyle(headroomColor(for: memoryHeadroom))
+                }
+            }
+        }
+        .padding(HHTheme.spaceL)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .hhGlassCard()
+        .contentShape(Rectangle())
     }
 
     private func hhGlowIndicator(isActive: Bool) -> some View {
@@ -239,6 +252,8 @@ struct DashboardView: View {
         }
         .buttonStyle(.plain)
         .disabled(isBusy)
+        .accessibilityLabel(title)
+        .accessibilityAddTraits(isBusy ? [.isButton, .updatesFrequently] : .isButton)
     }
 
     // MARK: - Recent Activities
