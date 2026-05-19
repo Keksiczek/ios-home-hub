@@ -55,6 +55,13 @@ struct ModelBrowserItem: Identifiable, Equatable {
     let hasResumeData: Bool
     /// Non-nil while an MLX model is loading weights into memory for this row.
     let mlxLoadProgress: MLXLoadProgress?
+    /// Live memory-oracle verdict for this device + the user's current
+    /// performance profile. `nil` when the catalog entry has no
+    /// `sizeBytes` known yet (rare — most catalog entries pin it). The
+    /// view layer renders this as a "fits / tight / won't-fit" badge so
+    /// users see compatibility before tapping Download, instead of
+    /// discovering it on the confirm sheet five seconds later.
+    let feasibility: RuntimeManager.LoadFeasibility?
     /// Whether each affordance should be enabled. Computed in
     /// `ModelBrowserViewModel.recompute()` from the combined download +
     /// runtime state so the view layer doesn't have to re-derive it.
@@ -125,6 +132,7 @@ final class ModelBrowserViewModel: ObservableObject {
     private weak var catalog:   ModelCatalogService?
     private weak var downloads: ModelDownloadService?
     private weak var runtime:   RuntimeManager?
+    private weak var settings:  SettingsService?
 
     private var cancellables: Set<AnyCancellable> = []
     private var isConnected = false
@@ -140,7 +148,8 @@ final class ModelBrowserViewModel: ObservableObject {
     func connect(
         catalog:   ModelCatalogService,
         downloads: ModelDownloadService,
-        runtime:   RuntimeManager
+        runtime:   RuntimeManager,
+        settings:  SettingsService
     ) {
         guard !isConnected else { return }
         isConnected = true
@@ -148,15 +157,20 @@ final class ModelBrowserViewModel: ObservableObject {
         self.catalog   = catalog
         self.downloads = downloads
         self.runtime   = runtime
+        self.settings  = settings
 
         // Synchronous initial pass — sections is populated before the next render.
         recompute()
 
-        // Re-compute whenever any of the three sources publishes a change.
-        Publishers.Merge3(
+        // Re-compute whenever any of the four sources publishes a change.
+        // Settings is included so toggling the performance profile in the
+        // sidebar immediately updates every fits/tight badge — previously
+        // the badge would stay stale until the next catalog/runtime tick.
+        Publishers.Merge4(
             catalog.objectWillChange  .map { _ in () }.eraseToAnyPublisher(),
             downloads.objectWillChange.map { _ in () }.eraseToAnyPublisher(),
-            runtime.objectWillChange  .map { _ in () }.eraseToAnyPublisher()
+            runtime.objectWillChange  .map { _ in () }.eraseToAnyPublisher(),
+            settings.objectWillChange .map { _ in () }.eraseToAnyPublisher()
         )
         .debounce(for: .milliseconds(50), scheduler: RunLoop.main)
         .sink { [weak self] _ in self?.recompute() }
@@ -172,6 +186,10 @@ final class ModelBrowserViewModel: ObservableObject {
         let runtimeState    = runtime.state
         let mlxProgress     = runtime.mlxLoadProgress
         let activeDownloads = downloads.active
+        // The memory oracle reads the user's performance profile.
+        // Fall back to `.balanced` when settings isn't connected yet
+        // (very brief window during `init` → `connect`).
+        let performanceProfile = settings?.current.performanceProfile ?? .balanced
 
         // During an explicit unload, `activeModel` is still set while
         // state == .unloading.  During a load-that-first-unloads, `activeModel`
@@ -187,7 +205,8 @@ final class ModelBrowserViewModel: ObservableObject {
             unloadingID:    unloadingID,
             mlxProgress:    mlxProgress,
             activeDownloads: activeDownloads,
-            downloads:      downloads
+            downloads:      downloads,
+            performanceProfile: performanceProfile
         )
 
         // Avoid spurious SwiftUI diffing passes when nothing actually changed.
@@ -201,10 +220,20 @@ final class ModelBrowserViewModel: ObservableObject {
         unloadingID:     String?,
         mlxProgress:     MLXLoadProgress?,
         activeDownloads: [String: ModelDownloadService.DownloadState],
-        downloads:       ModelDownloadService
+        downloads:       ModelDownloadService,
+        performanceProfile: PerformanceProfile
     ) -> [ModelBrowserSection] {
         var onDevice:  [ModelBrowserItem] = []
         var available: [ModelBrowserItem] = []
+
+        // Snapshot `os_proc_available_memory()` once per recompute so
+        // every row in a single rebuild compares against the same
+        // headroom number. Without this, the oracle would invoke the
+        // sysctl per-model and rows could disagree by a few MB just
+        // due to natural memory churn between rapid calls — confusing
+        // when the user sees "fits" on one row and "tight" on a
+        // neighbour with similar size.
+        let availableMemory = RuntimeManager.availableMemoryBytes()
 
         for model in models {
             let status = computeStatus(
@@ -220,21 +249,57 @@ final class ModelBrowserViewModel: ObservableObject {
                 runtimeState:   runtimeState,
                 activeModelID:  activeModelID
             )
+            let feasibility = RuntimeManager.evaluateFeasibility(
+                for:       model,
+                profile:   performanceProfile,
+                available: availableMemory
+            )
             let item = ModelBrowserItem(
                 model:           model,
                 status:          status,
                 hasResumeData:   downloads.hasResumeData(for: model.id),
                 mlxLoadProgress: mlxProgress?.modelID == model.id ? mlxProgress : nil,
+                feasibility:     feasibility,
                 actions:         actions
             )
             if case .notInstalled = status { available.append(item) }
             else                           { onDevice.append(item) }
         }
 
+        // Sort the "Available to download" section so the user sees
+        // compatible models first. The previous render kept catalog
+        // declaration order which buried Llama 3.2 1B (safe on every
+        // iPhone) beneath Gemma 3n (won't-fit on 4 GB phones). Stable
+        // sort by feasibility rank then by size — within each
+        // compatibility tier the smaller model wins, which doubles as
+        // a "try the lightest one first" hint for new users.
+        available.sort { lhs, rhs in
+            let lhsRank = Self.feasibilityRank(lhs.feasibility)
+            let rhsRank = Self.feasibilityRank(rhs.feasibility)
+            if lhsRank != rhsRank { return lhsRank < rhsRank }
+            return lhs.model.sizeBytes < rhs.model.sizeBytes
+        }
+
         var result: [ModelBrowserSection] = []
         if !onDevice.isEmpty  { result.append(.init(kind: .onDevice,  items: onDevice)) }
         if !available.isEmpty { result.append(.init(kind: .available, items: available)) }
         return result
+    }
+
+    /// Maps a load-feasibility verdict to a sort rank for the
+    /// available-section ordering. Lower rank = surface earlier.
+    /// `nil` (oracle declined to evaluate — typically no `sizeBytes`
+    /// on the catalog entry) sorts between `.safe` and `.risky`: we
+    /// don't have a verdict, but we also have no positive evidence
+    /// the model won't fit, so we keep it visible above the
+    /// definitely-won't-fit tier.
+    private static func feasibilityRank(_ verdict: RuntimeManager.LoadFeasibility?) -> Int {
+        switch verdict {
+        case .safe?:        return 0
+        case nil:           return 1
+        case .risky?:       return 2
+        case .cannotLoad?:  return 3
+        }
     }
 
     /// Single place that decides which affordances each row can offer.

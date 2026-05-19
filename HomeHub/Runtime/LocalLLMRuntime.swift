@@ -132,6 +132,14 @@ protocol LocalLLMRuntime: AnyObject, Sendable {
     /// track per-sample history.
     func throughputPercentiles(for modelID: String) -> (p50: Double, p95: Double, samples: Int)?
 
+    /// First-token latency distribution in milliseconds (median + p95).
+    /// TTFT is the dominant component of the user-perceived "is it
+    /// stuck?" wait — surfacing it separately from throughput lets
+    /// diagnostics flag prompt-prefill bottlenecks (cold KV cache,
+    /// long system prompt) that wouldn't show up as a slow t/s.
+    /// `nil` if the runtime doesn't track per-sample history.
+    func firstTokenLatencyPercentiles(for modelID: String) -> (p50Ms: Int, p95Ms: Int, samples: Int)?
+
     /// Real BPE token count for `text` using the active model's
     /// tokenizer. Returns `nil` when no model is loaded or when the
     /// runtime doesn't expose a tokenizer (mock / fake runtimes).
@@ -195,6 +203,9 @@ extension LocalLLMRuntime {
 
     /// Default: no per-sample history. `MLXRuntime` overrides.
     func throughputPercentiles(for modelID: String) -> (p50: Double, p95: Double, samples: Int)? { nil }
+
+    /// Default: no per-sample history. `MLXRuntime` overrides.
+    func firstTokenLatencyPercentiles(for modelID: String) -> (p50Ms: Int, p95Ms: Int, samples: Int)? { nil }
 
     /// Default: no real-tokenizer access (mock / preview / non-MLX).
     /// `MLXRuntime` overrides by routing through `container.perform`.

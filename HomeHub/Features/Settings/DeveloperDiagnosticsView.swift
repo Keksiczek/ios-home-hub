@@ -362,6 +362,18 @@ struct DeveloperDiagnosticsView: View {
                     value: String(format: "%.1f / %.1f t/s", pct.p50, pct.p95)
                 )
             }
+            // First-token latency (prefill cost). Independent of
+            // throughput — a model can be slow-to-first-token but
+            // then decode fast, or vice versa. Captures the wait
+            // users actually feel between "Send" and the first
+            // character appearing.
+            if let modelID = runtime.activeModel?.id,
+               let ttft = runtime.firstTokenLatencyPercentiles(for: modelID) {
+                LabeledContent(
+                    "Time-to-first-token (p50 / p95)",
+                    value: "\(ttft.p50Ms) / \(ttft.p95Ms) ms"
+                )
+            }
             // Most recent user-facing failure, if any. Surfaced here as
             // well as on the Model Info sheet so power users debugging
             // multi-turn issues don't have to leave Settings.

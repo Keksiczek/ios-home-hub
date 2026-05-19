@@ -300,20 +300,33 @@ final class PromptAssemblyService {
             stableChunks.append(block)
         }
 
-        // L0bʹ. Context rail (VOLATILE — carries the current date,
-        // local time, location hint, language + tool policy). The
-        // date alone is enough to invalidate this block every turn
-        // (well, every day) so the whole rail lives on the volatile
-        // side. The language policy itself is stable in practice but
-        // bundled inside contextRail; we'd have to extract it
-        // separately to recover those tokens. Acceptable trade-off
-        // for the architectural simplicity.
-        volatileChunks.append(PromptBuilder.contextRail(
-            .live(
-                settings: package.settings,
-                availableTools: package.availableTools
-            )
-        ))
+        // L0bʹ. Context rail split into stable + volatile halves.
+        //
+        // **Stable side** (location, language policy, tool policy,
+        // answer-length style): these are pure functions of `AppSettings`
+        // and `availableTools` — only change when the user flips a
+        // toggle in Settings. ~200-300 tokens of static boilerplate
+        // that used to invalidate the MLX KV-cache prefix every turn
+        // (because the volatile-side date stamp would change), forcing
+        // a full re-prefill of everything above.
+        //
+        // **Volatile side** (date + local time + weak-model guards):
+        // the only genuinely per-turn churn. Lives in the user-turn
+        // `<context>` injection so the cached prefix stays valid.
+        //
+        // Net effect on Gemma 3n / Llama 1B (weak models with full
+        // lean-mode rail): cached prefix grows from ~800-1000 tokens
+        // to ~1200-1500 tokens; volatile shrinks from ~600-900 to
+        // ~80-150. Multi-turn time-to-first-token drops measurably
+        // because the cached prefix covers everything except the
+        // date and the user's actual question.
+        let railCtx = PromptBuilder.Context.live(
+            settings: package.settings,
+            availableTools: package.availableTools,
+            isWeakInstructionFollower: isWeak
+        )
+        stableChunks.append(PromptBuilder.contextRailStable(railCtx))
+        volatileChunks.append(PromptBuilder.contextRailVolatile(railCtx))
 
         // L0.5: Summary of older messages (VOLATILE).
         if let summary = package.conversationSummary {
@@ -363,10 +376,16 @@ final class PromptAssemblyService {
             appendFileExcerpts(from: package, to: &volatileChunks)
         }
 
-        // L4. Agentic tool instructions (VOLATILE — dynamic registration).
+        // L4. Agentic tool instructions (STABLE — `SkillManager.renderInstructions`
+        // is a pure function of the enabled-tool set, which only mutates
+        // when the user toggles a skill in Settings. Previously volatile,
+        // which invalidated the KV-cache prefix every turn for ~150–200
+        // tokens of static boilerplate. Moving to stable preserves the
+        // cache across turns; toggling a skill correctly invalidates the
+        // cache because the rendered string changes.
         if package.settings.guardrailsConfig.skillInstructionsEnabled,
            let skills = package.skillInstructions, !skills.isEmpty {
-            volatileChunks.append(skills)
+            stableChunks.append(skills)
         }
 
         // Privacy guardrail (STABLE — wording depends on availableTools
@@ -386,6 +405,7 @@ final class PromptAssemblyService {
 
     private func assembleToolFollowupPrompt(from package: PromptContextPackage) -> String {
         var chunks: [String] = []
+        let isWeak = package.modelCapabilityProfile?.isWeakInstructionFollower ?? false
 
         // L0a. Persona (same as chat — the model should stay in character)
         chunks.append(package.assistant.systemPromptBase)
@@ -405,7 +425,8 @@ final class PromptAssemblyService {
         // they should issue another tool call.
         let followupCtx = PromptBuilder.Context.live(
             settings: package.settings,
-            availableTools: package.availableTools
+            availableTools: package.availableTools,
+            isWeakInstructionFollower: isWeak
         )
         chunks.append(PromptBuilder.contextBlock(followupCtx))
         chunks.append(PromptBuilder.languageBlock(followupCtx))
@@ -516,7 +537,37 @@ final class PromptAssemblyService {
 
     private func appendFacts(from package: PromptContextPackage, to chunks: inout [String], limit: Int = 8) {
         guard !package.facts.isEmpty else { return }
-        let factLines = package.facts.prefix(limit).map { "- \($0.content)" }
+        // Dynamic per-fact character cap.
+        //
+        // Allocates ~1/8 of the model's `safeHistoryTokenBudget` to the
+        // entire facts block, then divides by `limit` to get a
+        // per-fact ceiling. At 4 chars/token (Latin script) that maps
+        // budget → chars. Examples:
+        //   - tight iPhone (budget 600):    cap ≈ 600/8/3 × 4 ≈ 100 chars/fact
+        //   - moderate iPhone (1400):       cap ≈ 230 chars/fact
+        //   - generous iPad (2800):         cap ≈ 466 chars/fact
+        //
+        // Strong-instruction-follower profiles bypass the cap entirely
+        // — they cope with long facts and the user can rely on
+        // verbatim recall for paste-in memories. The cap exists to
+        // protect small models from a single 500-char fact crowding
+        // out the rest of the volatile budget.
+        let isWeak = package.modelCapabilityProfile?.isWeakInstructionFollower ?? false
+        let budget = package.modelCapabilityProfile?.safeHistoryTokenBudget ?? 1400
+        let perFactCap: Int
+        if !isWeak {
+            perFactCap = Int.max
+        } else {
+            let factsBudgetTokens = max(40, budget / 8)
+            // 4 chars/token, divided across `limit` facts, floor at
+            // 80 chars (anything shorter truncates useful facts).
+            perFactCap = max(80, factsBudgetTokens * 4 / max(1, limit))
+        }
+        let factLines = package.facts.prefix(limit).map { fact -> String in
+            let raw = fact.content
+            if raw.count <= perFactCap { return "- \(raw)" }
+            return "- \(raw.prefix(perFactCap))…"
+        }
         chunks.append("""
         Remembered facts (user-controlled, may be incomplete):
         \(factLines.joined(separator: "\n"))

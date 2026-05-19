@@ -148,6 +148,12 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
     private var tpsSamples: [String: [Double]] = [:]
     private static let tpsSampleCap = 128
 
+    /// Rolling per-model first-token-latency samples (ms). Tracks the
+    /// gap between calling `streamResponse` and the first token
+    /// arriving — i.e. the prefill cost users actually feel. Same
+    /// 128-sample cap as throughput. Protected by `sessionLock`.
+    private var ttftSamplesMs: [String: [Int]] = [:]
+
     /// Last generation that failed for a user-actionable reason.
     /// Surfaced in Model Info + DeveloperDiagnostics. Cleared on the next
     /// successful generation. Protected by `sessionLock`.
@@ -181,6 +187,22 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
         }
     }
 
+    /// Snapshot of the first-token-latency distribution for `modelID`,
+    /// in milliseconds. Returns `(p50, p95, sampleCount)` or `nil` when
+    /// no generations have been observed yet. TTFT is the dominant
+    /// component of user-perceived "is it stuck?" — surfacing p95
+    /// alongside p50 lets diagnostics flag a model whose typical
+    /// prefill is fast but tail cases are pathological.
+    func firstTokenLatencyPercentiles(for modelID: String) -> (p50Ms: Int, p95Ms: Int, samples: Int)? {
+        sessionLock.withLock {
+            guard let samples = ttftSamplesMs[modelID], !samples.isEmpty else { return nil }
+            let sorted = samples.sorted().map(Double.init)
+            let p50 = Int(percentile(sorted, fraction: 0.5).rounded())
+            let p95 = Int(percentile(sorted, fraction: 0.95).rounded())
+            return (p50, p95, sorted.count)
+        }
+    }
+
     /// Nearest-rank percentile. Input MUST be sorted ascending. For
     /// fraction 0.95 with 10 samples returns sorted[9] (the 10th value);
     /// for fraction 0.50 with 10 samples returns sorted[5] (the upper
@@ -198,6 +220,34 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
         Self.percentile(sorted, fraction: fraction)
     }
 
+    /// The baseline GPU cache limit applied at init time. Stored so the
+    /// adaptive resize on memory pressure (`adjustGPUCacheLimit(...)`) can
+    /// restore the headroom when pressure clears. `0` until first init.
+    private var baselineCacheLimitBytes: Int = 0
+
+    /// Tier-based multipliers applied to the baseline GPU cache. Picked so
+    /// the cache is reactive (`.tight 0.25x` is small enough to actually
+    /// matter under jetsam pressure) without churning between values that
+    /// MLX's internal buffer pool would have to drop and recreate
+    /// frequently. Calling `MLX.Memory.cacheLimit = X` itself is cheap;
+    /// the real cost is the eviction wave it triggers.
+    fileprivate enum CachePressureTier {
+        case normal, soft, hard
+        var multiplier: Double {
+            switch self {
+            case .normal: return 1.0
+            case .soft:   return 0.6
+            case .hard:   return 0.25
+            }
+        }
+    }
+
+    /// Last tier that was actually applied. Used to no-op redundant
+    /// `adjustGPUCacheLimit(...)` calls — the assignment is cheap but the
+    /// log line is noisy and the eviction can churn buffer pools when
+    /// hammered every 5 s during sustained pressure.
+    private var currentCacheTier: CachePressureTier = .normal
+
     init(loader: any MLXLoader = DefaultMLXLoader()) {
         self.loader = loader
         // Configure MLX GPU memory cache limit using the *minimum* of two budgets:
@@ -211,7 +261,8 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
         let memoryBudget   = DeviceMemoryProvider.shared.profile.mlxGPUCacheLimitBytes
         let hardwareBudget = HardwareCapabilities.shared.safeGPUCacheLimitBytes
         let cacheLimitBytes = min(memoryBudget, hardwareBudget)
-        MLX.Memory.cacheLimit = Int(cacheLimitBytes)
+        self.baselineCacheLimitBytes = Int(cacheLimitBytes)
+        MLX.Memory.cacheLimit = self.baselineCacheLimitBytes
 
         if HardwareCapabilities.shared.safeAttentionMode {
             // Safe-mode is purely advisory for MLX-Swift today — the framework
@@ -221,6 +272,34 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
             log.notice(
                 "MLX: safe-attention mode active for SoC \(HardwareCapabilities.shared.soc.label, privacy: .public) — GPU cache clamped to \(Int(cacheLimitBytes / 1024 / 1024), privacy: .public) MB"
             )
+        }
+    }
+
+    /// Adjust the MLX GPU buffer-pool ceiling based on current pressure
+    /// tier. Tracks `baselineCacheLimitBytes` so pressure scaling stays
+    /// consistent across the device-tier × hardware-budget product.
+    ///
+    /// Called from `handleMemoryPressure` (hard tier — pressure is real
+    /// enough that we shrink to 25%) and `trimMemoryCaches` (soft tier
+    /// — 60%, preserves enough pool to keep prefill fast). The
+    /// `restoreCacheLimit()` call on the next clean generation finish
+    /// returns the pool to baseline so a quiet device doesn't pay
+    /// permanently for a transient L1 event.
+    fileprivate func adjustGPUCacheLimit(to tier: CachePressureTier) {
+        guard baselineCacheLimitBytes > 0 else { return }
+        guard tier != currentCacheTier else { return }
+        let target = Int(Double(baselineCacheLimitBytes) * tier.multiplier)
+        MLX.Memory.cacheLimit = target
+        currentCacheTier = tier
+        log.info("MLX: GPU cache limit -> \(target / 1024 / 1024, privacy: .public) MB (tier=\(String(describing: tier), privacy: .public))")
+    }
+
+    /// Convenience used by the generation epilogue — only restore to
+    /// `.normal` if we're actually below baseline. Avoids logging on
+    /// every successful turn.
+    fileprivate func restoreCacheLimitIfShrunk() {
+        if currentCacheTier != .normal {
+            adjustGPUCacheLimit(to: .normal)
         }
     }
 
@@ -517,6 +596,13 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                 var tokensGenerated = 0
                 var currentText = ""
                 var hitMaxTokens = false
+                // First-token latency (prefill cost). Recorded the first
+                // time a piece actually arrives from the stream — the
+                // gap between this and `start` is dominated by prompt
+                // tokenisation + KV-cache prefill, the single biggest
+                // user-perceived "is the app working?" wait. Surfaced
+                // through `firstTokenLatency(for:)` for diagnostics.
+                var firstTokenAt: Date?
 
                 if let nativeContainer = self.container as? ModelContainer {
                     // Build the canonical history once. Both the reuse
@@ -674,6 +760,7 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                     for try await piece in responseStream {
                         if Task.isCancelled { break }
                         watchdog.recordToken()
+                        if firstTokenAt == nil { firstTokenAt = Date() }
 
                         // Per-token autoreleasepool drains the ObjC temporaries
                         // (MLXArray wrappers, intermediate NSString views) that
@@ -874,6 +961,22 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                             samples.removeFirst(samples.count - Self.tpsSampleCap)
                         }
                         self.tpsSamples[modelID] = samples
+
+                        // First-token latency sample. Captured only when
+                        // we actually observed a first token (the
+                        // optional bind in `firstTokenAt` skips cancelled-
+                        // before-decode generations whose latency number
+                        // would be the cancel-detection time, not the
+                        // prefill cost).
+                        if let firstTokenAt {
+                            let ttftMs = Int(firstTokenAt.timeIntervalSince(start) * 1000)
+                            var ttftBuf = self.ttftSamplesMs[modelID] ?? []
+                            ttftBuf.append(ttftMs)
+                            if ttftBuf.count > Self.tpsSampleCap {
+                                ttftBuf.removeFirst(ttftBuf.count - Self.tpsSampleCap)
+                            }
+                            self.ttftSamplesMs[modelID] = ttftBuf
+                        }
                     }
                 }
 
@@ -896,6 +999,13 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                 if honourPendingTrim {
                     self.log.info("MLX: pendingSessionTrim honoured — ChatSession dropped after generation finish")
                 }
+
+                // If we shrunk the GPU buffer pool under a recent pressure
+                // event, restore it now that a generation just completed
+                // cleanly. The next turn will see the full baseline pool
+                // available for prefill — keeps the "pressure was
+                // transient" common case from paying a permanent slow tax.
+                self.restoreCacheLimitIfShrunk()
 
                 continuation.yield(.finished(reason: finishReason, stats: stats))
                 continuation.finish()
@@ -931,6 +1041,12 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
 
     func handleMemoryPressure() async {
         self.log.warning("MLX: Memory pressure received — unloading model")
+        // Shrink the GPU buffer pool to its hard-tier floor before the
+        // unload tears down the container. If the user keeps the app in
+        // foreground and a fresh load comes in next, this leaves more
+        // room for the new weights to map. The next clean generation
+        // finish restores baseline.
+        adjustGPUCacheLimit(to: .hard)
         await unload()
     }
 
@@ -960,6 +1076,11 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
             _lastGenerationError = nil
             return (had, false)
         }
+        // Shrink the buffer pool to the soft-tier floor. 60% of baseline
+        // keeps prefill responsive (the pool can satisfy most
+        // intermediate-tensor allocations without re-mapping) while
+        // releasing the bulk of what the user got asked to evacuate.
+        adjustGPUCacheLimit(to: .soft)
         if hadSession {
             self.log.info("MLX: trimMemoryCaches — dropped ChatSession (KV-cache scratch)")
         } else if deferred {

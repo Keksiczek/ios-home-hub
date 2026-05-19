@@ -103,6 +103,12 @@ struct AppSettings: Codable, Equatable {
         let minP: Double = 0.05
         let repeatPenalty: Double = 1.1
         let repeatPenaltyLastN: Int = 64
+        /// Mirrors `AppSettings.default.maxResponseTokens`. The
+        /// per-mode clamp for weak instruction followers only fires
+        /// when the user hasn't touched this slider — comparing
+        /// against this constant is the same "factory baseline"
+        /// detection used for the sampling knobs.
+        let maxResponseTokens: Int = 768
     }
     static let factorySampling = FactorySampling()
 

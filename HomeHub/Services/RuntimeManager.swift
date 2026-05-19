@@ -158,6 +158,14 @@ final class RuntimeManager: ObservableObject {
         runtime.throughputPercentiles(for: modelID)
     }
 
+    /// First-token latency distribution (median + p95, ms) for `modelID`.
+    /// Independent signal from throughput — captures the prefill cost
+    /// that determines user-perceived "is it stuck" wait. `nil` for
+    /// runtimes that don't track this.
+    func firstTokenLatencyPercentiles(for modelID: String) -> (p50Ms: Int, p95Ms: Int, samples: Int)? {
+        runtime.firstTokenLatencyPercentiles(for: modelID)
+    }
+
     private let log = Logger(subsystem: "com.homehub.app", category: "RuntimeManager")
 
     // MARK: - Init

@@ -90,6 +90,9 @@ struct ModelInfoSheet: View {
                         row(nil, deviceLabel(device))
                     }
                 }
+
+                // ── Sampling profile (resolved at load) ──────────────────────
+                samplingProfileSection
             }
             .listStyle(.insetGrouped)
             .navigationTitle(model.displayName)
@@ -158,6 +161,53 @@ struct ModelInfoSheet: View {
             // property of the device — verdicts shift with whatever
             // other apps are doing.
             Text("Odhady jsou orientační. Verdikt je snímek paměti v okamžiku otevření tohoto detailu, ne trvalý výrok o zařízení — uvolnění paměti jinde (zavření safari, fotek …) může změnit `risky` na `safe`.")
+        }
+    }
+
+    // MARK: - Sampling profile section
+
+    /// Shows the **resolved** sampling parameters that will actually be
+    /// applied when this model runs. Sourced from
+    /// `ModelCapabilityProfile.resolve(family:parameterCount:)` so the
+    /// values reflect the size-aware promotion logic — Llama 1B sees
+    /// the tightened weak-model sampling, Llama 8B sees Meta's
+    /// defaults, Gemma 3n sees its dedicated profile.
+    ///
+    /// **Why surface this?** Users tweaking the global sliders in
+    /// Settings have no way to tell which values the model will
+    /// actually use — `PromptMode.resolvedSampling` keeps factory
+    /// defaults but swaps in the profile's recommendation. Without
+    /// this view the gap between "what I set" and "what runs" is
+    /// invisible.
+    @ViewBuilder
+    private var samplingProfileSection: some View {
+        let profile = ModelCapabilityProfile.resolve(
+            family: model.family,
+            parameterCount: model.parameterCount
+        )
+        Section {
+            row("Temperature", String(format: "%.2f", profile.recommendedTemperature))
+            row("Top-P", String(format: "%.2f", profile.recommendedTopP))
+            row("Top-K", "\(profile.recommendedTopK)")
+            row("Min-P", String(format: "%.2f", profile.recommendedMinP))
+            row("Repeat penalty",
+                "\(String(format: "%.2f", profile.recommendedRepeatPenalty)) (okno \(profile.recommendedRepeatPenaltyLastN))")
+            if profile.isWeakInstructionFollower {
+                LabeledContent("Lean prompt") {
+                    Text("zapnutý")
+                        .foregroundStyle(HHTheme.accent)
+                }
+            }
+            LabeledContent("History budget") {
+                Text("\(profile.safeHistoryTokenBudget) tokenů")
+                    .foregroundStyle(HHTheme.textSecondary)
+            }
+        } header: {
+            Text("Sampling profile")
+        } footer: {
+            Text(profile.isWeakInstructionFollower
+                 ? "Detekován jako weak-instruction-follower (≤ 2B nebo rodina označená jako citlivá). Hodnoty jsou zpřísněné — nižší teplota a vyšší repeat penalty drží odpověď konzistentní. Tvoje vlastní nastavení v Settings tyto hodnoty přepíše, jakmile pohneš sliderem."
+                 : "Doporučené hodnoty pro rodinu \(profile.family.isEmpty ? "(default)" : profile.family). Tvoje vlastní nastavení v Settings tyto hodnoty přepíše, jakmile pohneš sliderem.")
         }
     }
 

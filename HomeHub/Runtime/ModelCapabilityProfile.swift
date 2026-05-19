@@ -237,25 +237,40 @@ extension ModelCapabilityProfile {
 
     /// Gemma 3n — MatFormer architecture, 8B params but ~4B active during inference.
     /// Revolutionary efficiency: larger model quality with small model VRAM footprint.
-    /// Sampling: even tighter than base Gemma because the per-layer-skipping
-    /// architecture amplifies low-prob token drift (the cross-language bleed
-    /// we observed in the field). Lower temperature + harder repetition
-    /// penalty keeps responses on-topic and on-language.
+    ///
+    /// **Sampling rationale** (tuned for stability + speed on iPhone Q4):
+    /// - `temperature 0.35` — lower than base Gemma (0.5) because per-layer
+    ///   skipping amplifies low-prob token drift. Field reproductions show
+    ///   cross-language tokens (Russian / English bleed into Czech) start
+    ///   surfacing above ~0.45 on Q4 quants.
+    /// - `topP 0.9 / topK 32 / minP 0.08` — nucleus + top-k + min-p stacked
+    ///   so every layer enforces a tighter floor on candidate tokens. min-p
+    ///   0.08 (up from default 0.05) is the single biggest stability lever
+    ///   for Gemma 3n: it drops the long tail of foreign-language tokens
+    ///   whose probability is barely above the noise floor.
+    /// - `repetitionPenalty 1.25` window 192 — Gemma's strong repetition
+    ///   bias compounds with MatFormer's per-layer-skipping. Window 192
+    ///   covers enough history for a 1.5–2 paragraph reply.
+    ///
+    /// **History budget 1600** — tightened from 1800. Empirically, Gemma 3n
+    /// quality degrades on prompts > ~1700 effective tokens (counting chat-
+    /// template overhead) even though its trained context is 32k+. Trading
+    /// budget for stability.
     static let gemma3n = ModelCapabilityProfile(
         family: "gemma",
         supportsFlashAttention: true,
         nUBatch: 64,
-        safeHistoryTokenBudget: 1800,              // More generous: effective 4B active params
+        safeHistoryTokenBudget: 1600,
         generationReserveTokens: 512,
         messageTokenOverhead: 6,
         supportsStructuredToolCalling: false,
         prefersDeferredMemoryExtraction: false,
-        recommendedTemperature: 0.4,
+        recommendedTemperature: 0.35,
         recommendedTopP: 0.9,
-        recommendedTopK: 40,
-        recommendedMinP: 0.05,
-        recommendedRepeatPenalty: 1.2,
-        recommendedRepeatPenaltyLastN: 128,
+        recommendedTopK: 32,
+        recommendedMinP: 0.08,
+        recommendedRepeatPenalty: 1.25,
+        recommendedRepeatPenaltyLastN: 192,
         // Gemma 3n's ~4B active params + per-layer-skipping make it
         // visibly degrade on long multi-section prompts. Lean mode on.
         isWeakInstructionFollower: true
@@ -324,12 +339,42 @@ extension ModelCapabilityProfile {
     ///
     /// - Parameter family: `LocalModel.family` as stored in the catalog.
     static func resolve(family: String) -> ModelCapabilityProfile {
+        resolve(family: family, parameterCount: nil)
+    }
+
+    /// Size-aware overload. Promotes small variants of "strong" families
+    /// to `isWeakInstructionFollower = true` and tightens sampling.
+    ///
+    /// Llama 3.2 1B is the canonical case: family `"llama"` resolves to
+    /// `.llama` (not weak, temp 0.6, repeat 1.1) but in the field the 1B
+    /// at Q4 catastrophically fails on the full multi-section prompt:
+    /// parrots context as its opening line, mixes languages (English /
+    /// Russian tokens bleed into Czech replies), hallucinates entities.
+    /// Treat anything ≤ 2B as weak regardless of family.
+    ///
+    /// - Parameters:
+    ///   - family: `LocalModel.family`.
+    ///   - parameterCount: `LocalModel.parameterCount` (e.g. `"1B"`, `"3B"`,
+    ///     `"8B"`). When `nil`, behaves identically to `resolve(family:)`.
+    static func resolve(family: String, parameterCount: String?) -> ModelCapabilityProfile {
         let baseProfile = Self.baseProfile(for: family)
         let adjustedBudget = Self.dynamicHistoryBudget(baseProfile: baseProfile)
+        let isSmall = Self.isSmallVariant(parameterCount: parameterCount)
+        let promotedWeak = baseProfile.isWeakInstructionFollower || isSmall
 
-        // Return a new profile with the dynamically adjusted budget.
-        // Sampling fields pass through unchanged — they're a function
-        // of model family, not device tier.
+        // For small variants of otherwise-strong families: also tighten
+        // sampling (lower temp, harder repetition penalty, smaller minP
+        // floor). Mirrors what gemma3n does for the same reason.
+        let temp = isSmall && !baseProfile.isWeakInstructionFollower
+            ? min(baseProfile.recommendedTemperature, 0.5)
+            : baseProfile.recommendedTemperature
+        let repeatPenalty = isSmall && !baseProfile.isWeakInstructionFollower
+            ? max(baseProfile.recommendedRepeatPenalty, 1.2)
+            : baseProfile.recommendedRepeatPenalty
+        let minP = isSmall && !baseProfile.isWeakInstructionFollower
+            ? max(baseProfile.recommendedMinP, 0.1)
+            : baseProfile.recommendedMinP
+
         return ModelCapabilityProfile(
             family: baseProfile.family,
             supportsFlashAttention: baseProfile.supportsFlashAttention,
@@ -339,14 +384,32 @@ extension ModelCapabilityProfile {
             messageTokenOverhead: baseProfile.messageTokenOverhead,
             supportsStructuredToolCalling: baseProfile.supportsStructuredToolCalling,
             prefersDeferredMemoryExtraction: baseProfile.prefersDeferredMemoryExtraction,
-            recommendedTemperature: baseProfile.recommendedTemperature,
+            recommendedTemperature: temp,
             recommendedTopP: baseProfile.recommendedTopP,
             recommendedTopK: baseProfile.recommendedTopK,
-            recommendedMinP: baseProfile.recommendedMinP,
-            recommendedRepeatPenalty: baseProfile.recommendedRepeatPenalty,
+            recommendedMinP: minP,
+            recommendedRepeatPenalty: repeatPenalty,
             recommendedRepeatPenaltyLastN: baseProfile.recommendedRepeatPenaltyLastN,
-            isWeakInstructionFollower: baseProfile.isWeakInstructionFollower
+            isWeakInstructionFollower: promotedWeak
         )
+    }
+
+    /// Parses `parameterCount` ("1B", "1.5B", "3B", "8B", "13B"…) and
+    /// returns `true` for anything ≤ 2B. Defensive against junk strings —
+    /// unparseable returns `false` (assume the catalog author knew what
+    /// they were doing).
+    ///
+    /// nonisolated for direct use from `resolve(family:parameterCount:)`
+    /// without crossing actor isolation.
+    nonisolated static func isSmallVariant(parameterCount: String?) -> Bool {
+        guard let raw = parameterCount?.uppercased() else { return false }
+        // Strip trailing "B" / "M" / whitespace; M is megaparameters and
+        // is unambiguously small.
+        let trimmed = raw.trimmingCharacters(in: .whitespaces)
+        if trimmed.hasSuffix("M") { return true }
+        let body = trimmed.hasSuffix("B") ? String(trimmed.dropLast()) : trimmed
+        guard let value = Double(body) else { return false }
+        return value <= 2.0
     }
 
     /// Returns the static (base) profile for the given family.

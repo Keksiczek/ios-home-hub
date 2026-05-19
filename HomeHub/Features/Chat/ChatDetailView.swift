@@ -51,6 +51,7 @@ struct ChatDetailView: View {
                             if isFilteringChat {
                                 filterStatusBar
                             }
+                            summaryIndicator
                             ForEach(displayedMessages) { message in
                                 bubble(for: message).id(message.id)
                             }
@@ -599,6 +600,69 @@ struct ChatDetailView: View {
 
     private var hasAnyBookmark: Bool {
         messages.contains(where: { $0.isBookmarked })
+    }
+
+    /// Compact "older turns condensed into a summary" indicator shown
+    /// above the visible bubble list. When the auto-summariser folds
+    /// the older half of the conversation into a single condensed
+    /// block (see `ConversationService.maybeAutoSummarize`), users
+    /// would otherwise see earlier messages "disappear" from the
+    /// recent window with no explanation. This pill explains it
+    /// happened, says how many turns were folded, and on tap can
+    /// reveal the actual summary text in a sheet.
+    ///
+    /// Hidden whenever there's no summary (typical for new chats),
+    /// while an in-chat search/filter is active (the user is already
+    /// in a non-default view of the history and the badge would
+    /// add noise), and while no model is loaded (the summary text
+    /// won't refresh anyway).
+    @ViewBuilder
+    private var summaryIndicator: some View {
+        if !isFilteringChat,
+           let summary = conversations.summary(for: conversationID),
+           !summary.coversMessageIDs.isEmpty {
+            // Read `summaryRevision` so any update (regenerate, manual
+            // clear) re-evaluates this view body immediately. The
+            // discard binding is enough — we don't actually need the
+            // value, only the dependency edge.
+            let _ = conversations.summaryRevision
+            HStack(spacing: HHTheme.spaceS) {
+                Image(systemName: "text.append")
+                    .foregroundStyle(HHTheme.accent)
+                    .imageScale(.small)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Starší \(summary.coversMessageIDs.count) zpráv shrnuto")
+                        .font(HHTheme.caption.weight(.medium))
+                        .foregroundStyle(HHTheme.textPrimary)
+                    Text(summaryPreview(summary.summary))
+                        .font(HHTheme.caption)
+                        .foregroundStyle(HHTheme.textSecondary)
+                        .lineLimit(2)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, HHTheme.spaceM)
+            .padding(.vertical, HHTheme.spaceS)
+            .background(HHTheme.surface, in: RoundedRectangle(cornerRadius: HHTheme.cornerLarge, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: HHTheme.cornerLarge, style: .continuous)
+                    .stroke(HHTheme.stroke, lineWidth: 0.5)
+            )
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Souhrn starších \(summary.coversMessageIDs.count) zpráv: \(summary.summary)")
+        }
+    }
+
+    /// Squeeze the summary onto two lines for the indicator. Trims
+    /// runs of whitespace/newlines that the summariser sometimes
+    /// leaves behind so the inline preview reads cleanly.
+    private func summaryPreview(_ raw: String) -> String {
+        let collapsed = raw
+            .replacingOccurrences(of: "\n", with: " ")
+            .components(separatedBy: .whitespaces)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        return collapsed
     }
 
     /// Small banner shown above the bubble list while either chat

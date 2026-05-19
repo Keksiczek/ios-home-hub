@@ -20,6 +20,12 @@ struct MLXCacheInspection: Sendable, Equatable {
     var directoryExists: Bool
     /// True if `config.json` is present.
     var hasConfig: Bool
+    /// True if `config.json` is parseable as JSON AND contains the minimal
+    /// fields swift-transformers' `LanguageModelConfigurationFromHub.loadConfig`
+    /// inspects. False here turns into a hard `.partial` even if the file
+    /// exists, because handing corrupted JSON to `HubApi.configuration(fileURL:)`
+    /// previously SIGABRT'd inside `NSJSONReader.parseData` (FACT_FROM_LOG).
+    var configJSONIsValid: Bool
     /// True if at least one `*.safetensors` weight shard is present.
     var hasWeights: Bool
     /// True if a tokenizer artefact is present (`tokenizer.json`,
@@ -48,6 +54,9 @@ struct MLXCacheInspection: Sendable, Equatable {
         case .missing where !directoryExists:
             return "Model directory is missing on disk."
         case .missing, .partial:
+            if hasConfig && !configJSONIsValid {
+                return "Model config.json is corrupted — re-download the model."
+            }
             if missingItems.isEmpty {
                 return "Model directory is incomplete."
             }
@@ -130,6 +139,7 @@ actor LocalModelService {
                 state: .missing,
                 directoryExists: false,
                 hasConfig: false,
+                configJSONIsValid: false,
                 hasWeights: false,
                 hasTokenizer: false,
                 totalWeightsBytes: 0,
@@ -141,6 +151,34 @@ actor LocalModelService {
         let contents = (try? fileManager.contentsOfDirectory(atPath: cacheDir.path)) ?? []
 
         let hasConfig = contents.contains("config.json")
+        // Pre-validate config.json BEFORE the loader hands it to
+        // `HubApi.configuration(fileURL:)`. swift-transformers calls
+        // `NSJSONReader.parseData(...)` directly on the file bytes —
+        // when the file is truncated or contains invalid UTF-8 the
+        // parser data-aborts (SIGSEGV-style) inside
+        // `CFStringCreateImmutableFunnel3` before any Swift `catch`
+        // can fire. Validating here turns a process crash into a
+        // recoverable `.partial` state with a user-actionable reason.
+        let configJSONIsValid: Bool = {
+            guard hasConfig else { return false }
+            let url = cacheDir.appendingPathComponent("config.json")
+            guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return false }
+            // Empty / single-byte files crash NSJSONReader on some iOS revs.
+            guard data.count >= 2 else { return false }
+            // Strict UTF-8 round-trip: rejects truncated multibyte sequences
+            // that survived the file read but blow up CFString.
+            guard String(data: data, encoding: .utf8) != nil else { return false }
+            do {
+                let raw = try JSONSerialization.jsonObject(with: data, options: [])
+                // swift-transformers expects a top-level dict. Top-level
+                // arrays / scalars are valid JSON but make `loadConfig`
+                // crash when it asks for keys.
+                return raw is [String: Any]
+            } catch {
+                staticLog.error("MLX Cache: config.json at \(cacheDir.lastPathComponent, privacy: .public) failed JSON validation: \(error.localizedDescription, privacy: .public)")
+                return false
+            }
+        }()
         let safetensorsFiles = contents.filter { $0.hasSuffix(".safetensors") }
         let hasWeights = !safetensorsFiles.isEmpty
         // Conservative tokenizer detection: any of the well-known artefacts
@@ -165,6 +203,7 @@ actor LocalModelService {
 
         var missing: [String] = []
         if !hasConfig    { missing.append("config.json") }
+        if hasConfig && !configJSONIsValid { missing.append("valid config.json (file is corrupted)") }
         if !hasTokenizer { missing.append("tokenizer files") }
         if !hasWeights   { missing.append(".safetensors weights") }
 
@@ -183,7 +222,8 @@ actor LocalModelService {
 
         // Best-effort family detection from config.json. Failures are
         // silent — the value is only used as a UI / template hint.
-        let detectedFamily: String? = hasConfig
+        // Skip when JSON is invalid so we don't redo the validation read.
+        let detectedFamily: String? = (hasConfig && configJSONIsValid)
             ? detectMLXFamily(configURL: cacheDir.appendingPathComponent("config.json"))
             : nil
 
@@ -191,6 +231,7 @@ actor LocalModelService {
             state: state,
             directoryExists: true,
             hasConfig: hasConfig,
+            configJSONIsValid: configJSONIsValid,
             hasWeights: hasWeights,
             hasTokenizer: hasTokenizer,
             totalWeightsBytes: totalWeightsSize,

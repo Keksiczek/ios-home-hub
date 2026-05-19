@@ -113,16 +113,13 @@ enum ChatTextSanitizer {
         // ignores the empty envelope but it still leaks into the
         // bubble as visible junk. Non-empty envelopes round-trip
         // unchanged — tool-result rendering depends on them.
-        let emptyEnvelopePatterns = [
-            "<tool_call>\\s*</tool_call>",
-            "<function_call>\\s*</function_call>",
-            "<function>\\s*</function>",
-            "<tool>\\s*</tool>",
-            "\\[TOOL_CALLS\\]\\s*\\[/TOOL_CALLS\\]",
-            "<Observation>\\s*</Observation>"
-        ]
-        for pattern in emptyEnvelopePatterns {
-            if let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) {
+        //
+        // Fast-path: `<` and `[` literal scan bails before paying for
+        // 6 regex matches on streaming intermediate states that don't
+        // contain any envelope candidates (~99% of streaming token
+        // batches before the model emits its first tool tag).
+        if cleaned.contains("<") || cleaned.contains("[TOOL_CALLS]") {
+            for regex in emptyEnvelopeRegexes {
                 let range = NSRange(cleaned.startIndex..., in: cleaned)
                 cleaned = regex.stringByReplacingMatches(
                     in: cleaned,
@@ -133,9 +130,8 @@ enum ChatTextSanitizer {
         }
 
         // Collapse any run of 3+ newlines to exactly two so stripped tags
-        // don't leave visible gaps. A regex here is fine — the input is
-        // at most a single assistant turn.
-        if let regex = try? NSRegularExpression(pattern: "\\n{3,}") {
+        // don't leave visible gaps.
+        if let regex = collapseNewlinesRegex {
             let range = NSRange(cleaned.startIndex..., in: cleaned)
             cleaned = regex.stringByReplacingMatches(
                 in: cleaned,
@@ -146,7 +142,7 @@ enum ChatTextSanitizer {
 
         // Normalise the trailing-whitespace-on-every-line artifact some
         // models emit. Cheap to do; cleans up Markdown rendering.
-        if let regex = try? NSRegularExpression(pattern: "[ \\t]+\\n") {
+        if let regex = trailingWhitespaceRegex {
             let range = NSRange(cleaned.startIndex..., in: cleaned)
             cleaned = regex.stringByReplacingMatches(
                 in: cleaned,
@@ -157,6 +153,33 @@ enum ChatTextSanitizer {
 
         return cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
     }
+
+    /// Static, pre-compiled regex set for the empty-envelope strip.
+    /// `ChatTextSanitizer.strip` runs on every `MessageBubbleView` body
+    /// evaluation (~10× per second during streaming × N visible
+    /// bubbles). Compiling six regexes per call was a measurable hot
+    /// spot — pre-compile and freeze at process start.
+    private static let emptyEnvelopeRegexes: [NSRegularExpression] = {
+        let patterns = [
+            "<tool_call>\\s*</tool_call>",
+            "<function_call>\\s*</function_call>",
+            "<function>\\s*</function>",
+            "<tool>\\s*</tool>",
+            "\\[TOOL_CALLS\\]\\s*\\[/TOOL_CALLS\\]",
+            "<Observation>\\s*</Observation>"
+        ]
+        return patterns.compactMap {
+            try? NSRegularExpression(pattern: $0, options: [.caseInsensitive])
+        }
+    }()
+
+    private static let collapseNewlinesRegex: NSRegularExpression? = {
+        try? NSRegularExpression(pattern: "\\n{3,}")
+    }()
+
+    private static let trailingWhitespaceRegex: NSRegularExpression? = {
+        try? NSRegularExpression(pattern: "[ \\t]+\\n")
+    }()
 
     /// Pre-compiled regex for all control tokens.
     private static let tokensRegex: NSRegularExpression? = {

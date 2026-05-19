@@ -7,6 +7,9 @@ struct ModelsView: View {
     @EnvironmentObject private var runtime:   RuntimeManager
     @EnvironmentObject private var settings:  SettingsService
     @EnvironmentObject private var appState:  AppState
+    /// Used only to subscribe to `memoryWarningCount` ticks so the
+    /// headroom strip refreshes immediately after a pressure event.
+    @EnvironmentObject private var container: AppContainer
 
     /// Collapses multi-source state into per-row `ModelBrowserStatus` values
     /// and debounces at 50 ms so 10 Hz progress ticks don't rebuild the list.
@@ -180,12 +183,24 @@ struct ModelsView: View {
     // MARK: - Section helpers
 
     /// Filters `vm.sections` by the current search text (no re-sort; stable order).
+    ///
+    /// Matches against displayName, family, parameterCount, and
+    /// quantization — so a user typing "1B" or "4-bit" gets useful
+    /// narrowing instead of "no results" just because the size lives
+    /// on a different field. Search remains case-insensitive and uses
+    /// `localizedCaseInsensitiveContains` so diacritics fold correctly
+    /// (Czech model names with `Štěpán` etc. still match `step`).
     private var filteredSections: [ModelBrowserSection] {
         guard !searchText.isEmpty else { return vm.sections }
+        let query = searchText.trimmingCharacters(in: .whitespaces)
+        guard !query.isEmpty else { return vm.sections }
         return vm.sections.compactMap { section in
-            let filtered = section.items.filter {
-                $0.model.displayName.localizedCaseInsensitiveContains(searchText) ||
-                $0.model.family.localizedCaseInsensitiveContains(searchText)
+            let filtered = section.items.filter { item in
+                let m = item.model
+                return m.displayName.localizedCaseInsensitiveContains(query)
+                    || m.family.localizedCaseInsensitiveContains(query)
+                    || m.parameterCount.localizedCaseInsensitiveContains(query)
+                    || m.quantization.localizedCaseInsensitiveContains(query)
             }
             guard !filtered.isEmpty else { return nil }
             return ModelBrowserSection(kind: section.kind, items: filtered)
@@ -359,7 +374,7 @@ struct ModelsView: View {
             }
             .onAppear {
                 // Connect the view-model once; idempotent on subsequent appearances.
-                vm.connect(catalog: catalog, downloads: downloads, runtime: runtime)
+                vm.connect(catalog: catalog, downloads: downloads, runtime: runtime, settings: settings)
                 refreshAvailableBytes()
             }
             .task {
@@ -368,6 +383,14 @@ struct ModelsView: View {
                 // in if the user navigates away mid-compute. Idempotent
                 // on re-appearance — re-runs whenever the view comes back.
                 await refreshMemoryHeadroom()
+            }
+            // Re-evaluate headroom on every memory-pressure event so the
+            // strip flips to "nízká" right when the OS warns the app —
+            // without this the strip stayed stale at "vysoká" until the
+            // user pulled to refresh. `memoryWarningCount` ticks on each
+            // L1/L2 pressure tier in `AppContainer.handleMemoryPressure`.
+            .onChange(of: container.memoryWarningCount) { _, _ in
+                Task { await refreshMemoryHeadroom() }
             }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -541,14 +564,14 @@ private struct ModelBrowserRow: View {
                         Text(model.displayName)
                             .font(HHTheme.headline)
                         backendBadge
-                        // Soft compatibility badge. Replaces the prior
-                        // "Vyžaduje iPad" hard block — the model is still
-                        // downloadable and visible; the badge just makes
-                        // the risk legible at a glance instead of relying
-                        // on the long subtitle below.
-                        if isRunningOnPhone && isIPadOnly {
-                            experimentalBadge
-                        }
+                        // Live memory-oracle verdict. Replaces the
+                        // static `recommendedFor`-based experimental
+                        // badge with a real "will it load right now?"
+                        // signal. Only rendered on rows where a load
+                        // is plausibly imminent (`.installed` /
+                        // `.notInstalled`) — for the currently-active
+                        // model the badge is just noise.
+                        feasibilityBadge
                         if model.requiresAuth {
                             authRequiredBadge
                         }
@@ -563,10 +586,10 @@ private struct ModelBrowserRow: View {
                         }
                     }
                     modelSubtitle
-                    if isRunningOnPhone && isIPadOnly {
-                        Text("Doporučeno pro iPad — na tomto zařízení může selhat kvůli paměti.")
+                    if let line = feasibilityLine {
+                        Text(line)
                             .font(HHTheme.caption)
-                            .foregroundStyle(HHTheme.warning)
+                            .foregroundStyle(feasibilityColor)
                             .lineLimit(2)
                     }
                 }
@@ -587,8 +610,18 @@ private struct ModelBrowserRow: View {
 
     // MARK: - Header sub-views
 
-    private var isIPadOnly: Bool {
-        !model.recommendedFor.contains(.iPhone)
+    /// One-line footer under the Download button. Surfaces the live
+    /// verdict so users can decide whether to start a multi-GB
+    /// transfer that won't be runnable on this device.
+    private var downloadFooterText: String {
+        switch item.feasibility {
+        case .cannotLoad?:
+            return "Stažení možné · nevejde se do paměti · \(model.sizeFormatted)"
+        case .risky?:
+            return "Stažení možné · běh nejistý · \(model.sizeFormatted)"
+        default:
+            return "Background transfer · \(model.sizeFormatted) · tap Load after"
+        }
     }
 
     /// Heuristic for "this failure was about authentication". Catches
@@ -616,24 +649,86 @@ private struct ModelBrowserRow: View {
             .foregroundStyle(badgeFg)
     }
 
-    /// Orange "Experimentální" pill shown next to the backend badge when
-    /// the catalog entry is recommended for iPad-class hardware only and
-    /// we're running on iPhone. Compatibility category 2 in the model
-    /// policy — the model is downloadable, but the run is not guaranteed.
-    private var experimentalBadge: some View {
-        Text("Experimentální")
-            .font(.system(size: 10, weight: .semibold))
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(HHTheme.warning.opacity(0.18), in: Capsule())
-            .foregroundStyle(HHTheme.warning)
-            .accessibilityLabel("Experimentální na iPhonu, doporučeno pro iPad")
+    /// Compatibility badge driven by `RuntimeManager.evaluateFeasibility`.
+    /// Three states map to three colours; nothing renders for rows where
+    /// the verdict isn't actionable (already-loaded, loading, downloading).
+    ///
+    /// **Why dynamic instead of static `recommendedFor` based?** The
+    /// previous "Experimentální" pill triggered purely on
+    /// `recommendedFor: [.iPadMSeries]`. That meant Gemma 3n was flagged
+    /// experimental on iPhone 16 Pro (8 GB, comfortable for the 4.5 GB
+    /// model) **and** on iPhone 11 (4 GB, will OOM) — identical UI for
+    /// very different outcomes. The oracle-driven badge tells the user
+    /// what's actually true *for their device, right now*.
+    @ViewBuilder
+    private var feasibilityBadge: some View {
+        if shouldShowFeasibility, let verdict = item.feasibility {
+            switch verdict {
+            case .safe:
+                Label("Vejde se", systemImage: "checkmark.circle.fill")
+                    .labelStyle(BadgeLabelStyle())
+                    .background(HHTheme.success.opacity(0.16), in: Capsule())
+                    .foregroundStyle(HHTheme.success)
+                    .accessibilityLabel("Model se na toto zařízení komfortně vejde")
+            case .risky:
+                Label("Těsné", systemImage: "exclamationmark.triangle.fill")
+                    .labelStyle(BadgeLabelStyle())
+                    .background(HHTheme.warning.opacity(0.18), in: Capsule())
+                    .foregroundStyle(HHTheme.warning)
+                    .accessibilityLabel("Model se vejde jen těsně, může selhat při náporu paměti")
+            case .cannotLoad:
+                Label("Nevejde se", systemImage: "xmark.octagon.fill")
+                    .labelStyle(BadgeLabelStyle())
+                    .background(HHTheme.danger.opacity(0.18), in: Capsule())
+                    .foregroundStyle(HHTheme.danger)
+                    .accessibilityLabel("Model se na toto zařízení v aktuálním stavu nevejde")
+            }
+        }
+    }
+
+    /// Hide the badge for rows where a load isn't the next plausible
+    /// action — the badge would just be visual clutter.
+    private var shouldShowFeasibility: Bool {
+        switch item.status {
+        case .notInstalled, .installed, .downloadFailed, .loadFailed:
+            return true
+        case .downloading, .reconnecting, .loading, .loaded, .unloading:
+            return false
+        }
+    }
+
+    /// Subtitle line that pairs with the badge — explains the verdict
+    /// without forcing the user to tap Download to find out. Quotes
+    /// the headroom delta when it's tight so the user can decide
+    /// whether to close other apps or pick a smaller model.
+    private var feasibilityLine: String? {
+        guard shouldShowFeasibility, let verdict = item.feasibility else { return nil }
+        let fmt = ByteCountFormatter()
+        fmt.allowedUnits = [.useMB, .useGB]
+        fmt.countStyle = .file
+        switch verdict {
+        case .safe:
+            return nil   // Quiet — the user doesn't need an explanation when it just works.
+        case .risky(let required, let available):
+            return "Vejde se těsně: potřebuje ≈\(fmt.string(fromByteCount: required)), volných je \(fmt.string(fromByteCount: available))."
+        case .cannotLoad(let required, let available):
+            return "Nevejde se do paměti: potřebuje ≈\(fmt.string(fromByteCount: required)), volných je jen \(fmt.string(fromByteCount: available))."
+        }
+    }
+
+    private var feasibilityColor: Color {
+        switch item.feasibility {
+        case .risky?:      return HHTheme.warning
+        case .cannotLoad?: return HHTheme.danger
+        default:           return HHTheme.textSecondary
+        }
     }
 
     /// Lock pill shown for `requiresAuth` models (Gemma, Llama 3 8B+ …).
-    /// Mirrors the visual weight of `experimentalBadge` but uses a
-    /// neutral grey palette — these models aren't broken, they just
-    /// need the HF token from Settings before they can be fetched.
+    /// Same visual weight as `feasibilityBadge` (compact capsule, 10pt
+    /// semibold) but uses a neutral grey palette — these models aren't
+    /// incompatible, they just need the HF token from Settings before
+    /// they can be fetched.
     private var authRequiredBadge: some View {
         HStack(spacing: 3) {
             Image(systemName: "lock.fill")
@@ -714,9 +809,7 @@ private struct ModelBrowserRow: View {
                     // Footer text differs for risky models so the user
                     // understands the download is permitted but the run
                     // is not guaranteed on this hardware.
-                    Text(isRunningOnPhone && isIPadOnly
-                         ? "Stažení možné · běh nejistý · \(model.sizeFormatted)"
-                         : "Background transfer · \(model.sizeFormatted) · tap Load after")
+                    Text(downloadFooterText)
                         .font(HHTheme.caption)
                         .foregroundStyle(HHTheme.textSecondary)
                 }
@@ -966,6 +1059,24 @@ private struct ModelBrowserRow: View {
 /// One-screen "how to download a gated model" tutorial. Reached when
 /// the user taps Download on a `requiresAuth` model without an HF
 /// token configured. Three steps, plain language, no jargon — the
+/// Compact icon-plus-text capsule style used by the model-row badges.
+/// `Label`'s default style scales the icon with Dynamic Type and adds
+/// generous spacing; this trimmed variant matches the existing
+/// `feasibilityBadge` / `authRequiredBadge` look so the pills line up
+/// at the same size.
+private struct BadgeLabelStyle: LabelStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 3) {
+            configuration.icon
+                .font(.system(size: 9, weight: .semibold))
+            configuration.title
+                .font(.system(size: 10, weight: .semibold))
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 2)
+    }
+}
+
 /// goal is for a non-developer to follow it.
 ///
 /// We keep this as a separate sheet (rather than baking it into the

@@ -218,6 +218,54 @@ final class ModelCapabilityProfileTests: XCTestCase {
 
     // MARK: - Helpers
 
+    // MARK: - Size-aware resolution (parameterCount)
+
+    func testResolveLlama1BIsWeak() {
+        let profile = ModelCapabilityProfile.resolve(family: "llama", parameterCount: "1B")
+        XCTAssertTrue(profile.isWeakInstructionFollower,
+                      "Llama 1B should be promoted to weak instruction follower")
+        // Sampling tightening should also apply.
+        XCTAssertLessThanOrEqual(profile.recommendedTemperature, 0.5)
+        XCTAssertGreaterThanOrEqual(profile.recommendedRepeatPenalty, 1.2)
+        XCTAssertGreaterThanOrEqual(profile.recommendedMinP, 0.1)
+    }
+
+    func testResolveLlama3BIsStrong() {
+        let profile = ModelCapabilityProfile.resolve(family: "llama", parameterCount: "3B")
+        XCTAssertFalse(profile.isWeakInstructionFollower,
+                       "Llama 3B should remain strong")
+        // Strong family keeps its native sampling.
+        XCTAssertEqual(profile.recommendedTemperature, ModelCapabilityProfile.llama.recommendedTemperature)
+    }
+
+    func testResolveQwen1B5IsWeak() {
+        let profile = ModelCapabilityProfile.resolve(family: "qwen", parameterCount: "1.5B")
+        XCTAssertTrue(profile.isWeakInstructionFollower)
+    }
+
+    func testResolveLlama8BIsStrong() {
+        let profile = ModelCapabilityProfile.resolve(family: "llama", parameterCount: "8B")
+        XCTAssertFalse(profile.isWeakInstructionFollower)
+    }
+
+    func testResolveNilParameterCountMatchesLegacyAPI() {
+        let legacy = ModelCapabilityProfile.resolve(family: "llama")
+        let nilParam = ModelCapabilityProfile.resolve(family: "llama", parameterCount: nil)
+        XCTAssertEqual(legacy, nilParam)
+    }
+
+    func testIsSmallVariantParsing() {
+        XCTAssertTrue(ModelCapabilityProfile.isSmallVariant(parameterCount: "1B"))
+        XCTAssertTrue(ModelCapabilityProfile.isSmallVariant(parameterCount: "1.5B"))
+        XCTAssertTrue(ModelCapabilityProfile.isSmallVariant(parameterCount: "2B"))
+        XCTAssertTrue(ModelCapabilityProfile.isSmallVariant(parameterCount: "500M"))
+        XCTAssertFalse(ModelCapabilityProfile.isSmallVariant(parameterCount: "3B"))
+        XCTAssertFalse(ModelCapabilityProfile.isSmallVariant(parameterCount: "8B"))
+        XCTAssertFalse(ModelCapabilityProfile.isSmallVariant(parameterCount: nil))
+        XCTAssertFalse(ModelCapabilityProfile.isSmallVariant(parameterCount: ""))
+        XCTAssertFalse(ModelCapabilityProfile.isSmallVariant(parameterCount: "garbage"))
+    }
+
     private func makePackage(messages: [Message], profile: ModelCapabilityProfile?) -> PromptContextPackage {
         PromptContextPackage(
             assistant: AssistantProfile.defaultAssistant,
