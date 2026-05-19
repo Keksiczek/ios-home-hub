@@ -32,7 +32,7 @@ struct KnowledgeBaseView: View {
                     if showDeveloperOptions {
                         developerSection
                     } else {
-                        Button("Developer Options") {
+                        Button("Možnosti pro vývojáře") {
                             withAnimation { showDeveloperOptions = true }
                         }
                         .font(HHTheme.footnote)
@@ -44,7 +44,7 @@ struct KnowledgeBaseView: View {
                 .padding(.vertical, HHTheme.spaceM)
             }
             .background(HHTheme.canvas)
-            .navigationTitle("Documents")
+            .navigationTitle("Dokumenty")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -84,7 +84,7 @@ struct KnowledgeBaseView: View {
                     pendingError = error.localizedDescription
                 }
             }
-            .alert("Import Error", isPresented: Binding(
+            .alert("Chyba importu", isPresented: Binding(
                 get: { pendingError != nil },
                 set: { if !$0 { pendingError = nil } }
             ), presenting: pendingError) { _ in
@@ -107,10 +107,10 @@ struct KnowledgeBaseView: View {
     @ViewBuilder
     private var headerSection: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Knowledge Base")
+            Text("Znalostní báze")
                 .font(HHTheme.largeTitle)
                 .foregroundStyle(HHTheme.textPrimary)
-            Text("Documents imported here are searchable by the assistant.")
+            Text("Importované dokumenty budou prohledávatelné asistentem.")
                 .font(HHTheme.body)
                 .foregroundStyle(HHTheme.textSecondary)
         }
@@ -120,10 +120,10 @@ struct KnowledgeBaseView: View {
     @ViewBuilder
     private var statsSection: some View {
         HStack(spacing: HHTheme.spaceM) {
-            statCard(title: "Documents", value: "\(knowledgeBase.documents.count)", icon: "doc.on.doc")
+            statCard(title: "Dokumenty", value: "\(knowledgeBase.documents.count)", icon: "doc.on.doc")
             let chunkCount = knowledgeBase.documents.map { $0.chunkCount }.reduce(0, +)
-            statCard(title: "Chunks Indexed", value: "\(chunkCount)", icon: "text.alignleft")
-            statCard(title: "Active Jobs", value: "\(knowledgeBase.jobs.count)", icon: "arrow.triangle.2.circlepath")
+            statCard(title: "Indexované úryvky", value: "\(chunkCount)", icon: "text.alignleft")
+            statCard(title: "Aktivní úlohy", value: "\(knowledgeBase.jobs.count)", icon: "arrow.triangle.2.circlepath")
         }
     }
 
@@ -148,11 +148,11 @@ struct KnowledgeBaseView: View {
     private var jobsSection: some View {
         VStack(alignment: .leading, spacing: HHTheme.spaceM) {
             HStack {
-                Text("Ingestion Queue")
+                Text("Fronta zpracování")
                     .font(HHTheme.title3)
                 Spacer()
                 if knowledgeBase.jobs.contains(where: { $0.status == .failed }) {
-                    Button("Clear Failed", role: .destructive) {
+                    Button("Smazat selhané", role: .destructive) {
                         Task { await knowledgeBase.clearFailedJobs() }
                     }
                     .font(HHTheme.footnote)
@@ -167,9 +167,9 @@ struct KnowledgeBaseView: View {
     @ViewBuilder
     private var documentsSection: some View {
         VStack(alignment: .leading, spacing: HHTheme.spaceM) {
-            Text("Documents (\(knowledgeBase.documents.count))")
+            Text("Dokumenty (\(knowledgeBase.documents.count))")
                 .font(HHTheme.title3)
-            
+
             if knowledgeBase.documents.isEmpty {
                 HStack {
                     Spacer()
@@ -177,11 +177,12 @@ struct KnowledgeBaseView: View {
                         Image(systemName: "tray")
                             .font(.system(size: 40))
                             .foregroundStyle(HHTheme.textSecondary.opacity(0.5))
-                        Text("No documents yet")
+                        Text("Zatím žádné dokumenty")
                             .font(HHTheme.headline)
-                        Text("Tap + to import a PDF or text file.")
+                        Text("Klepnutím na + importuješ PDF nebo textový soubor.")
                             .font(HHTheme.caption)
                             .foregroundStyle(HHTheme.textSecondary)
+                            .multilineTextAlignment(.center)
                     }
                     .padding(.vertical, HHTheme.spaceXL)
                     Spacer()
@@ -229,7 +230,7 @@ struct KnowledgeBaseView: View {
                         .font(HHTheme.headline)
                         .foregroundStyle(HHTheme.textPrimary)
                     HStack(spacing: 6) {
-                        Text("\(doc.chunkCount) chunks")
+                        Text("\(doc.chunkCount) úryvků")
                         Text("·")
                         Text(byteFormatter.string(fromByteCount: doc.fileSize))
                         Text("·")
@@ -249,12 +250,12 @@ struct KnowledgeBaseView: View {
             }
             
             HStack(spacing: HHTheme.spaceM) {
-                Button("Reindex") {
+                Button("Přeindexovat") {
                     Task { await knowledgeBase.reindex(documentID: doc.id) }
                 }
                 .tint(HHTheme.accent)
-                
-                Button("Delete", role: .destructive) {
+
+                Button("Smazat", role: .destructive) {
                     Task { await knowledgeBase.deleteDocument(doc.id) }
                 }
             }
@@ -277,10 +278,10 @@ struct KnowledgeBaseView: View {
     private func jobRow(_ job: IngestJob) -> some View {
         HStack {
             VStack(alignment: .leading, spacing: 4) {
-                Text(job.title ?? "(Untitled)")
+                Text(job.title ?? "(bez názvu)")
                     .font(HHTheme.subheadline.weight(.semibold))
                     .foregroundStyle(HHTheme.textPrimary)
-                Text("Action: \(job.action.rawValue)")
+                Text("Akce: \(job.action.rawValue)")
                     .font(HHTheme.caption)
                     .foregroundStyle(HHTheme.textSecondary)
                 if let err = job.errorMessage {
@@ -294,7 +295,7 @@ struct KnowledgeBaseView: View {
             VStack(alignment: .trailing, spacing: 4) {
                 jobStatusBadge(for: job.status)
                 if job.status == .failed || job.status == .awaitingApp {
-                    Button("Retry") {
+                    Button("Zkusit znovu") {
                         Task { await knowledgeBase.retry(jobID: job.id) }
                     }
                     .font(HHTheme.caption)
@@ -311,25 +312,25 @@ struct KnowledgeBaseView: View {
     @ViewBuilder
     private var developerSection: some View {
         VStack(alignment: .leading, spacing: HHTheme.spaceM) {
-            Text("Developer Options")
+            Text("Možnosti pro vývojáře")
                 .font(HHTheme.headline)
-            
-            Button("Rebuild Spotlight Index") {
+
+            Button("Přestavět Spotlight index") {
                 Task { await rebuildSpotlight() }
             }
             .buttonStyle(.bordered)
-            
+
             if let msg = spotlightStatusMessage {
                 Text(msg)
                     .font(HHTheme.caption)
                     .foregroundStyle(HHTheme.textSecondary)
             }
-            
+
             if !knowledgeBase.pendingShareRequests.isEmpty {
-                Text("Shared Inbox (\(knowledgeBase.pendingShareRequests.count))")
+                Text("Sdílená schránka (\(knowledgeBase.pendingShareRequests.count))")
                     .font(HHTheme.subheadline.weight(.semibold))
                 ForEach(knowledgeBase.pendingShareRequests) { req in
-                    Text("Action: \(req.action) · \(req.status.rawValue)")
+                    Text("Akce: \(req.action) · \(req.status.rawValue)")
                         .font(HHTheme.caption.monospaced())
                         .foregroundStyle(HHTheme.textSecondary)
                 }
@@ -389,7 +390,7 @@ struct KnowledgeBaseView: View {
 
     @MainActor
     private func rebuildSpotlight() async {
-        spotlightStatusMessage = "Wiping..."
+        spotlightStatusMessage = "Mažu index…"
         let docs = knowledgeBase.documents
         let convs = container.conversationService.conversations
         let facts = container.memoryService.facts
@@ -399,7 +400,7 @@ struct KnowledgeBaseView: View {
             conversations: convs,
             memoryFacts: facts
         )
-        spotlightStatusMessage = "Reindexed \(docs.count) docs · \(convs.count) chats · \(facts.count) facts."
+        spotlightStatusMessage = "Přeindexováno: \(docs.count) dokumentů · \(convs.count) chatů · \(facts.count) faktů."
     }
 
     private func consumePendingDeepLinkIfMatching(proxy: ScrollViewProxy) {

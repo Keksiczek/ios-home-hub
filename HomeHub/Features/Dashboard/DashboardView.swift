@@ -8,8 +8,9 @@ struct DashboardView: View {
     @EnvironmentObject private var personalization: PersonalizationService
     @EnvironmentObject private var settings: SettingsService
     @EnvironmentObject private var conversationService: ConversationService
-    
+
     @State private var memoryHeadroom: RuntimeManager.MemoryHeadroom?
+    @State private var isStartingNewChat = false
 
     var body: some View {
         NavigationStack {
@@ -24,7 +25,7 @@ struct DashboardView: View {
                 .padding(.vertical, HHTheme.spaceM)
             }
             .background(HHTheme.canvas)
-            .navigationTitle("Home")
+            .navigationTitle("Domů")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -49,8 +50,8 @@ struct DashboardView: View {
                 Text(greetingTimeOfDay)
                     .font(HHTheme.title.weight(.bold))
                     .foregroundStyle(HHTheme.textPrimary)
-                
-                Text("Ready to help you today.")
+
+                Text(activePresetTagline)
                     .font(HHTheme.body)
                     .foregroundStyle(HHTheme.textSecondary)
             }
@@ -61,56 +62,69 @@ struct DashboardView: View {
     
     private var greetingTimeOfDay: String {
         let hour = Calendar.current.component(.hour, from: .now)
-        let name = personalization.userProfile.displayName.isEmpty ? "" : " \(personalization.userProfile.displayName)"
-        if hour < 12 { return "Good morning\(name)" }
-        if hour < 18 { return "Good afternoon\(name)" }
-        return "Good evening\(name)"
+        let name = personalization.userProfile.displayName.isEmpty ? "" : ", \(personalization.userProfile.displayName)"
+        if hour < 12 { return "Dobré ráno\(name)" }
+        if hour < 18 { return "Dobré odpoledne\(name)" }
+        return "Dobrý večer\(name)"
+    }
+
+    private var activePresetTagline: String {
+        let preset = settings.current.activeSystemPromptPreset
+        if let desc = preset.shortDescription, !desc.isEmpty {
+            return desc
+        }
+        return "Jak ti můžu dnes pomoct?"
     }
 
     // MARK: - Hardware Status Card
     
     @ViewBuilder
     private var hardwareStatusCard: some View {
-        VStack(alignment: .leading, spacing: HHTheme.spaceM) {
-            HStack {
-                Label("Hardware Status", systemImage: "cpu")
-                    .font(HHTheme.headline)
-                    .foregroundStyle(HHTheme.textPrimary)
-                Spacer()
-                if runtime.activeModel != nil {
-                    hhGlowIndicator(isActive: true)
-                }
-            }
-            
-            HStack(alignment: .top, spacing: HHTheme.spaceL) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Model")
-                        .font(HHTheme.caption)
-                        .foregroundStyle(HHTheme.textSecondary)
-                    Text(runtime.activeModel?.displayName ?? "No model loaded")
-                        .font(HHTheme.subheadline.weight(.semibold))
+        Button {
+            appState.selectedTab = .models
+        } label: {
+            VStack(alignment: .leading, spacing: HHTheme.spaceM) {
+                HStack {
+                    Label("Stav modelu", systemImage: "cpu")
+                        .font(HHTheme.headline)
                         .foregroundStyle(HHTheme.textPrimary)
-                        .lineLimit(1)
+                    Spacer()
+                    hhGlowIndicator(isActive: runtime.activeModel != nil)
                 }
-                
-                Spacer()
-                
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text("Memory Tier")
-                        .font(HHTheme.caption)
-                        .foregroundStyle(HHTheme.textSecondary)
-                    HStack(spacing: 4) {
-                        Image(systemName: headroomIcon(for: memoryHeadroom))
-                            .font(.caption2)
-                        Text(headroomLabel(for: memoryHeadroom))
+
+                HStack(alignment: .top, spacing: HHTheme.spaceL) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Aktivní model")
+                            .font(HHTheme.caption)
+                            .foregroundStyle(HHTheme.textSecondary)
+                        Text(runtime.activeModel?.displayName ?? "Žádný model nenačten")
                             .font(HHTheme.subheadline.weight(.semibold))
+                            .foregroundStyle(HHTheme.textPrimary)
+                            .lineLimit(1)
                     }
-                    .foregroundStyle(headroomColor(for: memoryHeadroom))
+
+                    Spacer()
+
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text("Paměťová rezerva")
+                            .font(HHTheme.caption)
+                            .foregroundStyle(HHTheme.textSecondary)
+                        HStack(spacing: 4) {
+                            Image(systemName: headroomIcon(for: memoryHeadroom))
+                                .font(.caption2)
+                            Text(headroomLabel(for: memoryHeadroom))
+                                .font(HHTheme.subheadline.weight(.semibold))
+                        }
+                        .foregroundStyle(headroomColor(for: memoryHeadroom))
+                    }
                 }
             }
+            .padding(HHTheme.spaceL)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .hhGlassCard()
+            .contentShape(Rectangle())
         }
-        .padding(HHTheme.spaceL)
-        .hhGlassCard()
+        .buttonStyle(.plain)
     }
 
     private func hhGlowIndicator(isActive: Bool) -> some View {
@@ -126,25 +140,24 @@ struct DashboardView: View {
     private var quickActionsGrid: some View {
         HStack(spacing: HHTheme.spaceM) {
             actionCard(
-                title: "New Chat",
+                title: "Nový chat",
                 icon: "plus.message.fill",
-                color: HHTheme.accent
+                color: HHTheme.accent,
+                isBusy: isStartingNewChat
             ) {
-                // Switching to chat tab creates a fresh state natively
-                // if we just select the tab and clear existing state.
-                appState.selectedTab = .chat
+                Task { await startNewChat() }
             }
-            
+
             actionCard(
-                title: "Import Doc",
+                title: "Dokumenty",
                 icon: "doc.badge.plus",
                 color: HHTheme.info
             ) {
                 appState.selectedTab = .knowledgeBase
             }
-            
+
             actionCard(
-                title: "Memory",
+                title: "Paměť",
                 icon: "sparkles",
                 color: HHTheme.warning
             ) {
@@ -153,13 +166,26 @@ struct DashboardView: View {
         }
     }
     
-    private func actionCard(title: String, icon: String, color: Color, action: @escaping () -> Void) -> some View {
+    private func actionCard(
+        title: String,
+        icon: String,
+        color: Color,
+        isBusy: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
         Button(action: action) {
             VStack(spacing: HHTheme.spaceS) {
-                Image(systemName: icon)
-                    .font(.title2)
-                    .foregroundStyle(color)
-                    .frame(height: 32)
+                ZStack {
+                    if isBusy {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: icon)
+                            .font(.title2)
+                            .foregroundStyle(color)
+                    }
+                }
+                .frame(height: 32)
                 Text(title)
                     .font(HHTheme.caption.weight(.medium))
                     .foregroundStyle(HHTheme.textPrimary)
@@ -167,10 +193,11 @@ struct DashboardView: View {
             .frame(maxWidth: .infinity)
             .padding(.vertical, HHTheme.spaceL)
             .hhCard(cornerRadius: HHTheme.cornerMedium)
-            // Hover/press effect simulation using theme animation
             .contentShape(Rectangle())
+            .opacity(isBusy ? 0.7 : 1.0)
         }
         .buttonStyle(.plain)
+        .disabled(isBusy)
     }
 
     // MARK: - Recent Activities
@@ -178,10 +205,20 @@ struct DashboardView: View {
     @ViewBuilder
     private var recentActivities: some View {
         VStack(alignment: .leading, spacing: HHTheme.spaceM) {
-            Text("Recent Activity")
-                .font(HHTheme.title3)
-                .foregroundStyle(HHTheme.textPrimary)
-                .padding(.bottom, HHTheme.spaceXS)
+            HStack(alignment: .firstTextBaseline) {
+                Text("Nedávné konverzace")
+                    .font(HHTheme.title3)
+                    .foregroundStyle(HHTheme.textPrimary)
+                Spacer()
+                if !conversationService.conversations.isEmpty {
+                    Button("Zobrazit vše") {
+                        appState.selectedTab = .chat
+                    }
+                    .font(HHTheme.footnote)
+                    .foregroundStyle(HHTheme.accent)
+                }
+            }
+            .padding(.bottom, HHTheme.spaceXS)
             
             // Recent Chats
             let recentChats = Array(conversationService.conversations.prefix(3))
@@ -211,9 +248,12 @@ struct DashboardView: View {
                     .buttonStyle(.plain)
                 }
             } else {
-                Text("No recent conversations.")
+                Text("Zatím žádné konverzace.")
                     .font(HHTheme.footnote)
                     .foregroundStyle(HHTheme.textSecondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(HHTheme.spaceL)
+                    .hhCard()
             }
         }
     }
@@ -229,14 +269,25 @@ struct DashboardView: View {
             memoryHeadroom = result
         }
     }
-    
+
+    @MainActor
+    private func startNewChat() async {
+        guard !isStartingNewChat else { return }
+        isStartingNewChat = true
+        HHHaptics.impact(.medium, enabled: settings.current.haptics)
+        let conversation = await conversationService.createConversation()
+        appState.selectedTab = .chat
+        appState.handle(deepLink: .conversation(conversation.id))
+        isStartingNewChat = false
+    }
+
     private func headroomLabel(for h: RuntimeManager.MemoryHeadroom?) -> String {
-        guard let h else { return "Computing..." }
+        guard let h else { return "počítá se…" }
         switch h {
-        case .high:    return "Generous"
-        case .medium:  return "Moderate"
-        case .low:     return "Tight"
-        case .unknown: return "Unknown"
+        case .high:    return "Dostatek"
+        case .medium:  return "Střední"
+        case .low:     return "Málo"
+        case .unknown: return "Neznámé"
         }
     }
     
