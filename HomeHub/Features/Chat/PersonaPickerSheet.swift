@@ -10,6 +10,14 @@ struct PersonaPickerSheet: View {
         GridItem(.flexible(), spacing: 16)
     ]
     
+    private var builtInPresets: [SystemPromptPreset] {
+        settings.current.systemPromptPresets.filter { $0.isBuiltIn }
+    }
+
+    private var customPresets: [SystemPromptPreset] {
+        settings.current.systemPromptPresets.filter { !$0.isBuiltIn }
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -19,13 +27,10 @@ struct PersonaPickerSheet: View {
                         .foregroundStyle(HHTheme.textSecondary)
                         .padding(.horizontal)
                         .padding(.top, 8)
-                    
-                    LazyVGrid(columns: columns, spacing: 16) {
-                        ForEach(settings.current.systemPromptPresets) { preset in
-                            personaCard(for: preset)
-                        }
-                    }
-                    .padding(.horizontal)
+
+                    section(title: "Vestavěné", presets: builtInPresets)
+
+                    customSection
                 }
                 .padding(.bottom, 32)
             }
@@ -38,6 +43,89 @@ struct PersonaPickerSheet: View {
                         dismiss()
                     }
                 }
+                ToolbarItem(placement: .topBarTrailing) {
+                    NavigationLink {
+                        SystemPromptManagerView()
+                    } label: {
+                        Image(systemName: "slider.horizontal.3")
+                    }
+                    .accessibilityLabel("Spravovat osobnosti")
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func section(title: String, presets: [SystemPromptPreset]) -> some View {
+        if !presets.isEmpty {
+            VStack(alignment: .leading, spacing: 12) {
+                Text(title)
+                    .font(HHTheme.caption.weight(.semibold))
+                    .foregroundStyle(HHTheme.textSecondary)
+                    .textCase(.uppercase)
+                    .padding(.horizontal)
+
+                LazyVGrid(columns: columns, spacing: 16) {
+                    ForEach(presets) { preset in
+                        personaCard(for: preset)
+                    }
+                }
+                .padding(.horizontal)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var customSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Vlastní")
+                .font(HHTheme.caption.weight(.semibold))
+                .foregroundStyle(HHTheme.textSecondary)
+                .textCase(.uppercase)
+                .padding(.horizontal)
+
+            if customPresets.isEmpty {
+                NavigationLink {
+                    SystemPromptManagerView()
+                } label: {
+                    HStack(spacing: HHTheme.spaceM) {
+                        Image(systemName: "plus.circle.fill")
+                            .font(.title3)
+                            .foregroundStyle(HHTheme.accent)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Vytvořit vlastní osobnost")
+                                .font(HHTheme.subheadline.weight(.medium))
+                                .foregroundStyle(HHTheme.textPrimary)
+                            Text("Definuj si vlastní systémový prompt.")
+                                .font(HHTheme.caption)
+                                .foregroundStyle(HHTheme.textSecondary)
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(HHTheme.textSecondary.opacity(0.5))
+                    }
+                    .padding(16)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(
+                        RoundedRectangle(cornerRadius: HHTheme.cornerMedium, style: .continuous)
+                            .fill(HHTheme.surface)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: HHTheme.cornerMedium, style: .continuous)
+                            .stroke(HHTheme.stroke, style: StrokeStyle(lineWidth: 1, dash: [4]))
+                    )
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal)
+            } else {
+                LazyVGrid(columns: columns, spacing: 16) {
+                    ForEach(customPresets) { preset in
+                        personaCard(for: preset)
+                    }
+                }
+                .padding(.horizontal)
             }
         }
     }
