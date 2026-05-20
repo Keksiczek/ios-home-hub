@@ -1241,7 +1241,19 @@ final class ConversationService: ObservableObject {
         )
         parameters.conversationID = conversationID
 
-        let maxLoops = 3
+        // Agentic tool loop ceiling. Loops 1…(maxLoops-1) may emit a tool
+        // call; the FINAL allowed loop is a forced synthesis pass — we
+        // don't parse it for another action, so the model always gets one
+        // turn to turn its observations into a real answer. With
+        // maxLoops = 4 that's up to 3 tool calls followed by a guaranteed
+        // textual reply.
+        //
+        // This also fixes a latent bug: previously, if the model emitted a
+        // tool call on the last permitted loop, the code reset the assistant
+        // content to "" for a follow-up stream that the `while` condition
+        // then prevented from running — leaving the user with an empty,
+        // permanently-`.streaming` bubble.
+        let maxLoops = 4
         var currentLoop = 0
         var loopPackage = package
 
@@ -1254,6 +1266,7 @@ final class ConversationService: ObservableObject {
             // `runtime.generate(...)`.
             if Task.isCancelled { break }
             currentLoop += 1
+            let isFinalAllowedLoop = (currentLoop == maxLoops)
 
             // Re-pick sampling params for the current loop's mode. The
             // first iteration is `.chat`; subsequent iterations after a
@@ -1417,8 +1430,11 @@ final class ConversationService: ObservableObject {
                 break
             }
 
-            // Check for Agentic Action
-            if assistantMessage.status == .complete {
+            // Check for Agentic Action. Skipped on the final allowed loop
+            // — that pass is reserved for synthesis, so we keep whatever
+            // text the model produced rather than resetting it for a
+            // follow-up stream that would never run.
+            if assistantMessage.status == .complete && !isFinalAllowedLoop {
                 if let actionCommand = await SkillManager.shared.parseAction(from: assistantMessage.content) {
                     HHLog.tool.info("loop \(currentLoop) → \(actionCommand.skillName, privacy: .public)")
 
@@ -1482,6 +1498,19 @@ final class ConversationService: ObservableObject {
             } else {
                 assistantMessage.status = .cancelled
             }
+            messagesByConversation[conversationID]?[assistantIndex] = assistantMessage
+            try? await store.save(message: assistantMessage)
+        }
+
+        // Defensive finalize: if we left the agentic loop with the
+        // assistant still `.streaming` and empty (no token ever landed —
+        // e.g. the model only ever emitted tool envelopes), surface a
+        // graceful fallback instead of an empty bubble that spins forever.
+        if assistantMessage.status == .streaming,
+           assistantMessage.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           !Task.isCancelled {
+            assistantMessage.status = .failed
+            assistantMessage.content = emptyResponseFallbackMessage()
             messagesByConversation[conversationID]?[assistantIndex] = assistantMessage
             try? await store.save(message: assistantMessage)
         }

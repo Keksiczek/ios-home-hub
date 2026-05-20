@@ -361,27 +361,42 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
             )
         }
 
-        // Pre-load memory check: compare estimated footprint (weights ×
-        // 1.35 to cover KV cache + Metal scratch + temporary buffers
-        // during de-quantisation) against `os_proc_available_memory()`,
-        // which returns the headroom in the per-process EVA sandbox.
-        // Failing fast here turns the classic "app silently jetsam'd
-        // mid-load" symptom into an actionable typed error.
+        // Pre-load memory check. This is a LAST-RESORT guard against the
+        // hopeless case, NOT the primary feasibility gate — `RuntimeManager`
+        // already runs `evaluateFeasibility` and the user explicitly opts
+        // in to risky loads ("Load anyway"). So this only hard-fails when
+        // even a generously-paged load can't possibly work, and otherwise
+        // lets the attempt proceed (the memory-pressure handler + jetsam
+        // are the backstop).
         //
-        // Skipped when we don't yet know the size (cold cache, no
-        // weights downloaded) — the loader's own progress path covers
-        // that case and the runtime memory-pressure handler unloads if
-        // we get unlucky.
+        // Why the old `weights × 1.35 > available` gate was wrong:
+        //   * MLX memory-maps the weight files — read-only weight pages are
+        //     file-backed (clean) and can be evicted/reloaded by the VM, so
+        //     they don't count fully against `os_proc_available_memory()`'s
+        //     dirty-memory budget. Comparing raw file size to that budget
+        //     refuses models that actually run fine.
+        //   * Architectures like Gemma 3n (Per-Layer Embeddings / MatFormer)
+        //     have a resident footprint well below their on-disk size, so a
+        //     flat 1.35× multiplier over-estimates badly and blocked models
+        //     other apps load without issue.
+        //
+        // We now only refuse when the raw weights exceed ~2× the available
+        // budget — past that, paging thrashes hopelessly regardless of
+        // architecture. Everything below that is allowed to try.
         if preflight.totalWeightsBytes > 0 {
-            let estimatedFootprint = Int64(Double(preflight.totalWeightsBytes) * 1.35)
+            let raw = preflight.totalWeightsBytes
             let available = Int64(os_proc_available_memory())
-            if available > 0, estimatedFootprint > available {
-                let mbEstimated = estimatedFootprint / 1_048_576
-                let mbAvailable = available / 1_048_576
-                self.log.error("MLX: Pre-load memory check failed — model needs ~\(mbEstimated) MB, only \(mbAvailable) MB available")
+            let mbRaw = raw / 1_048_576
+            let mbAvailable = available / 1_048_576
+            if available > 0, raw > available * 2 {
+                self.log.error("MLX: Pre-load memory check failed — weights ~\(mbRaw) MB exceed 2× available \(mbAvailable) MB; refusing")
                 throw RuntimeError.outOfMemory
             }
-            self.log.info("MLX: Pre-load memory OK — estimated \(estimatedFootprint / 1_048_576) MB, available \(available / 1_048_576) MB")
+            if available > 0, raw > available {
+                self.log.notice("MLX: tight memory — weights ~\(mbRaw) MB vs \(mbAvailable) MB available; attempting load anyway (mmap-backed weights may still fit)")
+            } else {
+                self.log.info("MLX: Pre-load memory OK — weights \(mbRaw) MB, available \(mbAvailable) MB")
+            }
         }
 
         // autoreleasepool drains Objective-C temporaries created during synchronous

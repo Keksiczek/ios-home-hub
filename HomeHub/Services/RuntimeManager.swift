@@ -573,9 +573,20 @@ final class RuntimeManager: ObservableObject {
         guard let avail = available ?? availableMemoryBytes() else { return nil }
         let raw = model.sizeBytes
         let safe = Int64(Double(model.sizeBytes) * memorySafetyFactor(for: profile))
+        // mmap headroom: MLX memory-maps weight files, so read-only weight
+        // pages are file-backed (clean) and can be paged in/out by the VM —
+        // they don't count fully against `os_proc_available_memory()`'s
+        // dirty budget. A model whose raw size modestly exceeds the budget
+        // can therefore still load (other apps do it), and architectures
+        // like Gemma 3n (Per-Layer Embeddings) have a resident footprint
+        // well below file size. So the "impossible" floor is raw scaled
+        // down by a paging-tolerance factor rather than the raw size itself.
+        // Everything between the floor and the safe margin is `.risky`
+        // (allowed under the user's explicit opt-in), not a hard refusal.
+        let mmapFloor = Int64(Double(raw) * 0.66)
         if avail >= safe {
             return .safe(headroomBytes: avail - safe)
-        } else if avail >= raw {
+        } else if avail >= mmapFloor {
             return .risky(requiredBytes: safe, availableBytes: avail)
         } else {
             return .cannotLoad(requiredBytes: raw, availableBytes: avail)

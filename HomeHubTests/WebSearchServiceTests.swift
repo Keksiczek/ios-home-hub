@@ -79,4 +79,57 @@ final class WebSearchServiceTests: XCTestCase {
             XCTFail("Unexpected error: \(error)")
         }
     }
+
+    // MARK: - parseHits (HTML parser)
+    //
+    // Regression coverage for the live DDG Lite markup. The parser
+    // previously required `class` to appear before `href` inside the
+    // anchor; DDG emits `href` first, so every search silently returned
+    // zero hits. These fixtures lock in attribute-order independence.
+
+    /// Realistic DDG Lite fragment: `href` precedes `class`, URLs are
+    /// direct (no `/l/?uddg=` redirect), snippet sits in the next row.
+    private var ddgLiteFixture: String {
+        """
+        <table>
+          <tr><td>1.&nbsp;</td><td>
+            <a rel="nofollow" href="https://github.com/ml-explore/mlx" class='result-link'>ml-explore/mlx</a>
+          </td></tr>
+          <tr><td>&nbsp;</td><td class='result-snippet'>MLX is an array framework for Apple silicon.</td></tr>
+          <tr><td>2.&nbsp;</td><td>
+            <a rel="nofollow" href="https://opensource.apple.com/projects/mlx/" class='result-link'>Apple MLX</a>
+          </td></tr>
+          <tr><td>&nbsp;</td><td class='result-snippet'>Open source machine learning on Apple devices.</td></tr>
+        </table>
+        """
+    }
+
+    func testParseHits_ExtractsTitleURLSnippet_HrefBeforeClass() {
+        let hits = WebSearchService.parseHits(from: ddgLiteFixture, limit: 5)
+        XCTAssertEqual(hits.count, 2, "Both result-link anchors must be parsed")
+        XCTAssertEqual(hits[0].title, "ml-explore/mlx")
+        XCTAssertEqual(hits[0].url, "https://github.com/ml-explore/mlx")
+        XCTAssertEqual(hits[0].snippet, "MLX is an array framework for Apple silicon.")
+        XCTAssertEqual(hits[1].url, "https://opensource.apple.com/projects/mlx/")
+    }
+
+    func testParseHits_StillWorksWhenClassBeforeHref() {
+        // Defend against DDG flipping the order back — the parser must be
+        // order-independent, not just tuned to today's markup.
+        let html = "<a class='result-link' href='https://example.com'>Example</a>"
+            + "<td class='result-snippet'>Snip</td>"
+        let hits = WebSearchService.parseHits(from: html, limit: 5)
+        XCTAssertEqual(hits.count, 1)
+        XCTAssertEqual(hits[0].url, "https://example.com")
+        XCTAssertEqual(hits[0].title, "Example")
+    }
+
+    func testParseHits_RespectsLimit() {
+        let hits = WebSearchService.parseHits(from: ddgLiteFixture, limit: 1)
+        XCTAssertEqual(hits.count, 1)
+    }
+
+    func testParseHits_EmptyHTMLYieldsNoHits() {
+        XCTAssertTrue(WebSearchService.parseHits(from: "<html></html>", limit: 5).isEmpty)
+    }
 }
