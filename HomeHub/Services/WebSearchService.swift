@@ -170,23 +170,31 @@ enum WebSearchService {
 
     /// Parses DDG Lite's no-JS HTML response.
     ///
-    /// Output structure (stable since 2017):
-    ///   <tr><td …><a class='result-link' href='…'>TITLE</a></td></tr>
+    /// Output structure:
+    ///   <tr><td …><a rel='nofollow' href='…' class='result-link'>TITLE</a></td></tr>
     ///   <tr><td class='result-snippet'>SNIPPET</td></tr>
     ///   <tr>(metadata)</tr>
     ///
     /// We pair every `result-link` with the next `result-snippet`.
     /// Failures degrade gracefully: a missing snippet still yields a hit
     /// (title + URL), a missing link skips the row entirely.
+    ///
+    /// NOTE: DDG emits the anchor attributes in `href … class` order
+    /// (not `class … href`), and the old single-pass pattern that
+    /// required `class` *before* `href` silently matched zero results —
+    /// every web search returned "no results". We now match the whole
+    /// `result-link` anchor regardless of attribute order and pull
+    /// `href` out of the captured attribute blob in a second pass.
     static func parseHits(from html: String, limit: Int) -> [Hit] {
-        let titles = matches(in: html, pattern: "<a[^>]+class=['\"]result-link['\"][^>]+href=['\"]([^'\"]+)['\"][^>]*>(.*?)</a>")
+        let anchors = matches(in: html, pattern: "<a\\b([^>]*\\bclass=['\"]result-link['\"][^>]*)>(.*?)</a>")
         let snippets = matches(in: html, pattern: "<td[^>]+class=['\"]result-snippet['\"][^>]*>(.*?)</td>")
 
         var out: [Hit] = []
-        for (i, match) in titles.enumerated() {
+        for (i, match) in anchors.enumerated() {
             guard match.count >= 3 else { continue }
-            let rawURL = match[1]
+            let attrs = match[1]
             let rawTitle = match[2]
+            let rawURL = firstCapture(in: attrs, pattern: "href=['\"]([^'\"]+)['\"]") ?? ""
             let snippet = i < snippets.count && snippets[i].count >= 2 ? snippets[i][1] : ""
             let resolvedURL = resolveDDGRedirect(rawURL)
             let cleanTitle = stripHTML(rawTitle)
@@ -196,6 +204,15 @@ enum WebSearchService {
             if out.count >= limit { break }
         }
         return out
+    }
+
+    /// First capture group of `pattern` in `haystack`, or `nil` if no
+    /// match. Used to pull a single attribute (e.g. `href`) out of an
+    /// already-matched tag without caring where it sits in the tag.
+    private static func firstCapture(in haystack: String, pattern: String) -> String? {
+        guard let first = matches(in: haystack, pattern: pattern).first,
+              first.count >= 2 else { return nil }
+        return first[1]
     }
 
     /// DDG Lite wraps every result URL in a `/l/?uddg=<encoded>` redirect.
