@@ -148,6 +148,19 @@ final class MLXBackgroundDownloader: NSObject, ObservableObject, BackgroundDownl
     private var jobMap: [String: MLXDownloadJob] = [:]
     /// Progress-throttle timestamps (per model).
     private var lastProgressYield: [String: ContinuousClock.Instant] = [:]
+    /// taskIdentifier → bytes written so far for the *in-flight* file.
+    /// Summed across ALL of a model's active tasks when computing
+    /// progress — using only the single firing task's byte count made
+    /// the bar jump erratically while several files downloaded in
+    /// parallel. Cleared when a task completes / fails. Not persisted:
+    /// in-flight byte counts restart from the system on relaunch.
+    private var inFlightBytes: [Int: Int64] = [:]
+    /// "modelID|rfilename" → consecutive transient-failure count. Lets a
+    /// single flaky file retry a few times instead of tearing down the
+    /// whole multi-file model download on the first network blip.
+    private var fileRetryCounts: [String: Int] = [:]
+    /// Max transient retries per file before the whole job is failed.
+    private static let maxFileRetries = 3
     /// System background-session completion handler stored by AppDelegate.
     private var systemCompletionHandler: (() -> Void)?
 
@@ -432,17 +445,26 @@ extension MLXBackgroundDownloader: URLSessionDownloadDelegate {
         }
         guard !modelID.isEmpty else { return }
 
-        // Update running byte tally for the job
+        // Update running byte tally for the job. We sum:
+        //   completed-file sizes  +  in-flight bytes of EVERY active task
+        // for this model. The previous version added only the single
+        // firing task's `totalBytesWritten`, so with N files downloading
+        // in parallel the bar reflected just one file at a time and
+        // jumped around (and could appear to "start" partway through when
+        // a large shard's callback landed first).
         serialQueue.sync {
             guard var job = jobMap[modelID] else { return }
-            // Add bytes written since last callback (delta approach)
-            // Simple: recompute from all completed files + current file progress
+            inFlightBytes[downloadTask.taskIdentifier] =
+                totalBytesExpectedToWrite > 0 ? totalBytesWritten : 0
             let completedBytes = job.files
                 .filter { job.completedFiles.contains($0.rfilename) }
                 .compactMap(\.size)
                 .reduce(Int64(0), +)
-            let currentFileBytes = totalBytesExpectedToWrite > 0 ? totalBytesWritten : 0
-            job.downloadedBytes = completedBytes + currentFileBytes
+            let inflight = taskMap
+                .filter { $0.value.modelID == modelID }
+                .keys
+                .reduce(Int64(0)) { $0 + (inFlightBytes[$1] ?? 0) }
+            job.downloadedBytes = completedBytes + inflight
             jobMap[modelID] = job
         }
 
@@ -487,7 +509,10 @@ extension MLXBackgroundDownloader: URLSessionDownloadDelegate {
                 userInfo: [NSLocalizedDescriptionKey: userMessage]
             )
             log.error("MLX: HTTP \(http.statusCode) for '\(fileTask.rfilename, privacy: .public)'")
-            handleFileFailure(fileTask: fileTask, error: err)
+            // 429 (rate limit) and 5xx are worth retrying; 4xx (auth /
+            // not-found) are permanent and should fail the job fast.
+            let retryable = http.statusCode == 429 || (500..<600).contains(http.statusCode)
+            handleFileFailure(fileTask: fileTask, error: err, transient: retryable)
             return
         }
 
@@ -504,13 +529,17 @@ extension MLXBackgroundDownloader: URLSessionDownloadDelegate {
             try FileManager.default.moveItem(at: location, to: dest)
         } catch {
             log.error("MLX: File move failed for '\(fileTask.rfilename, privacy: .public)': \(error.localizedDescription, privacy: .public)")
-            handleFileFailure(fileTask: fileTask, error: error)
+            // Local filesystem failure (disk full, permissions) — not
+            // worth retrying the network download.
+            handleFileFailure(fileTask: fileTask, error: error, transient: false)
             return
         }
 
         // Mark file complete in job.
         let jobComplete: Bool = serialQueue.sync {
             taskMap.removeValue(forKey: downloadTask.taskIdentifier)
+            inFlightBytes.removeValue(forKey: downloadTask.taskIdentifier)
+            fileRetryCounts.removeValue(forKey: "\(fileTask.modelID)|\(fileTask.rfilename)")
             guard var job = jobMap[fileTask.modelID] else { return false }
             job.completedFiles.insert(fileTask.rfilename)
             // Recompute downloaded bytes now that this file is done
@@ -540,6 +569,7 @@ extension MLXBackgroundDownloader: URLSessionDownloadDelegate {
                 self.serialQueue.sync {
                     self.jobMap.removeValue(forKey: modelID)
                     self.lastProgressYield.removeValue(forKey: modelID)
+                    self.fileRetryCounts = self.fileRetryCounts.filter { !$0.key.hasPrefix("\(modelID)|") }
                 }
                 self.persistState()
                 self.activeDownloads.remove(modelID)
@@ -560,8 +590,18 @@ extension MLXBackgroundDownloader: URLSessionDownloadDelegate {
             taskMap[task.taskIdentifier]
         }
         guard let fileTask else { return }
+        // A user/lifecycle cancellation arrives here as URLError.cancelled —
+        // never retry it (the job was deliberately stopped) and don't fire
+        // onFailed for it either: cancelDownload already cleaned up, so
+        // jobMap[modelID] is gone and handleFileFailure will no-op to abort
+        // with no active job (the @MainActor onFailed still fires but the
+        // model is already back to .notInstalled). Guard explicitly.
+        if (error as? URLError)?.code == .cancelled {
+            log.info("MLX: Task cancelled for '\(fileTask.rfilename, privacy: .public)' — not retrying")
+            return
+        }
         log.error("MLX: Task failed for '\(fileTask.rfilename, privacy: .public)': \(error.localizedDescription, privacy: .public)")
-        handleFileFailure(fileTask: fileTask, error: error)
+        handleFileFailure(fileTask: fileTask, error: error, transient: Self.isTransient(error))
     }
 
     func urlSessionDidFinishEvents(forBackgroundURLSession _: URLSession) {
@@ -576,20 +616,95 @@ extension MLXBackgroundDownloader: URLSessionDownloadDelegate {
 
     // MARK: - Error path
 
-    private func handleFileFailure(fileTask: MLXFileTask, error: Error) {
+    /// `true` for errors worth retrying the single file over (network
+    /// drops, server 5xx / 429). Permanent failures (auth, 404, disk,
+    /// cancellation) return `false` so the job fails fast instead of
+    /// burning retries on something that will never succeed.
+    private static func isTransient(_ error: Error) -> Bool {
+        let urlErr = error as? URLError
+        switch urlErr?.code {
+        case .timedOut, .networkConnectionLost, .notConnectedToInternet,
+             .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed,
+             .dataNotAllowed, .internationalRoamingOff, .resourceUnavailable:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Handles a single file's failure. Transient errors retry the file
+    /// (up to `maxFileRetries`, with exponential backoff) so one flaky
+    /// shard doesn't abort an otherwise-healthy multi-file download —
+    /// the previous behaviour nuked the entire job on the first error,
+    /// which is why large downloads "often didn't finish" on mobile
+    /// networks. Permanent errors / exhausted retries fail the whole job.
+    private func handleFileFailure(fileTask: MLXFileTask, error: Error, transient: Bool) {
         let modelID = fileTask.modelID
-        serialQueue.sync {
+        let retryKey = "\(modelID)|\(fileTask.rfilename)"
+
+        enum Decision { case retry(repoId: String, dest: String, attempt: Int); case abort }
+        let decision: Decision = serialMutate {
+            guard let job = jobMap[modelID] else { return .abort }
+            let attempt = (fileRetryCounts[retryKey] ?? 0) + 1
+            // Drop the dead task mapping for the failed file regardless
+            // of the decision so it can't linger in `taskMap`.
+            let deadTIDs = taskMap
+                .filter { $0.value.modelID == modelID && $0.value.rfilename == fileTask.rfilename }
+                .map(\.key)
+            for k in deadTIDs {
+                taskMap.removeValue(forKey: k)
+                inFlightBytes.removeValue(forKey: k)
+            }
+            if transient && attempt <= Self.maxFileRetries {
+                fileRetryCounts[retryKey] = attempt
+                return .retry(repoId: job.repoId, dest: fileTask.destinationPath, attempt: attempt)
+            }
+            // Permanent / exhausted — tear down the whole job.
             let stale = taskMap.filter { $0.value.modelID == modelID }.map(\.key)
-            for k in stale { taskMap.removeValue(forKey: k) }
+            for k in stale {
+                taskMap.removeValue(forKey: k)
+                inFlightBytes.removeValue(forKey: k)
+            }
             jobMap.removeValue(forKey: modelID)
             lastProgressYield.removeValue(forKey: modelID)
+            fileRetryCounts = fileRetryCounts.filter { !$0.key.hasPrefix("\(modelID)|") }
+            return .abort
         }
         persistState()
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            self.activeDownloads.remove(modelID)
-            self.downloadProgress.removeValue(forKey: modelID)
-            self.onFailed?(modelID, error)
+
+        switch decision {
+        case .retry(let repoId, let dest, let attempt):
+            // Exponential backoff (1s, 2s, 4s) capped — re-enqueue OUTSIDE
+            // the serial queue (URLSession contract #1). A fresh download
+            // task replaces the dead one; the destination path is unchanged
+            // so `didFinishDownloadingTo` lands it exactly where expected.
+            let backoff = pow(2.0, Double(attempt - 1))
+            log.notice("MLX: retrying '\(fileTask.rfilename, privacy: .public)' for '\(modelID, privacy: .public)' in \(backoff, format: .fixed(precision: 0))s (attempt \(attempt)/\(Self.maxFileRetries))")
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + backoff) { [weak self] in
+                guard let self else { return }
+                // Bail if the job was cancelled / completed while we waited.
+                let stillActive = self.serialRead { self.jobMap[modelID] != nil }
+                guard stillActive else { return }
+                let url = HuggingFaceAPIClient.downloadURL(repoId: repoId, filename: fileTask.rfilename)
+                var request = URLRequest(url: url)
+                HuggingFaceAPIClient.applyAuthorization(to: &request)
+                let task = self.session.downloadTask(with: request)
+                let newFileTask = MLXFileTask(
+                    modelID: modelID,
+                    rfilename: fileTask.rfilename,
+                    destinationPath: dest
+                )
+                self.serialMutate { self.taskMap[task.taskIdentifier] = newFileTask }
+                self.persistState()
+                task.resume()
+            }
+        case .abort:
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.activeDownloads.remove(modelID)
+                self.downloadProgress.removeValue(forKey: modelID)
+                self.onFailed?(modelID, error)
+            }
         }
     }
 
