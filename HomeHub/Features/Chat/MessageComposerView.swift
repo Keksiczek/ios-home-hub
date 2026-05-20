@@ -90,9 +90,9 @@ struct MessageComposerView: View {
                         isWebSearchEnabled.toggle()
                     } label: {
                         if isWebSearchEnabled {
-                            Label("Search web", systemImage: "checkmark")
+                            Label("Hledat na webu", systemImage: "checkmark")
                         } else {
-                            Label("Search web", systemImage: "globe")
+                            Label("Hledat na webu", systemImage: "globe")
                         }
                     }
                 } label: {
@@ -109,7 +109,7 @@ struct MessageComposerView: View {
                 // Text field with an inline web-search chip (right-aligned
                 // suffix). Small, non-agressive, auto-hides when off.
                 HStack(alignment: .bottom, spacing: HHTheme.spaceS) {
-                    TextField("Message", text: $draft, axis: .vertical)
+                    TextField("Zpráva", text: $draft, axis: .vertical)
                         .lineLimit(1...6)
                         .font(HHTheme.body)
 
@@ -131,7 +131,7 @@ struct MessageComposerView: View {
                         }
                         .buttonStyle(.plain)
                         .transition(.opacity.combined(with: .scale(scale: 0.9)))
-                        .accessibilityLabel("Web search on. Tap to disable.")
+                        .accessibilityLabel("Webové vyhledávání zapnuto. Klepnutím vypneš.")
                     }
                 }
                 .padding(.horizontal, HHTheme.spaceL)
@@ -151,7 +151,7 @@ struct MessageComposerView: View {
                             .font(.system(size: 34))
                             .foregroundStyle(HHTheme.danger)
                     }
-                    .accessibilityLabel("Stop")
+                    .accessibilityLabel("Zastavit")
                 } else {
                     let enableSend = canSend || !attachments.isEmpty
                     Button {
@@ -166,7 +166,7 @@ struct MessageComposerView: View {
                             .foregroundStyle(enableSend ? HHTheme.accent : HHTheme.textSecondary.opacity(0.3))
                     }
                     .disabled(!enableSend)
-                    .accessibilityLabel("Send")
+                    .accessibilityLabel("Odeslat")
                 }
             }
             .padding(.horizontal, HHTheme.spaceL)

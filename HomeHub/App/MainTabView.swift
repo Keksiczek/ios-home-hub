@@ -76,6 +76,7 @@ struct MainTabView: View {
                     .tag(tab)
             }
             .navigationTitle("HomeHub")
+            // (brand name — intentionally untranslated)
             .navigationSplitViewColumnWidth(min: 180, ideal: 220, max: 260)
             .listStyle(.sidebar)
         } detail: {
@@ -103,7 +104,7 @@ struct MainTabView: View {
             HStack(spacing: 12) {
                 ProgressView()
                     .controlSize(.small)
-                Text("Loading \(modelID.split(separator: "/").last ?? "model")…")
+                Text("Načítám \(modelID.split(separator: "/").last ?? "model")…")
                     .font(HHTheme.caption.weight(.medium))
                     .foregroundStyle(HHTheme.textSecondary)
             }

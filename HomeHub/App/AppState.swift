@@ -82,12 +82,12 @@ enum MainTab: Hashable, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .dashboard:     return "Home"
+        case .dashboard:     return "Domů"
         case .chat:          return "Chat"
-        case .knowledgeBase: return "Documents"
-        case .memory:        return "Memory"
-        case .models:        return "Models"
-        case .settings:      return "Settings"
+        case .knowledgeBase: return "Dokumenty"
+        case .memory:        return "Paměť"
+        case .models:        return "Modely"
+        case .settings:      return "Nastavení"
         }
     }
 

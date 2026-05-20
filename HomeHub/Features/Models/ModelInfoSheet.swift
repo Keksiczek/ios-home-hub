@@ -28,15 +28,15 @@ struct ModelInfoSheet: View {
         NavigationStack {
             List {
                 // ── Live status ──────────────────────────────────────────────
-                Section("Status") {
+                Section("Stav") {
                     statusRows
                 }
 
                 // ── Runtime ──────────────────────────────────────────────────
                 Section("Runtime") {
                     row("Backend", model.backend.displayName)
-                    row("Format",  model.format.rawValue)
-                    row("Safe mode", safeModeLabel)
+                    row("Formát",  model.format.rawValue)
+                    row("Bezpečný režim", safeModeLabel)
                     if !model.isUsableInThisBuild, let reason = model.unavailableReason {
                         Label(reason, systemImage: "exclamationmark.triangle.fill")
                             .font(.caption)
@@ -59,33 +59,33 @@ struct ModelInfoSheet: View {
                 }
 
                 // ── Identity ─────────────────────────────────────────────────
-                Section("Identity") {
-                    row("Family",       model.family)
-                    row("Parameters",   model.parameterCount)
-                    row("Quantization", model.quantization)
+                Section("Identita") {
+                    row("Rodina",       model.family)
+                    row("Parametry",    model.parameterCount)
+                    row("Kvantizace",   model.quantization)
                 }
 
                 // ── Model metadata (from GGUF header when available) ─────────
                 modelMetadataSection
 
                 // ── Requirements ─────────────────────────────────────────────
-                Section("Requirements") {
-                    row("File size",    model.sizeFormatted)
-                    row("RAM estimate", estimatedRAM)
-                    row("Context",      "\(model.contextLength) tokens")
+                Section("Požadavky") {
+                    row("Velikost souboru", model.sizeFormatted)
+                    row("Odhad RAM",        estimatedRAM)
+                    row("Kontext",          "\(model.contextLength) tokenů")
                 }
 
                 // ── Memory estimate + oracle verdict ────────────────────────
                 memoryEstimateSection
 
                 // ── Source ───────────────────────────────────────────────────
-                Section("Source") {
-                    row("License", model.license)
+                Section("Zdroj") {
+                    row("Licence", model.license)
                     row("Host",    downloadHost)
                     if let repoId = model.repoId {
                         Link(destination: URL(string: "https://huggingface.co/\(repoId)")!) {
                             HStack {
-                                Label("Open Hugging Face", systemImage: "safari")
+                                Label("Otevřít Hugging Face", systemImage: "safari")
                                 Spacer()
                                 Image(systemName: "arrow.up.forward.app")
                                     .font(.caption)

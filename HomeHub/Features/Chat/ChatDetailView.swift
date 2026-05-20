@@ -126,7 +126,7 @@ struct ChatDetailView: View {
                                 }
                             }
                         } label: {
-                            Label("Jump to live", systemImage: "arrow.down.circle.fill")
+                            Label("Skočit dolů", systemImage: "arrow.down.circle.fill")
                                 .font(HHTheme.caption.weight(.semibold))
                                 .padding(.horizontal, HHTheme.spaceM)
                                 .padding(.vertical, 8)
@@ -200,7 +200,7 @@ struct ChatDetailView: View {
         .searchable(
             text: $inChatSearch,
             placement: .navigationBarDrawer(displayMode: .automatic),
-            prompt: "Find in chat"
+            prompt: "Hledat v chatu"
         )
         .toolbar {
             if settings.current.showTokenUsage {
@@ -237,7 +237,7 @@ struct ChatDetailView: View {
                             renameText = conversationTitle
                             showingRename = true
                         } label: {
-                            Label("Rename…", systemImage: "pencil")
+                            Label("Přejmenovat…", systemImage: "pencil")
                         }
 
                         // Toggle the bookmark filter from the same
@@ -248,14 +248,14 @@ struct ChatDetailView: View {
                             showBookmarksOnly.toggle()
                         } label: {
                             Label(
-                                showBookmarksOnly ? "Show all messages" : "Show bookmarks only",
+                                showBookmarksOnly ? "Zobrazit všechny zprávy" : "Jen záložky",
                                 systemImage: showBookmarksOnly ? "bookmark.slash" : "bookmark.fill"
                             )
                         }
                         .disabled(!hasAnyBookmark && !showBookmarksOnly)
 
                         ShareLink(item: exportText) {
-                            Label("Export", systemImage: "square.and.arrow.up")
+                            Label("Exportovat", systemImage: "square.and.arrow.up")
                         }
                         .disabled(messages.isEmpty)
 
@@ -274,9 +274,9 @@ struct ChatDetailView: View {
                             }
                         } label: {
                             if isSummarizingManually {
-                                Label("Summarizing…", systemImage: "hourglass")
+                                Label("Shrnuji…", systemImage: "hourglass")
                             } else {
-                                Label("Summarize now", systemImage: "text.append")
+                                Label("Shrnout teď", systemImage: "text.append")
                             }
                         }
                         .disabled(messages.count < 4 || isStreaming || isSummarizingManually || runtime.activeModel == nil)
@@ -286,7 +286,7 @@ struct ChatDetailView: View {
                         Button(role: .destructive) {
                             showingClearConfirm = true
                         } label: {
-                            Label("Clear conversation", systemImage: "trash")
+                            Label("Vymazat konverzaci", systemImage: "trash")
                         }
                         .disabled(messages.isEmpty || isStreaming)
                     } label: {
@@ -295,14 +295,14 @@ struct ChatDetailView: View {
                 }
             }
         }
-        .alert("Rename conversation", isPresented: $showingRename) {
-            TextField("Title", text: $renameText)
-            Button("Rename") {
+        .alert("Přejmenovat konverzaci", isPresented: $showingRename) {
+            TextField("Název", text: $renameText)
+            Button("Přejmenovat") {
                 let t = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !t.isEmpty else { return }
                 Task { await conversations.rename(conversationID: conversationID, to: t) }
             }
-            Button("Cancel", role: .cancel) {}
+            Button("Zrušit", role: .cancel) {}
         }
         .sheet(isPresented: $showingVoiceCall) {
             VoiceCallView(conversationID: conversationID)
@@ -317,12 +317,12 @@ struct ChatDetailView: View {
             isPresented: $showingClearConfirm,
             titleVisibility: .visible
         ) {
-            Button("Clear messages", role: .destructive) {
+            Button("Smazat zprávy", role: .destructive) {
                 Task { await conversations.clearMessages(in: conversationID) }
             }
-            Button("Cancel", role: .cancel) {}
+            Button("Zrušit", role: .cancel) {}
         } message: {
-            Text("Removes every message in this chat. The conversation itself stays in the list.")
+            Text("Smaže každou zprávu v tomto chatu. Samotná konverzace zůstane v seznamu.")
         }
         .sheet(item: Binding(
             get: { editingMessageID.map(EditingMessage.init(id:)) },
@@ -383,7 +383,7 @@ struct ChatDetailView: View {
                         .lineLimit(2)
                 }
                 Spacer(minLength: 0)
-                Button("Reload") {
+                Button("Znovu načíst") {
                     Task { await container.reloadFromUnloadNotice() }
                 }
                 .buttonStyle(.borderedProminent)
@@ -399,7 +399,7 @@ struct ChatDetailView: View {
                         .padding(6)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Dismiss")
+                .accessibilityLabel("Zavřít")
             }
             .padding(.horizontal, HHTheme.spaceL)
             .padding(.vertical, HHTheme.spaceM)
@@ -701,7 +701,7 @@ struct ChatDetailView: View {
                 .font(HHTheme.caption)
                 .foregroundStyle(HHTheme.textSecondary)
             Spacer(minLength: 0)
-            Button("Clear") {
+            Button("Vymazat") {
                 inChatSearch = ""
                 showBookmarksOnly = false
             }
@@ -926,14 +926,14 @@ private struct EditMessageSheet: View {
                     .padding()
             }
             .background(HHTheme.canvas.ignoresSafeArea())
-            .navigationTitle("Edit message")
+            .navigationTitle("Upravit zprávu")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button("Cancel", role: .cancel, action: onCancel)
+                    Button("Zrušit", role: .cancel, action: onCancel)
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Resend", action: onSave)
+                    Button("Odeslat znovu", action: onSave)
                         .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }

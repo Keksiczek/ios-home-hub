@@ -76,10 +76,10 @@ struct MemoryView: View {
                 if memory.facts.isEmpty && memory.episodes.isEmpty && memory.candidates.isEmpty {
                     HHEmptyState(
                         icon: "sparkles",
-                        title: "Nothing remembered yet",
-                        subtitle: "As you chat, the assistant can propose facts worth remembering. You decide what's saved."
+                        title: "Zatím nic v paměti",
+                        subtitle: "Při chatu může asistent navrhovat fakta k zapamatování. Co se uloží, rozhoduješ ty."
                     ) {
-                        Button("Add a fact") { showingAdd = true }
+                        Button("Přidat fakt") { showingAdd = true }
                             .buttonStyle(HHPrimaryButtonStyle())
                     }
                 } else {
@@ -107,7 +107,7 @@ struct MemoryView: View {
                                             HHHaptics.notification(.success, enabled: hapticsEnabled)
                                             Task { await memory.acceptAllCandidates() }
                                         } label: {
-                                            Label("Approve all (\(memory.candidates.count))",
+                                            Label("Schválit vše (\(memory.candidates.count))",
                                                   systemImage: "checkmark.circle.fill")
                                                 .frame(maxWidth: .infinity)
                                         }
@@ -118,7 +118,7 @@ struct MemoryView: View {
                                             HHHaptics.impact(.light, enabled: hapticsEnabled)
                                             memory.rejectAllCandidates()
                                         } label: {
-                                            Label("Dismiss all", systemImage: "xmark.circle")
+                                            Label("Odmítnout vše", systemImage: "xmark.circle")
                                                 .frame(maxWidth: .infinity)
                                         }
                                         .buttonStyle(.bordered)
@@ -127,7 +127,7 @@ struct MemoryView: View {
                                 }
                             } header: {
                                 HStack {
-                                    Text("Proposed")
+                                    Text("Navrženo")
                                     Spacer()
                                     // Quick total chip — answers "how
                                     // many things am I being asked to
@@ -160,7 +160,7 @@ struct MemoryView: View {
                         }
 
                         if !filteredFacts.isEmpty {
-                            Section("Remembered facts") {
+                            Section("Zapamatovaná fakta") {
                                 ForEach(filteredFacts) { fact in
                                     FactRow(fact: fact,
                                             onTogglePin: {
@@ -199,7 +199,7 @@ struct MemoryView: View {
                             // between the chip row and the episodes
                             // section.
                             Section {
-                                Text("No facts match your filter.")
+                                Text("Žádná fakta neodpovídají filtru.")
                                     .font(HHTheme.footnote)
                                     .foregroundStyle(HHTheme.textSecondary)
                                     .frame(maxWidth: .infinity, alignment: .center)
@@ -208,7 +208,7 @@ struct MemoryView: View {
                         }
 
                         if !filteredEpisodes.isEmpty {
-                            Section("Episodes") {
+                            Section("Epizody") {
                                 ForEach(filteredEpisodes) { episode in
                                     EpisodeRow(
                                         episode: episode,
@@ -251,10 +251,10 @@ struct MemoryView: View {
                                         Image(systemName: "rectangle.stack.badge.minus")
                                             .foregroundStyle(HHTheme.accent)
                                         VStack(alignment: .leading, spacing: 2) {
-                                            Text("Possible duplicates")
+                                            Text("Možné duplicity")
                                                 .font(HHTheme.subheadline.weight(.semibold))
                                                 .foregroundStyle(HHTheme.textPrimary)
-                                            Text("\(duplicatePairs.count) pair\(duplicatePairs.count == 1 ? "" : "s") look similar — review and merge.")
+                                            Text("\(duplicatePairs.count) \(duplicatePairs.count == 1 ? "pár vypadá" : "párů vypadá") podobně — můžeš je sloučit.")
                                                 .font(HHTheme.caption)
                                                 .foregroundStyle(HHTheme.textSecondary)
                                         }
@@ -272,21 +272,21 @@ struct MemoryView: View {
                                 HHHaptics.impact(.light, enabled: hapticsEnabled)
                                 showingClearConfirm = true
                             } label: {
-                                Label("Clear all memory", systemImage: "trash")
+                                Label("Smazat všechnu paměť", systemImage: "trash")
                             }
                         } footer: {
-                            Text("Memory is stored only on this device. Clearing is immediate and permanent.")
+                            Text("Paměť se ukládá jen na tomto zařízení. Smazání je okamžité a trvalé.")
                         }
                     }
                     .listStyle(.insetGrouped)
                     .searchable(
                         text: $searchText,
                         placement: .navigationBarDrawer(displayMode: .automatic),
-                        prompt: "Search memory"
+                        prompt: "Hledat v paměti"
                     )
                 }
             }
-            .navigationTitle("Memory")
+            .navigationTitle("Paměť")
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     SidebarMenuButton()
@@ -318,17 +318,17 @@ struct MemoryView: View {
                 }
             }
             .confirmationDialog(
-                "Clear all memory?",
+                "Smazat všechnu paměť?",
                 isPresented: $showingClearConfirm,
                 titleVisibility: .visible
             ) {
-                Button("Clear everything", role: .destructive) {
+                Button("Smazat vše", role: .destructive) {
                     HHHaptics.notification(.warning, enabled: hapticsEnabled)
                     Task { await memory.clearAll() }
                 }
-                Button("Cancel", role: .cancel) {}
+                Button("Zrušit", role: .cancel) {}
             } message: {
-                Text("This permanently deletes all remembered facts and episodes. This can't be undone.")
+                Text("Trvale smaže všechna zapamatovaná fakta a epizody. Nelze vrátit zpět.")
             }
             .overlay(alignment: .top) {
                 if !settings.current.memoryEnabled {
@@ -391,11 +391,11 @@ private struct CandidateRow: View {
             Text(candidate.content)
                 .font(HHTheme.body)
             HStack {
-                Button("Accept", action: onAccept)
+                Button("Přijmout", action: onAccept)
                     .font(HHTheme.subheadline)
                     .tint(HHTheme.accent)
                 Spacer()
-                Button("Reject", role: .destructive, action: onReject)
+                Button("Odmítnout", role: .destructive, action: onReject)
                     .font(HHTheme.subheadline)
             }
         }
@@ -404,8 +404,8 @@ private struct CandidateRow: View {
 
     private var kindLabel: String {
         switch candidate.kind {
-        case .fact:    return "Fact"
-        case .episode: return "Episode"
+        case .fact:    return "Fakt"
+        case .episode: return "Epizoda"
         }
     }
 
@@ -487,7 +487,7 @@ private struct FactRow: View {
                         .foregroundStyle(HHTheme.accent)
                 }
                 if fact.disabled {
-                    Text("Off")
+                    Text("Vypnuto")
                         .font(HHTheme.caption)
                         .foregroundStyle(HHTheme.textSecondary)
                 }
@@ -504,17 +504,17 @@ private struct FactRow: View {
         .onTapGesture(perform: onEdit)
         .swipeActions(edge: .leading) {
             Button(action: onTogglePin) {
-                Label(fact.pinned ? "Unpin" : "Pin", systemImage: "pin")
+                Label(fact.pinned ? "Odepnout" : "Připnout", systemImage: "pin")
             }
             .tint(HHTheme.accent)
             Button(action: onEdit) {
-                Label("Edit", systemImage: "pencil")
+                Label("Upravit", systemImage: "pencil")
             }
             .tint(HHTheme.warning)
         }
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             Button(action: onToggleDisabled) {
-                Label(fact.disabled ? "Enable" : "Disable",
+                Label(fact.disabled ? "Zapnout" : "Vypnout",
                       systemImage: fact.disabled ? "checkmark" : "xmark")
             }
             .tint(fact.disabled ? .green : .gray)
@@ -534,13 +534,13 @@ private struct EpisodeRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                HHTagChip(text: "Episode", symbol: "clock.arrow.circlepath")
+                HHTagChip(text: "Epizoda", symbol: "clock.arrow.circlepath")
                 Spacer()
                 Text(episode.createdAt.formatted(.relative(presentation: .named)))
                     .font(HHTheme.caption)
                     .foregroundStyle(HHTheme.textSecondary)
                 if episode.disabled {
-                    Text("Off")
+                    Text("Vypnuto")
                         .font(HHTheme.caption)
                         .foregroundStyle(HHTheme.textSecondary)
                 }
@@ -552,7 +552,7 @@ private struct EpisodeRow: View {
                     Image(systemName: "arrow.up.right.square")
                         .font(.system(size: 12))
                         .foregroundStyle(HHTheme.textSecondary)
-                        .accessibilityLabel("Open source conversation")
+                        .accessibilityLabel("Otevřít zdrojovou konverzaci")
                 }
             }
             Text(episode.summary)
@@ -566,7 +566,7 @@ private struct EpisodeRow: View {
         }
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             Button(action: onToggleDisabled) {
-                Label(episode.disabled ? "Enable" : "Disable",
+                Label(episode.disabled ? "Zapnout" : "Vypnout",
                       systemImage: episode.disabled ? "checkmark" : "xmark")
             }
             .tint(episode.disabled ? .green : .gray)
@@ -576,7 +576,7 @@ private struct EpisodeRow: View {
 
 private struct MemoryDisabledBanner: View {
     var body: some View {
-        Text("Memory is off. Turn it back on in Settings to let the assistant use what it knows.")
+        Text("Paměť je vypnutá. Zapni ji v Nastavení, aby asistent mohl využít, co o tobě ví.")
             .font(HHTheme.footnote)
             .foregroundStyle(HHTheme.textSecondary)
             .padding(HHTheme.spaceM)
@@ -601,8 +601,8 @@ private struct FactEditorSheet: View {
 
         var titleText: String {
             switch self {
-            case .create: return "New fact"
-            case .edit:   return "Edit fact"
+            case .create: return "Nový fakt"
+            case .edit:   return "Upravit fakt"
             }
         }
 
@@ -634,13 +634,13 @@ private struct FactEditorSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Fact") {
-                    TextField("e.g. I prefer short answers in the morning",
+                Section("Fakt") {
+                    TextField("např. ráno preferuji krátké odpovědi",
                               text: $content, axis: .vertical)
                         .lineLimit(3...6)
                 }
-                Section("Category") {
-                    Picker("Category", selection: $category) {
+                Section("Kategorie") {
+                    Picker("Kategorie", selection: $category) {
                         ForEach(MemoryFact.Category.allCases) { cat in
                             Label(cat.label, systemImage: cat.symbol).tag(cat)
                         }
@@ -653,10 +653,10 @@ private struct FactEditorSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button("Cancel") { dismiss() }
+                    Button("Zrušit") { dismiss() }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Save") { save() }
+                    Button("Uložit") { save() }
                         .disabled(content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
@@ -725,10 +725,10 @@ private struct DuplicateReviewSheet: View {
                 if remaining.isEmpty {
                     HHEmptyState(
                         icon: "checkmark.seal",
-                        title: "All clear",
-                        subtitle: "No more duplicate suggestions to review."
+                        title: "Hotovo",
+                        subtitle: "Žádné další duplicity ke zkontrolování."
                     ) {
-                        Button("Done") { dismiss() }
+                        Button("Zavřít") { dismiss() }
                             .buttonStyle(HHPrimaryButtonStyle())
                     }
                 } else {
@@ -738,9 +738,9 @@ private struct DuplicateReviewSheet: View {
                                 pairCard(pair)
                             } header: {
                                 HStack {
-                                    Text("Pair")
+                                    Text("Pár")
                                     Spacer()
-                                    Text("\(Int((pair.score * 100).rounded()))% match")
+                                    Text("\(Int((pair.score * 100).rounded()))% shoda")
                                         .font(HHTheme.caption.monospacedDigit())
                                         .foregroundStyle(HHTheme.textSecondary)
                                 }
@@ -750,11 +750,11 @@ private struct DuplicateReviewSheet: View {
                     .listStyle(.insetGrouped)
                 }
             }
-            .navigationTitle("Review duplicates")
+            .navigationTitle("Zkontrolovat duplicity")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") { dismiss() }
+                    Button("Hotovo") { dismiss() }
                 }
             }
         }
@@ -776,7 +776,7 @@ private struct DuplicateReviewSheet: View {
             Button {
                 skipped.insert(pair.id)
             } label: {
-                Label("Keep both", systemImage: "checkmark.circle")
+                Label("Ponechat oba", systemImage: "checkmark.circle")
                     .font(HHTheme.caption.weight(.semibold))
                     .frame(maxWidth: .infinity)
             }
@@ -798,7 +798,7 @@ private struct DuplicateReviewSheet: View {
             }
             Text(fact.content)
                 .font(HHTheme.body)
-            Button("Keep this", action: keepAction)
+            Button("Ponechat tento", action: keepAction)
                 .font(HHTheme.subheadline.weight(.semibold))
                 .buttonStyle(.borderedProminent)
                 .tint(HHTheme.accent)

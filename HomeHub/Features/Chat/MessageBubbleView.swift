@@ -195,14 +195,14 @@ struct MessageBubbleView: View {
                 Button {
                     UIPasteboard.general.string = displayContent
                 } label: {
-                    Label("Copy", systemImage: "doc.on.doc")
+                    Label("Kopírovat", systemImage: "doc.on.doc")
                 }
 
                 if let onEdit {
                     Button {
                         onEdit()
                     } label: {
-                        Label("Edit & resend", systemImage: "pencil")
+                        Label("Upravit a odeslat znovu", systemImage: "pencil")
                     }
                 }
 
@@ -211,7 +211,7 @@ struct MessageBubbleView: View {
                         onToggleBookmark()
                     } label: {
                         Label(
-                            message.isBookmarked ? "Remove bookmark" : "Bookmark",
+                            message.isBookmarked ? "Odebrat ze záložek" : "Přidat do záložek",
                             systemImage: message.isBookmarked ? "bookmark.slash" : "bookmark"
                         )
                     }
@@ -231,7 +231,7 @@ struct MessageBubbleView: View {
                     Button(role: .destructive) {
                         onDelete()
                     } label: {
-                        Label("Delete", systemImage: "trash")
+                        Label("Smazat", systemImage: "trash")
                     }
                 }
             }
@@ -246,9 +246,9 @@ struct MessageBubbleView: View {
     /// a perfectly good answer.
     private var regenerateLabel: String {
         switch message.status {
-        case .failed:    return "Try again"
-        case .cancelled: return "Resume"
-        default:         return "Regenerate"
+        case .failed:    return "Zkusit znovu"
+        case .cancelled: return "Pokračovat"
+        default:         return "Regenerovat"
         }
     }
 
@@ -271,7 +271,7 @@ struct MessageBubbleView: View {
                 Button {
                     onRegenerate()
                 } label: {
-                    Label("Try again", systemImage: "arrow.clockwise")
+                    Label("Zkusit znovu", systemImage: "arrow.clockwise")
                         .font(HHTheme.caption.weight(.semibold))
                 }
                 .buttonStyle(.bordered)
@@ -298,7 +298,7 @@ struct MessageBubbleView: View {
                 Image(systemName: "bookmark.fill")
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(HHTheme.warning)
-                    .accessibilityLabel("Bookmarked")
+                    .accessibilityLabel("V záložkách")
             }
         }
         .opacity(0.9)
@@ -306,9 +306,9 @@ struct MessageBubbleView: View {
 
     private var roleLabel: String {
         switch message.role {
-        case .user:      return "You"
-        case .assistant: return "Assistant"
-        case .system:    return "System"
+        case .user:      return "Ty"
+        case .assistant: return "Asistent"
+        case .system:    return "Systém"
         }
     }
 
@@ -363,7 +363,7 @@ private struct PrefillIndicator: View {
         .task {
             pulse = true
         }
-        .accessibilityLabel("Reading context")
+        .accessibilityLabel("Načítám kontext")
     }
 }
 
@@ -381,7 +381,7 @@ private struct DecodingIndicator: View {
                 .foregroundStyle(HHTheme.textSecondary)
                 .transition(.opacity)
         }
-        .accessibilityLabel("Generating reply")
+        .accessibilityLabel("Generuji odpověď")
     }
 }
 

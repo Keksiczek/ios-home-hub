@@ -21,19 +21,19 @@ struct UserMemoryView: View {
             preferencesSection
             dangerZone
         }
-        .navigationTitle("My memory")
+        .navigationTitle("Moje paměť")
         .navigationBarTitleDisplayMode(.inline)
         .confirmationDialog(
-            "Clear all memory?",
+            "Smazat všechnu paměť?",
             isPresented: $showingClearConfirm,
             titleVisibility: .visible
         ) {
-            Button("Clear everything", role: .destructive) {
+            Button("Smazat vše", role: .destructive) {
                 store.clear()
             }
-            Button("Cancel", role: .cancel) {}
+            Button("Zrušit", role: .cancel) {}
         } message: {
-            Text("This permanently deletes the assistant name, all your notes, and every preference. This can't be undone.")
+            Text("Trvale smaže jméno asistenta, všechny tvoje poznámky a každou předvolbu. Nelze vrátit zpět.")
         }
     }
 
@@ -41,7 +41,7 @@ struct UserMemoryView: View {
 
     private var aboutYouSection: some View {
         Section {
-            TextField("Name the assistant should use", text: Binding(
+            TextField("Jméno, kterým tě má asistent oslovovat", text: Binding(
                 get: { store.memory.name },
                 set: { newValue in
                     var m = store.memory
@@ -51,7 +51,7 @@ struct UserMemoryView: View {
             ))
             .textInputAutocapitalization(.words)
 
-            TextField("Location", text: Binding(
+            TextField("Lokalita", text: Binding(
                 get: { store.memory.location },
                 set: { newValue in
                     var m = store.memory
@@ -61,9 +61,9 @@ struct UserMemoryView: View {
             ))
             .textInputAutocapitalization(.words)
         } header: {
-            Text("About you")
+            Text("O tobě")
         } footer: {
-            Text("Injected verbatim into the assistant's context on every turn. Kept on this device only.")
+            Text("Vkládá se doslova do kontextu asistenta při každé odpovědi. Zůstává jen na tomto zařízení.")
         }
     }
 
@@ -75,13 +75,13 @@ struct UserMemoryView: View {
                         Button(role: .destructive) {
                             store.removeNote(at: idx)
                         } label: {
-                            Label("Delete", systemImage: "trash")
+                            Label("Smazat", systemImage: "trash")
                         }
                     }
             }
 
             HStack {
-                TextField("New note (e.g. \"I prefer metric units\")", text: $newNote)
+                TextField("Nová poznámka (např. preferuji metrické jednotky)", text: $newNote)
                 Button {
                     store.addNote(newNote)
                     newNote = ""
@@ -91,9 +91,9 @@ struct UserMemoryView: View {
                 .disabled(newNote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         } header: {
-            Text("Notes")
+            Text("Poznámky")
         } footer: {
-            Text("Short, freeform reminders. Swipe left to remove a note.")
+            Text("Krátké volné poznámky. Přejetím doleva poznámku smažeš.")
         }
     }
 
@@ -110,15 +110,15 @@ struct UserMemoryView: View {
                     Button(role: .destructive) {
                         store.removePreference(id: pref.id)
                     } label: {
-                        Label("Delete", systemImage: "trash")
+                        Label("Smazat", systemImage: "trash")
                     }
                 }
             }
 
             HStack {
-                TextField("Key", text: $newPrefKey)
+                TextField("Klíč", text: $newPrefKey)
                     .frame(maxWidth: 120)
-                TextField("Value", text: $newPrefValue)
+                TextField("Hodnota", text: $newPrefValue)
                 Button {
                     store.upsertPreference(key: newPrefKey, value: newPrefValue)
                     newPrefKey = ""
@@ -129,9 +129,9 @@ struct UserMemoryView: View {
                 .disabled(newPrefKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         } header: {
-            Text("Preferences")
+            Text("Předvolby")
         } footer: {
-            Text("Key–value pairs such as units → metric, currency → CZK.")
+            Text("Páry klíč–hodnota, např. units → metric, currency → CZK.")
         }
     }
 
@@ -140,7 +140,7 @@ struct UserMemoryView: View {
             Button(role: .destructive) {
                 showingClearConfirm = true
             } label: {
-                Text("Clear all memory")
+                Text("Smazat všechnu paměť")
             }
             .disabled(!store.memory.hasContent)
         }

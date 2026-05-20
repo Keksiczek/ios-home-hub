@@ -110,7 +110,7 @@ struct SettingsView: View {
                         .font(HHTheme.subheadline.weight(.semibold))
                 }
             }
-            .navigationTitle("Settings")
+            .navigationTitle("Nastavení")
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     SidebarMenuButton()
@@ -154,8 +154,8 @@ struct SettingsView: View {
     // MARK: - Profile
 
     private var profileSection: some View {
-        Section("You") {
-            NavigationLink("Name & details") {
+        Section("Ty") {
+            NavigationLink("Jméno a údaje") {
                 ProfileEditor(profile: personalization.userProfile) { updated in
                     Task { await personalization.update(user: updated) }
                 }
@@ -167,7 +167,7 @@ struct SettingsView: View {
 
     private var assistantSection: some View {
         Section {
-            TextField("Name", text: Binding<String>(
+            TextField("Jméno asistenta", text: Binding<String>(
                 get: { personalization.assistantProfile.name },
                 set: { newValue in
                     var a = personalization.assistantProfile
@@ -175,7 +175,7 @@ struct SettingsView: View {
                     Task { await personalization.update(assistant: a) }
                 }
             ))
-            Picker("Tone", selection: Binding<AssistantTone>(
+            Picker("Tón", selection: Binding<AssistantTone>(
                 get: { personalization.assistantProfile.tone },
                 set: { newValue in
                     var a = personalization.assistantProfile
@@ -196,10 +196,10 @@ struct SettingsView: View {
                     .tag(tone)
                 }
             }
-            NavigationLink("System prompts") {
+            NavigationLink("Systémové prompty") {
                 SystemPromptManagerView()
             }
-            LabeledContent("Active preset") {
+            LabeledContent("Aktivní preset") {
                 Text(settings.current.activeSystemPromptPreset.name)
                     .foregroundStyle(HHTheme.accent)
                     .font(HHTheme.caption)
@@ -208,10 +208,10 @@ struct SettingsView: View {
             Divider()
                 .padding(.vertical, 4)
 
-            Text("Safety")
+            Text("Bezpečnost")
                 .font(HHTheme.caption)
                 .foregroundStyle(HHTheme.textSecondary)
-            Toggle("All guardrails", isOn: Binding(
+            Toggle("Všechny pojistky", isOn: Binding(
                 get: { settings.current.guardrailsConfig.hardRulesEnabled && settings.current.guardrailsConfig.privacyGuardrailEnabled },
                 set: { newValue in
                     var config = settings.current.guardrailsConfig
@@ -221,7 +221,7 @@ struct SettingsView: View {
                 }
             ))
             .bold()
-            Toggle("Hard rules", isOn: Binding(
+            Toggle("Tvrdá pravidla", isOn: Binding(
                 get: { settings.current.guardrailsConfig.hardRulesEnabled },
                 set: { newValue in
                     var config = settings.current.guardrailsConfig
@@ -230,7 +230,7 @@ struct SettingsView: View {
                 }
             ))
             .padding(.leading, 12)
-            Toggle("Privacy guardrail", isOn: Binding(
+            Toggle("Ochrana soukromí", isOn: Binding(
                 get: { settings.current.guardrailsConfig.privacyGuardrailEnabled },
                 set: { newValue in
                     var config = settings.current.guardrailsConfig
@@ -240,11 +240,11 @@ struct SettingsView: View {
             ))
             .padding(.leading, 12)
 
-            Text("Context layers")
+            Text("Kontextové vrstvy")
                 .font(HHTheme.caption)
                 .foregroundStyle(HHTheme.textSecondary)
                 .padding(.top, 8)
-            Toggle("All layers", isOn: Binding(
+            Toggle("Všechny vrstvy", isOn: Binding(
                 get: { settings.current.guardrailsConfig.factsEnabled && settings.current.guardrailsConfig.episodesEnabled && settings.current.guardrailsConfig.fileExcerptsEnabled && settings.current.guardrailsConfig.skillInstructionsEnabled },
                 set: { newValue in
                     var config = settings.current.guardrailsConfig
@@ -256,7 +256,7 @@ struct SettingsView: View {
                 }
             ))
             .bold()
-            Toggle("Remembered facts", isOn: Binding(
+            Toggle("Zapamatovaná fakta", isOn: Binding(
                 get: { settings.current.guardrailsConfig.factsEnabled },
                 set: { newValue in
                     var config = settings.current.guardrailsConfig
@@ -265,7 +265,7 @@ struct SettingsView: View {
                 }
             ))
             .padding(.leading, 12)
-            Toggle("Recent episodes", isOn: Binding(
+            Toggle("Nedávné epizody", isOn: Binding(
                 get: { settings.current.guardrailsConfig.episodesEnabled },
                 set: { newValue in
                     var config = settings.current.guardrailsConfig
@@ -274,7 +274,7 @@ struct SettingsView: View {
                 }
             ))
             .padding(.leading, 12)
-            Toggle("File excerpts", isOn: Binding(
+            Toggle("Úryvky ze souborů", isOn: Binding(
                 get: { settings.current.guardrailsConfig.fileExcerptsEnabled },
                 set: { newValue in
                     var config = settings.current.guardrailsConfig
@@ -283,7 +283,7 @@ struct SettingsView: View {
                 }
             ))
             .padding(.leading, 12)
-            Toggle("Skill instructions", isOn: Binding(
+            Toggle("Instrukce pro nástroje", isOn: Binding(
                 get: { settings.current.guardrailsConfig.skillInstructionsEnabled },
                 set: { newValue in
                     var config = settings.current.guardrailsConfig
@@ -304,13 +304,13 @@ struct SettingsView: View {
             } label: {
                 HStack {
                     Image(systemName: "arrow.counterclockwise")
-                    Text("Reset to defaults")
+                    Text("Obnovit výchozí")
                 }
             }
         } header: {
-            Text("Personality & Safety")
+            Text("Osobnost a bezpečnost")
         } footer: {
-            Text("Customize assistant personality, system prompts, safety rules, and context layers.")
+            Text("Uprav osobnost asistenta, systémové prompty, bezpečnostní pravidla a kontextové vrstvy.")
         }
     }
 
@@ -318,7 +318,7 @@ struct SettingsView: View {
 
     private var languageSection: some View {
         Section {
-            Picker("Language", selection: Binding(
+            Picker("Jazyk", selection: Binding(
                 get: { settings.current.language },
                 set: { newValue in Task { await settings.set(\.language, to: newValue) } }
             )) {
@@ -327,7 +327,7 @@ struct SettingsView: View {
                 }
             }
 
-            Picker("Answer length", selection: Binding(
+            Picker("Délka odpovědi", selection: Binding(
                 get: { settings.current.answerLength },
                 set: { newValue in Task { await settings.set(\.answerLength, to: newValue) } }
             )) {
@@ -336,15 +336,15 @@ struct SettingsView: View {
                 }
             }
 
-            TextField("Location hint", text: Binding(
+            TextField("Lokalita (nepovinné)", text: Binding(
                 get: { settings.current.locationHint },
                 set: { newValue in Task { await settings.set(\.locationHint, to: newValue) } }
             ))
             .textInputAutocapitalization(.words)
         } header: {
-            Text("Language & style")
+            Text("Jazyk a styl")
         } footer: {
-            Text("Language is enforced in the system prompt — the assistant replies in the chosen language even if you type in another. Location is injected so the model answers local-context questions correctly.")
+            Text("Jazyk je vynucený v systémovém promptu — asistent odpovídá ve zvoleném jazyce i když napíšeš v jiném. Lokalita pomáhá modelu lépe odpovídat na otázky vázané na místo.")
         }
     }
 
@@ -374,9 +374,9 @@ struct SettingsView: View {
                 )
             }
         } header: {
-            Text("Tools")
+            Text("Nástroje")
         } footer: {
-            Text("Only enabled tools are offered to the assistant. Math goes through Calculator, calendar questions through Calendar. Disabled tools are refused even if the model tries to call them.")
+            Text("Asistent dostane nabídnuté jen povolené nástroje. Matematika jde přes Kalkulačku, kalendářové dotazy přes Kalendář. Zakázané nástroje jsou odmítnuté, i když je model zkusí zavolat.")
         }
         .task { await refreshToolAvailability() }
     }
@@ -397,17 +397,17 @@ struct SettingsView: View {
 
     private var memorySection: some View {
         Section {
-            NavigationLink("My memory") {
+            NavigationLink("Moje paměť") {
                 UserMemoryView()
             }
 
-            Toggle("Enable retrieval memory", isOn: Binding(
+            Toggle("Zapnout vyhledávací paměť", isOn: Binding(
                 get: { settings.current.memoryEnabled },
                 set: { newValue in
                     Task { await settings.set(\.memoryEnabled, to: newValue) }
                 }
             ))
-            Toggle("Auto-propose facts from chats", isOn: Binding(
+            Toggle("Automaticky navrhovat fakta z chatů", isOn: Binding(
                 get: { settings.current.autoExtractMemory },
                 set: { newValue in
                     Task { await settings.set(\.autoExtractMemory, to: newValue) }
@@ -418,12 +418,12 @@ struct SettingsView: View {
             Button(role: .destructive) {
                 Task { await memory.clearAll() }
             } label: {
-                Text("Clear retrieval memory")
+                Text("Smazat vyhledávací paměť")
             }
         } header: {
-            Text("Memory")
+            Text("Paměť")
         } footer: {
-            Text("Two layers: \"My memory\" holds facts you type yourself. \"Retrieval memory\" captures facts the assistant proposes after each chat — nothing is saved unless you accept it. Both stay on this device.")
+            Text("Dvě vrstvy: \"Moje paměť\" obsahuje fakta, která sám/sama napíšeš. \"Vyhledávací paměť\" sbírá fakta, která asistent navrhne po každém chatu — neuloží se nic, dokud to nepotvrdíš. Obojí zůstává na tomto zařízení.")
         }
     }
 
@@ -436,7 +436,7 @@ struct SettingsView: View {
             // Kept at the top of the section so users see the global lever
             // before the fine-grained sampler knobs.
             VStack(alignment: .leading, spacing: 4) {
-                Picker("Performance profile", selection: Binding(
+                Picker("Výkonový profil", selection: Binding(
                     get: { settings.current.performanceProfile },
                     set: { newValue in Task { await settings.set(\.performanceProfile, to: newValue) } }
                 )) {
@@ -450,13 +450,13 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
-            Toggle("Stream responses", isOn: Binding(
+            Toggle("Streamovat odpovědi", isOn: Binding(
                 get: { settings.current.streamingEnabled },
                 set: { newValue in Task { await settings.set(\.streamingEnabled, to: newValue) } }
             ))
 
             HStack {
-                Text("Max response tokens")
+                Text("Maximum tokenů odpovědi")
                 Spacer()
                 Text("\(settings.current.maxResponseTokens)")
                     .foregroundStyle(HHTheme.textSecondary)
@@ -470,7 +470,7 @@ struct SettingsView: View {
             )
 
             HStack {
-                Text("Temperature")
+                Text("Teplota")
                 Spacer()
                 Text(String(format: "%.2f", settings.current.temperature))
                     .foregroundStyle(HHTheme.textSecondary)
@@ -526,7 +526,7 @@ struct SettingsView: View {
             )
 
             HStack {
-                Text("Repeat penalty")
+                Text("Penalizace opakování")
                 Spacer()
                 Text(String(format: "%.2f", settings.current.repeatPenalty))
                     .foregroundStyle(HHTheme.textSecondary)
@@ -542,22 +542,22 @@ struct SettingsView: View {
             // Display preference — kept at the bottom of the section so
             // the generation knobs (stream, tokens, temperature) stay
             // grouped and this reads as a "show this extra info" toggle.
-            Toggle("Show token usage", isOn: Binding(
+            Toggle("Zobrazovat počet tokenů", isOn: Binding(
                 get: { settings.current.showTokenUsage },
                 set: { newValue in Task { await settings.set(\.showTokenUsage, to: newValue) } }
             ))
         } header: {
-            Text("Generation")
+            Text("Generování")
         } footer: {
-            Text("Higher temperature is more creative but less predictable. 0.6–0.8 is a good range for most tasks. Repeat penalty 1.1 and Min-p 0.05 are sensible defaults that keep small models from looping or emitting garbage characters.")
+            Text("Vyšší teplota je kreativnější, ale méně předvídatelná. Pro většinu úloh se hodí 0,6–0,8. Penalizace opakování 1,1 a Min-p 0,05 jsou rozumné výchozí hodnoty — menší modely se s nimi tolik nezacyklí ani neprodukují nesmysly.")
         }
     }
 
     // MARK: - Appearance
 
     private var appearanceSection: some View {
-        Section("Appearance") {
-            Picker("Theme", selection: Binding(
+        Section("Vzhled") {
+            Picker("Motiv", selection: Binding(
                 get: { settings.current.theme },
                 set: { newValue in Task { await settings.set(\.theme, to: newValue) } }
             )) {
@@ -565,7 +565,7 @@ struct SettingsView: View {
                     Text(theme.label).tag(theme)
                 }
             }
-            Toggle("Haptics", isOn: Binding(
+            Toggle("Haptická odezva", isOn: Binding(
                 get: { settings.current.haptics },
                 set: { newValue in
                     // Fire haptic on the new value so the user feels the
@@ -899,35 +899,35 @@ struct SettingsView: View {
 
     private var privacySection: some View {
         Section {
-            NavigationLink("Privacy & data") {
+            NavigationLink("Soukromí a data") {
                 PrivacyView()
             }
             Button(role: .destructive) {
                 showRestartOnboardingConfirm = true
             } label: {
-                Text("Restart onboarding")
+                Text("Restartovat onboarding")
             }
         } header: {
-            Text("Privacy")
+            Text("Soukromí")
         } footer: {
-            Text("Restarting wipes your profile name, assistant style, and onboarding completion. Your chats, memory, and installed models stay.")
+            Text("Restart smaže jméno v profilu, styl asistenta a značku, že jsi prošel/prošla onboardingem. Tvoje chaty, paměť a nainstalované modely zůstávají.")
                 .font(HHTheme.caption)
         }
         .confirmationDialog(
-            "Restart onboarding?",
+            "Restartovat onboarding?",
             isPresented: $showRestartOnboardingConfirm,
             titleVisibility: .visible
         ) {
-            Button("Restart", role: .destructive) {
+            Button("Restartovat", role: .destructive) {
                 Task { await onboarding.reset() }
             }
-            Button("Cancel", role: .cancel) {}
+            Button("Zrušit", role: .cancel) {}
         } message: {
             // Repeated in the dialog body because users frequently
             // miss section footer copy on first read — destructive
             // actions deserve unambiguous wording at the decision
             // point itself.
-            Text("This wipes your profile and assistant style and re-runs the welcome flow. Chats, memory, and installed models stay.")
+            Text("Smaže tvůj profil a styl asistenta a znovu spustí uvítací průvodce. Chaty, paměť ani nainstalované modely se nemažou.")
         }
     }
 
@@ -935,11 +935,11 @@ struct SettingsView: View {
 
     private var aboutSection: some View {
         Section {
-            LabeledContent("Version", value: Self.appVersion)
+            LabeledContent("Verze", value: Self.appVersion)
             LabeledContent("Runtime", value: runtime.runtime.identifier)
-            LabeledContent("Runtime state", value: runtimeStateLabel)
+            LabeledContent("Stav runtime", value: runtimeStateLabel)
         } header: {
-            Text("About")
+            Text("O aplikaci")
         }
     }
 
@@ -959,11 +959,11 @@ struct SettingsView: View {
 
     private var runtimeStateLabel: String {
         switch runtime.state {
-        case .idle:            return "Idle"
-        case .unloading:       return "Unloading"
-        case .loading(let id): return "Loading \(id)"
-        case .ready(let id):   return "Ready — \(id)"
-        case .failed:          return "Failed (see Developer Diagnostics)"
+        case .idle:            return "Nečinný"
+        case .unloading:       return "Uvolňuji"
+        case .loading(let id): return "Načítám \(id)"
+        case .ready(let id):   return "Připraven — \(id)"
+        case .failed:          return "Chyba (viz Diagnostika)"
         }
     }
 
@@ -971,17 +971,17 @@ struct SettingsView: View {
 
     private var developerSection: some View {
         Section {
-            NavigationLink("Runtime Diagnostics") {
+            NavigationLink("Diagnostika runtime") {
                 DeveloperDiagnosticsView()
             }
             // Value-based link routes through the Route enum so a
             // deep-link append onto `path` from outside ends up in
             // the same destination as a manual tap.
-            NavigationLink("Knowledge Base", value: Route.knowledgeBase)
+            NavigationLink("Znalostní báze", value: Route.knowledgeBase)
         } header: {
-            Text("Developer")
+            Text("Pro vývojáře")
         } footer: {
-            Text("Live runtime state, build / backend info, model file integrity, telemetry log, and model reset — visible on device without Xcode.")
+            Text("Aktuální stav runtime, informace o buildu, integrita modelů, log telemetrie a reset — vše dostupné v zařízení bez Xcode.")
         }
     }
 }
@@ -993,26 +993,26 @@ private struct ProfileEditor: View {
 
     var body: some View {
         Form {
-            Section("Name") {
-                TextField("Your name", text: $profile.displayName)
-                TextField("Pronouns", text: Binding(
+            Section("Jméno") {
+                TextField("Tvoje jméno", text: $profile.displayName)
+                TextField("Zájmena (např. on/jeho)", text: Binding(
                     get: { profile.pronouns ?? "" },
                     set: { profile.pronouns = $0.isEmpty ? nil : $0 }
                 ))
             }
-            Section("Work") {
-                TextField("Occupation", text: Binding(
+            Section("Práce") {
+                TextField("Povolání", text: Binding(
                     get: { profile.occupation ?? "" },
                     set: { profile.occupation = $0.isEmpty ? nil : $0 }
                 ))
-                TextField("Current focus", text: Binding(
+                TextField("Na čem zrovna děláš", text: Binding(
                     get: { profile.workingContext ?? "" },
                     set: { profile.workingContext = $0.isEmpty ? nil : $0 }
                 ), axis: .vertical)
                     .lineLimit(2...4)
             }
-            Section("Interests") {
-                TextField("Comma-separated", text: Binding(
+            Section("Zájmy") {
+                TextField("Oddělené čárkou", text: Binding(
                     get: { profile.interests.joined(separator: ", ") },
                     set: { newValue in
                         profile.interests = newValue
@@ -1024,11 +1024,11 @@ private struct ProfileEditor: View {
                     .lineLimit(2...4)
             }
         }
-        .navigationTitle("Profile")
+        .navigationTitle("Profil")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button("Save") {
+                Button("Uložit") {
                     onSave(profile)
                     dismiss()
                 }
@@ -1078,7 +1078,7 @@ private struct ToolRow: View {
             }
 
             if case .permission = availability {
-                Button("Grant permission in Settings", action: onGrantPermission)
+                Button("Povolit v Nastavení", action: onGrantPermission)
                     .font(HHTheme.caption.weight(.semibold))
                     .buttonStyle(.borderless)
                     .padding(.leading, 0)
@@ -1088,9 +1088,9 @@ private struct ToolRow: View {
 
     private var statusLine: String {
         switch availability {
-        case .enabled:                 return "Ready"
-        case .unavailable(let reason): return "Unavailable — \(reason)"
-        case .permission(let prompt):  return "Needs permission — \(prompt)"
+        case .enabled:                 return "Připraveno"
+        case .unavailable(let reason): return "Nedostupné — \(reason)"
+        case .permission(let prompt):  return "Potřebuje povolení — \(prompt)"
         }
     }
 
@@ -1121,26 +1121,26 @@ private struct PrivacyView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: HHTheme.spaceL) {
-                Text("HomeHub is built to be boring on purpose.")
+                Text("HomeHub je záměrně nudný.")
                     .font(HHTheme.title2)
-                Text("No account. No server. No telemetry. No analytics. No ads.")
+                Text("Žádný účet. Žádný server. Žádná telemetrie. Žádné analytiky. Žádná reklama.")
                     .font(HHTheme.body)
                     .foregroundStyle(HHTheme.textSecondary)
 
                 HHCard {
                     VStack(alignment: .leading, spacing: HHTheme.spaceM) {
-                        HHFeatureRow(icon: "externaldrive", title: "Where your data lives",
-                                     text: "Inside the app's sandbox on this device. It's backed up with your device backups and nowhere else.")
-                        HHFeatureRow(icon: "network.slash", title: "Network",
-                                     text: "The app only reaches the network to download a model you've explicitly asked for.")
-                        HHFeatureRow(icon: "trash", title: "Deletion",
-                                     text: "Clearing memory, deleting chats, or removing models is immediate and permanent.")
+                        HHFeatureRow(icon: "externaldrive", title: "Kde jsou tvoje data",
+                                     text: "V sandboxu této aplikace na tvém zařízení. Zálohují se spolu se zařízením a nikde jinde.")
+                        HHFeatureRow(icon: "network.slash", title: "Síť",
+                                     text: "Aplikace sahá na síť jen kvůli stažení modelu, o který sis výslovně řekl/a.")
+                        HHFeatureRow(icon: "trash", title: "Mazání",
+                                     text: "Vyčištění paměti, smazání chatů nebo odstranění modelů je okamžité a trvalé.")
                     }
                 }
             }
             .padding(HHTheme.spaceL)
         }
-        .navigationTitle("Privacy")
+        .navigationTitle("Soukromí")
         .navigationBarTitleDisplayMode(.inline)
     }
 }

@@ -84,10 +84,10 @@ struct ChatListView: View {
                 if conversations.conversations.isEmpty {
                     HHEmptyState(
                         icon: "bubble.left.and.bubble.right",
-                        title: "Start your first chat",
-                        subtitle: "Conversations are stored on this device only. They'll use whichever model is currently loaded."
+                        title: "Začni první chat",
+                        subtitle: "Konverzace se ukládají jen na tomto zařízení. Použijí ten model, který je právě načtený."
                     ) {
-                        Button("New chat") {
+                        Button("Nový chat") {
                             Task { await startNewChat() }
                         }
                         .buttonStyle(HHPrimaryButtonStyle())
@@ -99,10 +99,10 @@ struct ChatListView: View {
                     // as "no matches" even when work is in flight.
                     HHEmptyState(
                         icon: conversations.isDeepSearching ? "ellipsis.circle" : "magnifyingglass",
-                        title: conversations.isDeepSearching ? "Searching messages…" : "No matches",
+                        title: conversations.isDeepSearching ? "Hledám ve zprávách…" : "Nic nenalezeno",
                         subtitle: conversations.isDeepSearching
-                            ? "Scanning older chats for \"\(searchText)\"."
-                            : "No conversations match \"\(searchText)\"."
+                            ? "Procházím starší chaty pro: \(searchText)"
+                            : "Žádné konverzace neodpovídají: \(searchText)"
                     )
                 } else {
                     List {
@@ -119,13 +119,13 @@ struct ChatListView: View {
                         } else {
                             let b = buckets
                             if !b.pinned.isEmpty {
-                                Section("Pinned") {
+                                Section("Připnuté") {
                                     ForEach(b.pinned) { convo in
                                         chatRow(convo)
                                     }
                                 }
                             }
-                            Section(b.pinned.isEmpty ? "" : "Recent") {
+                            Section(b.pinned.isEmpty ? "" : "Nedávné") {
                                 ForEach(b.recent) { convo in
                                     chatRow(convo)
                                 }
@@ -139,9 +139,9 @@ struct ChatListView: View {
                                     }
                                 } header: {
                                     HStack {
-                                        Text("Archived")
+                                        Text("Archivované")
                                         Spacer()
-                                        Button(showArchived ? "Hide" : "Show (\(b.archived.count))") {
+                                        Button(showArchived ? "Skrýt" : "Zobrazit (\(b.archived.count))") {
                                             withAnimation { showArchived.toggle() }
                                         }
                                         .font(HHTheme.caption.weight(.semibold))
@@ -164,7 +164,7 @@ struct ChatListView: View {
                     }
                 }
             }
-            .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Search chats")
+            .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Hledat v chatech")
             // Kick off the async body-text scan whenever the query
             // changes. The service debounces internally by cancelling
             // any in-flight scan before starting the new one, so a
@@ -177,7 +177,7 @@ struct ChatListView: View {
                 // leaves the chat tab so the next visit starts clean.
                 conversations.clearDeepSearch()
             }
-            .navigationTitle("Chats")
+            .navigationTitle("Chaty")
             // Deep-link consumer: Spotlight tap or
             // `homehub://conversation/<UUID>` URL pushes the matching
             // detail view onto the stack. Clearing the pending link
@@ -234,7 +234,7 @@ struct ChatListView: View {
                 HHHaptics.impact(.light, enabled: settings.current.haptics)
                 Task { await conversations.setPinned(!convo.pinned, conversationID: convo.id) }
             } label: {
-                Label(convo.pinned ? "Unpin" : "Pin",
+                Label(convo.pinned ? "Odepnout" : "Připnout",
                       systemImage: convo.pinned ? "pin.slash" : "pin.fill")
             }
             .tint(HHTheme.accent)
@@ -244,13 +244,13 @@ struct ChatListView: View {
                 HHHaptics.notification(.warning, enabled: settings.current.haptics)
                 Task { await conversations.deleteConversation(convo.id) }
             } label: {
-                Label("Delete", systemImage: "trash")
+                Label("Smazat", systemImage: "trash")
             }
             Button {
                 HHHaptics.impact(.light, enabled: settings.current.haptics)
                 Task { await conversations.setArchived(!convo.archived, conversationID: convo.id) }
             } label: {
-                Label(convo.archived ? "Unarchive" : "Archive",
+                Label(convo.archived ? "Odarchivovat" : "Archivovat",
                       systemImage: convo.archived ? "tray.and.arrow.up" : "archivebox")
             }
             .tint(.gray)

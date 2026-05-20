@@ -25,29 +25,29 @@ struct SystemPromptManagerView: View {
     private var guardrailsStatus: String {
         let config = settings.current.guardrailsConfig
         let enabled = [config.hardRulesEnabled, config.privacyGuardrailEnabled].filter { $0 }.count
-        if enabled == 2 { return "Safe mode ✓" }
-        if enabled == 0 { return "Unrestricted" }
-        return "Mixed"
+        if enabled == 2 { return "Bezpečný režim ✓" }
+        if enabled == 0 { return "Bez omezení" }
+        return "Smíšené"
     }
 
     private var contexLayersStatus: String {
         let config = settings.current.guardrailsConfig
         let enabled = [config.factsEnabled, config.episodesEnabled, config.fileExcerptsEnabled, config.skillInstructionsEnabled].filter { $0 }.count
-        if enabled == 4 { return "Full context ✓" }
-        if enabled == 0 { return "Minimal" }
-        return "\(enabled)/4 layers"
+        if enabled == 4 { return "Plný kontext ✓" }
+        if enabled == 0 { return "Minimální" }
+        return "\(enabled)/4 vrstev"
     }
 
     var body: some View {
         List {
-            Section("Current configuration") {
-                LabeledContent("Active preset") {
+            Section("Aktuální konfigurace") {
+                LabeledContent("Aktivní preset") {
                     Text(settings.current.activeSystemPromptPreset.name)
                         .foregroundStyle(HHTheme.accent)
                         .font(.subheadline)
                 }
-                LabeledContent("Safety", value: guardrailsStatus)
-                LabeledContent("Context", value: contexLayersStatus)
+                LabeledContent("Bezpečnost", value: guardrailsStatus)
+                LabeledContent("Kontext", value: contexLayersStatus)
             }
 
             Section {
@@ -68,29 +68,29 @@ struct SystemPromptManagerView: View {
                             Button {
                                 viewingPreset = preset
                             } label: {
-                                Label("View", systemImage: "eye")
+                                Label("Zobrazit", systemImage: "eye")
                             }
                             .tint(HHTheme.accent)
                         } else {
                             Button(role: .destructive) {
                                 pendingDeletion = preset
                             } label: {
-                                Label("Delete", systemImage: "trash")
+                                Label("Smazat", systemImage: "trash")
                             }
                             Button {
                                 editingPreset = preset
                             } label: {
-                                Label("Edit", systemImage: "pencil")
+                                Label("Upravit", systemImage: "pencil")
                             }
                             .tint(HHTheme.accent)
                         }
                     }
                 }
             } footer: {
-                Text("The active preset seeds every new conversation's system prompt. Built-in presets are read-only so the default assistant behaviour stays recoverable.")
+                Text("Aktivní preset se vloží jako systémový prompt do každé nové konverzace. Vestavěné presety jsou jen pro čtení, aby šlo výchozí chování asistenta vždy obnovit.")
             }
         }
-        .navigationTitle("System prompts")
+        .navigationTitle("Systémové prompty")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
@@ -99,7 +99,7 @@ struct SystemPromptManagerView: View {
                 } label: {
                     Image(systemName: "plus")
                 }
-                .accessibilityLabel("New preset")
+                .accessibilityLabel("Nový preset")
             }
         }
         .sheet(isPresented: $showingNewEditor) {
@@ -125,7 +125,7 @@ struct SystemPromptManagerView: View {
             ) { _ in }
         }
         .confirmationDialog(
-            "Delete “\(pendingDeletion?.name ?? "")”?",
+            "Smazat preset \(pendingDeletion?.name ?? "")?",
             isPresented: Binding(
                 get: { pendingDeletion != nil },
                 set: { if !$0 { pendingDeletion = nil } }
@@ -133,15 +133,15 @@ struct SystemPromptManagerView: View {
             titleVisibility: .visible,
             presenting: pendingDeletion
         ) { preset in
-            Button("Delete", role: .destructive) {
+            Button("Smazat", role: .destructive) {
                 delete(preset)
                 pendingDeletion = nil
             }
-            Button("Cancel", role: .cancel) {
+            Button("Zrušit", role: .cancel) {
                 pendingDeletion = nil
             }
         } message: { _ in
-            Text("This preset will be removed. You can always create it again later.")
+            Text("Tento preset bude odebrán. Kdykoli ho můžeš znovu vytvořit.")
         }
     }
 
@@ -161,7 +161,7 @@ struct SystemPromptManagerView: View {
                         .font(HHTheme.headline)
                         .foregroundStyle(HHTheme.textPrimary)
                     if preset.isBuiltIn {
-                        Text("Built-in")
+                        Text("Vestavěný")
                             .font(HHTheme.caption)
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
@@ -244,8 +244,8 @@ private struct PresetEditor: View {
 
     private var title: String {
         switch mode {
-        case .create: return "New preset"
-        case .edit:   return "Edit preset"
+        case .create: return "Nový preset"
+        case .edit:   return "Upravit preset"
         case .view:   return "Preset"
         }
     }
@@ -270,12 +270,12 @@ private struct PresetEditor: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Name") {
-                    TextField("e.g. Coder, Czech assistant", text: $name)
+                Section("Název") {
+                    TextField("např. Programátor, Český asistent", text: $name)
                         .textInputAutocapitalization(.words)
                         .disabled(mode.isReadOnly)
                 }
-                Section("System prompt") {
+                Section("Systémový prompt") {
                     TextEditor(text: $prompt)
                         .frame(minHeight: 220)
                         .font(HHTheme.body)
@@ -284,14 +284,14 @@ private struct PresetEditor: View {
                 }
                 if duplicateName && !mode.isReadOnly {
                     Section {
-                        Label("Another preset already uses this name.", systemImage: "exclamationmark.triangle")
+                        Label("Jiný preset už tento název používá.", systemImage: "exclamationmark.triangle")
                             .font(HHTheme.footnote)
                             .foregroundStyle(HHTheme.warning)
                     }
                 }
                 if case .view = mode {
                     Section {
-                        Label("Built-in preset — read-only.", systemImage: "lock")
+                        Label("Vestavěný preset — jen pro čtení.", systemImage: "lock")
                             .font(HHTheme.footnote)
                             .foregroundStyle(HHTheme.textSecondary)
                     }
@@ -302,14 +302,14 @@ private struct PresetEditor: View {
             .toolbar {
                 if mode.isReadOnly {
                     ToolbarItem(placement: .topBarTrailing) {
-                        Button("Done") { dismiss() }
+                        Button("Hotovo") { dismiss() }
                     }
                 } else {
                     ToolbarItem(placement: .topBarLeading) {
-                        Button("Cancel") { dismiss() }
+                        Button("Zrušit") { dismiss() }
                     }
                     ToolbarItem(placement: .topBarTrailing) {
-                        Button("Save") {
+                        Button("Uložit") {
                             commit()
                             dismiss()
                         }
