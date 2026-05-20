@@ -241,6 +241,22 @@ private struct PresetEditor: View {
 
     @State private var name: String = ""
     @State private var prompt: String = ""
+    @State private var icon: String = PresetEditor.iconOptions.first ?? "sparkles"
+    @State private var colorHex: String = PresetEditor.colorOptions.first ?? "007AFF"
+
+    /// Curated icon set offered for custom personas. SF Symbols that
+    /// read well at small sizes and cover the common assistant roles.
+    static let iconOptions: [String] = [
+        "sparkles", "chevron.left.forwardslash.chevron.right", "paintbrush.pointed.fill",
+        "character.book.closed.fill", "brain.head.profile", "graduationcap.fill",
+        "briefcase.fill", "lightbulb.fill", "heart.fill", "globe", "function", "wand.and.stars"
+    ]
+
+    /// Hex palette mirrors the iOS system colours used by the built-in
+    /// presets so custom personas sit visually alongside them.
+    static let colorOptions: [String] = [
+        "007AFF", "AF52DE", "FF9500", "34C759", "FF2D55", "5856D6", "FF3B30", "00C7BE"
+    ]
 
     private var title: String {
         switch mode {
@@ -274,6 +290,10 @@ private struct PresetEditor: View {
                     TextField("např. Programátor, Český asistent", text: $name)
                         .textInputAutocapitalization(.words)
                         .disabled(mode.isReadOnly)
+                }
+                Section("Vzhled") {
+                    iconPicker
+                    colorPicker
                 }
                 Section("Systémový prompt") {
                     TextEditor(text: $prompt)
@@ -324,9 +344,76 @@ private struct PresetEditor: View {
                 case .edit(let preset), .view(let preset):
                     name = preset.name
                     prompt = preset.prompt
+                    if let i = preset.icon { icon = i }
+                    if let c = preset.colorHex { colorHex = c }
                 }
             }
         }
+    }
+
+    // MARK: - Appearance pickers
+
+    private var selectedColor: Color {
+        Color(hex: colorHex) ?? .blue
+    }
+
+    @ViewBuilder
+    private var iconPicker: some View {
+        VStack(alignment: .leading, spacing: HHTheme.spaceS) {
+            Text("Ikona")
+                .font(HHTheme.caption)
+                .foregroundStyle(HHTheme.textSecondary)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: HHTheme.spaceM) {
+                    ForEach(Self.iconOptions, id: \.self) { option in
+                        let isSelected = option == icon
+                        Image(systemName: option)
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(isSelected ? .white : selectedColor)
+                            .frame(width: 40, height: 40)
+                            .background(
+                                Circle().fill(isSelected ? selectedColor : selectedColor.opacity(0.12))
+                            )
+                            .overlay(Circle().stroke(selectedColor.opacity(isSelected ? 0 : 0.25), lineWidth: 1))
+                            .contentShape(Circle())
+                            .onTapGesture { if !mode.isReadOnly { icon = option } }
+                            .accessibilityLabel(isSelected ? "Vybraná ikona" : "Ikona")
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+        }
+        .disabled(mode.isReadOnly)
+    }
+
+    @ViewBuilder
+    private var colorPicker: some View {
+        VStack(alignment: .leading, spacing: HHTheme.spaceS) {
+            Text("Barva")
+                .font(HHTheme.caption)
+                .foregroundStyle(HHTheme.textSecondary)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: HHTheme.spaceM) {
+                    ForEach(Self.colorOptions, id: \.self) { option in
+                        let optionColor = Color(hex: option) ?? .blue
+                        let isSelected = option == colorHex
+                        Circle()
+                            .fill(optionColor)
+                            .frame(width: 32, height: 32)
+                            .overlay(
+                                Circle()
+                                    .stroke(HHTheme.textPrimary, lineWidth: isSelected ? 2 : 0)
+                                    .padding(2)
+                            )
+                            .contentShape(Circle())
+                            .onTapGesture { if !mode.isReadOnly { colorHex = option } }
+                            .accessibilityLabel(isSelected ? "Vybraná barva" : "Barva")
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+        }
+        .disabled(mode.isReadOnly)
     }
 
     private func commit() {
@@ -336,14 +423,20 @@ private struct PresetEditor: View {
                 id: UUID(),
                 name: trimmedName,
                 prompt: prompt,
-                isBuiltIn: false
+                isBuiltIn: false,
+                icon: icon,
+                colorHex: colorHex,
+                shortDescription: nil
             ))
         case .edit(let preset):
             onSave(SystemPromptPreset(
                 id: preset.id,
                 name: trimmedName,
                 prompt: prompt,
-                isBuiltIn: false
+                isBuiltIn: false,
+                icon: icon,
+                colorHex: colorHex,
+                shortDescription: preset.shortDescription
             ))
         case .view:
             break

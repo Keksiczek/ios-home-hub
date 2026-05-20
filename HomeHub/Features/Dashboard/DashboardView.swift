@@ -15,6 +15,7 @@ struct DashboardView: View {
     @State private var memoryHeadroom: RuntimeManager.MemoryHeadroom?
     @State private var isStartingNewChat = false
     @State private var showingMemoryExplainer = false
+    @State private var showingPersonaPicker = false
 
     var body: some View {
         NavigationStack {
@@ -37,6 +38,11 @@ struct DashboardView: View {
             .sheet(isPresented: $showingMemoryExplainer) {
                 memoryExplainerSheet
                     .presentationDetents([.medium])
+                    .presentationDragIndicator(.visible)
+            }
+            .sheet(isPresented: $showingPersonaPicker) {
+                PersonaPickerSheet()
+                    .presentationDetents([.medium, .large])
                     .presentationDragIndicator(.visible)
             }
             // The Dashboard is the landing tab and the user must always
@@ -80,7 +86,12 @@ struct DashboardView: View {
 
                 Spacer()
 
-                personaPill
+                Button {
+                    showingPersonaPicker = true
+                } label: {
+                    personaPill
+                }
+                .buttonStyle(.plain)
             }
             .accessibilityElement(children: .contain)
 
@@ -115,7 +126,7 @@ struct DashboardView: View {
         .overlay(Capsule().stroke(color.opacity(0.25), lineWidth: 0.5))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Aktivní osobnost: \(preset.name)")
-        .accessibilityHint("Změnit lze v detailu chatu")
+        .accessibilityHint("Klepnutím změníš osobnost")
     }
     
     private var greetingTimeOfDay: String {
