@@ -8,11 +8,13 @@ struct DashboardView: View {
     @EnvironmentObject private var personalization: PersonalizationService
     @EnvironmentObject private var settings: SettingsService
     @EnvironmentObject private var conversationService: ConversationService
+    @EnvironmentObject private var catalog: ModelCatalogService
 
     @Environment(\.showSidebarMenu) private var showSidebarMenu
 
     @State private var memoryHeadroom: RuntimeManager.MemoryHeadroom?
     @State private var isStartingNewChat = false
+    @State private var showingMemoryExplainer = false
 
     var body: some View {
         NavigationStack {
@@ -21,12 +23,22 @@ struct DashboardView: View {
                     greetingSection
                     hardwareStatusCard
                     quickActionsGrid
+                    if isFreshSetup {
+                        setupChecklistCard
+                    }
                     recentActivities
+                    recentDocuments
+                    recentFacts
                 }
                 .padding(.horizontal, HHTheme.spaceL)
                 .padding(.vertical, HHTheme.spaceM)
             }
             .background(HHTheme.canvas)
+            .sheet(isPresented: $showingMemoryExplainer) {
+                memoryExplainerSheet
+                    .presentationDetents([.medium])
+                    .presentationDragIndicator(.visible)
+            }
             // The Dashboard is the landing tab and the user must always
             // be able to navigate away. The toolbar button alone proved
             // unreliable in some scrolled / split-view states, so the
@@ -161,18 +173,33 @@ struct DashboardView: View {
 
                 Spacer()
 
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text("Paměťová rezerva")
-                        .font(HHTheme.caption)
-                        .foregroundStyle(HHTheme.textSecondary)
-                    HStack(spacing: 4) {
-                        Image(systemName: headroomIcon(for: memoryHeadroom))
-                            .font(.caption2)
-                        Text(headroomLabel(for: memoryHeadroom))
-                            .font(HHTheme.subheadline.weight(.semibold))
+                // Memory tier — its own tap target opens an explainer
+                // sheet rather than routing to Models like the rest of
+                // the card, so "what does Tight mean?" is one tap away.
+                Button {
+                    showingMemoryExplainer = true
+                } label: {
+                    VStack(alignment: .trailing, spacing: 2) {
+                        HStack(spacing: 3) {
+                            Text("Paměťová rezerva")
+                                .font(HHTheme.caption)
+                                .foregroundStyle(HHTheme.textSecondary)
+                            Image(systemName: "questionmark.circle")
+                                .font(.system(size: 10))
+                                .foregroundStyle(HHTheme.textSecondary.opacity(0.6))
+                        }
+                        HStack(spacing: 4) {
+                            Image(systemName: headroomIcon(for: memoryHeadroom))
+                                .font(.caption2)
+                            Text(headroomLabel(for: memoryHeadroom))
+                                .font(HHTheme.subheadline.weight(.semibold))
+                        }
+                        .foregroundStyle(headroomColor(for: memoryHeadroom))
                     }
-                    .foregroundStyle(headroomColor(for: memoryHeadroom))
                 }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Paměťová rezerva: \(headroomLabel(for: memoryHeadroom))")
+                .accessibilityHint("Otevře vysvětlení")
             }
         }
         .padding(HHTheme.spaceL)
@@ -314,8 +341,258 @@ struct DashboardView: View {
         }
     }
 
+    // MARK: - Setup checklist (fresh state)
+
+    /// True while the app looks brand-new: no model installed and no
+    /// conversations yet. Drives the onboarding checklist so a fresh
+    /// install gets concrete next steps instead of three empty cards.
+    private var isFreshSetup: Bool {
+        !hasInstalledModel && conversationService.conversations.isEmpty
+    }
+
+    private var hasInstalledModel: Bool {
+        catalog.models.contains { $0.installState.isReady }
+    }
+
+    @ViewBuilder
+    private var setupChecklistCard: some View {
+        VStack(alignment: .leading, spacing: HHTheme.spaceM) {
+            Text("Začínáme")
+                .font(HHTheme.title3)
+                .foregroundStyle(HHTheme.textPrimary)
+
+            checklistRow(
+                done: hasInstalledModel,
+                title: "Stáhni model",
+                subtitle: "Bez modelu nemůže asistent odpovídat.",
+                tab: .models
+            )
+            checklistRow(
+                done: !conversationService.conversations.isEmpty,
+                title: "Začni první chat",
+                subtitle: "Zeptej se na cokoliv — vše běží na zařízení.",
+                tab: .chat
+            )
+            checklistRow(
+                done: !knowledgeBase.documents.isEmpty,
+                title: "Importuj dokument (nepovinné)",
+                subtitle: "Asistent pak umí odpovídat z tvých souborů.",
+                tab: .knowledgeBase
+            )
+        }
+        .padding(HHTheme.spaceL)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .hhCard()
+    }
+
+    private func checklistRow(done: Bool, title: String, subtitle: String, tab: MainTab) -> some View {
+        Button {
+            if tab == .chat && !done {
+                Task { await startNewChat() }
+            } else {
+                appState.selectedTab = tab
+            }
+        } label: {
+            HStack(spacing: HHTheme.spaceM) {
+                Image(systemName: done ? "checkmark.circle.fill" : "circle")
+                    .font(.title3)
+                    .foregroundStyle(done ? HHTheme.success : HHTheme.textSecondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(HHTheme.subheadline.weight(.medium))
+                        .foregroundStyle(HHTheme.textPrimary)
+                        .strikethrough(done, color: HHTheme.textSecondary)
+                    Text(subtitle)
+                        .font(HHTheme.caption)
+                        .foregroundStyle(HHTheme.textSecondary)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                }
+                Spacer()
+                if !done {
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(HHTheme.textSecondary.opacity(0.5))
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(done)
+    }
+
+    // MARK: - Recent documents
+
+    @ViewBuilder
+    private var recentDocuments: some View {
+        let docs = Array(
+            knowledgeBase.documents
+                .sorted { $0.createdAt > $1.createdAt }
+                .prefix(3)
+        )
+        if !docs.isEmpty {
+            VStack(alignment: .leading, spacing: HHTheme.spaceM) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Nedávné dokumenty")
+                        .font(HHTheme.title3)
+                        .foregroundStyle(HHTheme.textPrimary)
+                    Spacer()
+                    Button("Zobrazit vše") {
+                        appState.selectedTab = .knowledgeBase
+                    }
+                    .font(HHTheme.footnote)
+                    .foregroundStyle(HHTheme.accent)
+                }
+                .padding(.bottom, HHTheme.spaceXS)
+
+                ForEach(docs) { doc in
+                    Button {
+                        appState.handle(deepLink: .document(doc.id))
+                    } label: {
+                        HStack {
+                            Image(systemName: doc.mimeType.contains("pdf") ? "doc.richtext.fill" : "doc.text.fill")
+                                .foregroundStyle(HHTheme.info)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(doc.title)
+                                    .font(HHTheme.subheadline.weight(.medium))
+                                    .foregroundStyle(HHTheme.textPrimary)
+                                    .lineLimit(1)
+                                Text("\(doc.chunkCount) úryvků · \(doc.createdAt.formatted(.relative(presentation: .named)))")
+                                    .font(HHTheme.caption)
+                                    .foregroundStyle(HHTheme.textSecondary)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption.weight(.bold))
+                                .foregroundStyle(HHTheme.textSecondary.opacity(0.5))
+                        }
+                        .padding(HHTheme.spaceM)
+                        .background(HHTheme.surface, in: RoundedRectangle(cornerRadius: HHTheme.cornerMedium))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+
+    // MARK: - Recent facts
+
+    @ViewBuilder
+    private var recentFacts: some View {
+        let facts = Array(
+            memory.facts
+                .filter { !$0.disabled }
+                .sorted { $0.createdAt > $1.createdAt }
+                .prefix(3)
+        )
+        if !facts.isEmpty {
+            VStack(alignment: .leading, spacing: HHTheme.spaceM) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Co si pamatuju")
+                        .font(HHTheme.title3)
+                        .foregroundStyle(HHTheme.textPrimary)
+                    Spacer()
+                    Button("Zobrazit vše") {
+                        appState.selectedTab = .memory
+                    }
+                    .font(HHTheme.footnote)
+                    .foregroundStyle(HHTheme.accent)
+                }
+                .padding(.bottom, HHTheme.spaceXS)
+
+                ForEach(facts) { fact in
+                    Button {
+                        appState.handle(deepLink: .memoryFact(fact.id))
+                    } label: {
+                        HStack(alignment: .top, spacing: HHTheme.spaceM) {
+                            Image(systemName: fact.category.symbol)
+                                .font(.subheadline)
+                                .foregroundStyle(HHTheme.warning)
+                                .frame(width: 20)
+                            Text(fact.content)
+                                .font(HHTheme.subheadline)
+                                .foregroundStyle(HHTheme.textPrimary)
+                                .lineLimit(2)
+                                .multilineTextAlignment(.leading)
+                            Spacer(minLength: 0)
+                        }
+                        .padding(HHTheme.spaceM)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(HHTheme.surface, in: RoundedRectangle(cornerRadius: HHTheme.cornerMedium))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+
+    // MARK: - Memory explainer
+
+    @ViewBuilder
+    private var memoryExplainerSheet: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: HHTheme.spaceL) {
+                    Text("Paměťová rezerva říká, kolik volné RAM má zařízení pro jazykový model. Čím větší rezerva, tím větší a chytřejší model uneseš bez pádů.")
+                        .font(HHTheme.body)
+                        .foregroundStyle(HHTheme.textSecondary)
+
+                    explainerRow(
+                        color: HHTheme.success,
+                        icon: "memorychip",
+                        title: "Dostatek",
+                        text: "Pohodlně zvládneš i větší modely (7–8 B)."
+                    )
+                    explainerRow(
+                        color: HHTheme.warning,
+                        icon: "memorychip.fill",
+                        title: "Střední",
+                        text: "Drž se menších modelů (3–4 B) nebo 4-bit kvantizace."
+                    )
+                    explainerRow(
+                        color: HHTheme.danger,
+                        icon: "exclamationmark.triangle.fill",
+                        title: "Málo",
+                        text: "Velké modely mohou spadnout. Zůstaň u 1–3 B ve 4-bit."
+                    )
+
+                    Text("Rezervu ovlivňuje i Výkonový profil v Nastavení — agresivnější profil nechá modelu víc paměti, ale zbude méně pro zbytek systému.")
+                        .font(HHTheme.footnote)
+                        .foregroundStyle(HHTheme.textSecondary)
+                        .padding(.top, HHTheme.spaceS)
+                }
+                .padding(HHTheme.spaceL)
+            }
+            .background(HHTheme.canvas)
+            .navigationTitle("Paměťová rezerva")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Hotovo") { showingMemoryExplainer = false }
+                }
+            }
+        }
+    }
+
+    private func explainerRow(color: Color, icon: String, title: String, text: String) -> some View {
+        HStack(alignment: .top, spacing: HHTheme.spaceM) {
+            Image(systemName: icon)
+                .font(.title3)
+                .foregroundStyle(color)
+                .frame(width: 28)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(HHTheme.subheadline.weight(.semibold))
+                    .foregroundStyle(HHTheme.textPrimary)
+                Text(text)
+                    .font(HHTheme.caption)
+                    .foregroundStyle(HHTheme.textSecondary)
+            }
+        }
+    }
+
     // MARK: - Helpers
-    
+
     private func refreshMemoryHeadroom() async {
         let profileSnapshot = settings.current.performanceProfile
         let result = await Task.detached(priority: .userInitiated) {
@@ -377,4 +654,5 @@ struct DashboardView: View {
         .environmentObject(AppContainer.preview().personalizationService)
         .environmentObject(AppContainer.preview().settingsService)
         .environmentObject(AppContainer.preview().conversationService)
+        .environmentObject(AppContainer.preview().modelCatalogService)
 }
