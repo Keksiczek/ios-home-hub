@@ -15,7 +15,25 @@ final class AppState: ObservableObject {
     }
 
     @Published var phase: Phase = .launching
-    @Published var selectedTab: MainTab = .dashboard
+    /// Currently-selected top-level destination. Persists the user's
+    /// last choice in `UserDefaults` under `app.selectedTab` so a
+    /// relaunch lands where they left off rather than always defaulting
+    /// to the dashboard — power users who live in Chat shouldn't have
+    /// to re-tap a tab every cold start.
+    @Published var selectedTab: MainTab = AppState.loadPersistedTab() {
+        didSet {
+            UserDefaults.standard.set(selectedTab.persistedKey, forKey: AppState.selectedTabKey)
+        }
+    }
+
+    private static let selectedTabKey = "app.selectedTab"
+
+    private static func loadPersistedTab() -> MainTab {
+        guard let raw = UserDefaults.standard.string(forKey: selectedTabKey),
+              let tab = MainTab(persistedKey: raw)
+        else { return .dashboard }
+        return tab
+    }
 
     /// Pending deep-link request from a Spotlight tap, custom URL,
     /// or App Intent. Set by `HomeHubApp.onContinueUserActivity`
@@ -64,12 +82,12 @@ enum MainTab: Hashable, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .dashboard:     return "Home"
+        case .dashboard:     return "Domů"
         case .chat:          return "Chat"
-        case .knowledgeBase: return "Documents"
-        case .memory:        return "Memory"
-        case .models:        return "Models"
-        case .settings:      return "Settings"
+        case .knowledgeBase: return "Dokumenty"
+        case .memory:        return "Paměť"
+        case .models:        return "Modely"
+        case .settings:      return "Nastavení"
         }
     }
 
@@ -81,6 +99,32 @@ enum MainTab: Hashable, CaseIterable, Identifiable {
         case .memory:        return "sparkles"
         case .models:        return "cube.box"
         case .settings:      return "gearshape"
+        }
+    }
+
+    /// Stable identifier used for `UserDefaults` persistence. Decoupled
+    /// from `String(describing:)` so renaming the case in source doesn't
+    /// silently invalidate persisted user state.
+    var persistedKey: String {
+        switch self {
+        case .dashboard:     return "dashboard"
+        case .chat:          return "chat"
+        case .knowledgeBase: return "knowledgeBase"
+        case .memory:        return "memory"
+        case .models:        return "models"
+        case .settings:      return "settings"
+        }
+    }
+
+    init?(persistedKey: String) {
+        switch persistedKey {
+        case "dashboard":     self = .dashboard
+        case "chat":          self = .chat
+        case "knowledgeBase": self = .knowledgeBase
+        case "memory":        self = .memory
+        case "models":        self = .models
+        case "settings":      self = .settings
+        default:              return nil
         }
     }
 }

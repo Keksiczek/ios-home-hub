@@ -25,29 +25,29 @@ struct SystemPromptManagerView: View {
     private var guardrailsStatus: String {
         let config = settings.current.guardrailsConfig
         let enabled = [config.hardRulesEnabled, config.privacyGuardrailEnabled].filter { $0 }.count
-        if enabled == 2 { return "Safe mode ✓" }
-        if enabled == 0 { return "Unrestricted" }
-        return "Mixed"
+        if enabled == 2 { return "Bezpečný režim ✓" }
+        if enabled == 0 { return "Bez omezení" }
+        return "Smíšené"
     }
 
     private var contexLayersStatus: String {
         let config = settings.current.guardrailsConfig
         let enabled = [config.factsEnabled, config.episodesEnabled, config.fileExcerptsEnabled, config.skillInstructionsEnabled].filter { $0 }.count
-        if enabled == 4 { return "Full context ✓" }
-        if enabled == 0 { return "Minimal" }
-        return "\(enabled)/4 layers"
+        if enabled == 4 { return "Plný kontext ✓" }
+        if enabled == 0 { return "Minimální" }
+        return "\(enabled)/4 vrstev"
     }
 
     var body: some View {
         List {
-            Section("Current configuration") {
-                LabeledContent("Active preset") {
+            Section("Aktuální konfigurace") {
+                LabeledContent("Aktivní preset") {
                     Text(settings.current.activeSystemPromptPreset.name)
                         .foregroundStyle(HHTheme.accent)
                         .font(.subheadline)
                 }
-                LabeledContent("Safety", value: guardrailsStatus)
-                LabeledContent("Context", value: contexLayersStatus)
+                LabeledContent("Bezpečnost", value: guardrailsStatus)
+                LabeledContent("Kontext", value: contexLayersStatus)
             }
 
             Section {
@@ -68,29 +68,29 @@ struct SystemPromptManagerView: View {
                             Button {
                                 viewingPreset = preset
                             } label: {
-                                Label("View", systemImage: "eye")
+                                Label("Zobrazit", systemImage: "eye")
                             }
                             .tint(HHTheme.accent)
                         } else {
                             Button(role: .destructive) {
                                 pendingDeletion = preset
                             } label: {
-                                Label("Delete", systemImage: "trash")
+                                Label("Smazat", systemImage: "trash")
                             }
                             Button {
                                 editingPreset = preset
                             } label: {
-                                Label("Edit", systemImage: "pencil")
+                                Label("Upravit", systemImage: "pencil")
                             }
                             .tint(HHTheme.accent)
                         }
                     }
                 }
             } footer: {
-                Text("The active preset seeds every new conversation's system prompt. Built-in presets are read-only so the default assistant behaviour stays recoverable.")
+                Text("Aktivní preset se vloží jako systémový prompt do každé nové konverzace. Vestavěné presety jsou jen pro čtení, aby šlo výchozí chování asistenta vždy obnovit.")
             }
         }
-        .navigationTitle("System prompts")
+        .navigationTitle("Systémové prompty")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
@@ -99,7 +99,7 @@ struct SystemPromptManagerView: View {
                 } label: {
                     Image(systemName: "plus")
                 }
-                .accessibilityLabel("New preset")
+                .accessibilityLabel("Nový preset")
             }
         }
         .sheet(isPresented: $showingNewEditor) {
@@ -125,7 +125,7 @@ struct SystemPromptManagerView: View {
             ) { _ in }
         }
         .confirmationDialog(
-            "Delete “\(pendingDeletion?.name ?? "")”?",
+            "Smazat preset \(pendingDeletion?.name ?? "")?",
             isPresented: Binding(
                 get: { pendingDeletion != nil },
                 set: { if !$0 { pendingDeletion = nil } }
@@ -133,15 +133,15 @@ struct SystemPromptManagerView: View {
             titleVisibility: .visible,
             presenting: pendingDeletion
         ) { preset in
-            Button("Delete", role: .destructive) {
+            Button("Smazat", role: .destructive) {
                 delete(preset)
                 pendingDeletion = nil
             }
-            Button("Cancel", role: .cancel) {
+            Button("Zrušit", role: .cancel) {
                 pendingDeletion = nil
             }
         } message: { _ in
-            Text("This preset will be removed. You can always create it again later.")
+            Text("Tento preset bude odebrán. Kdykoli ho můžeš znovu vytvořit.")
         }
     }
 
@@ -161,7 +161,7 @@ struct SystemPromptManagerView: View {
                         .font(HHTheme.headline)
                         .foregroundStyle(HHTheme.textPrimary)
                     if preset.isBuiltIn {
-                        Text("Built-in")
+                        Text("Vestavěný")
                             .font(HHTheme.caption)
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
@@ -241,11 +241,27 @@ private struct PresetEditor: View {
 
     @State private var name: String = ""
     @State private var prompt: String = ""
+    @State private var icon: String = PresetEditor.iconOptions.first ?? "sparkles"
+    @State private var colorHex: String = PresetEditor.colorOptions.first ?? "007AFF"
+
+    /// Curated icon set offered for custom personas. SF Symbols that
+    /// read well at small sizes and cover the common assistant roles.
+    static let iconOptions: [String] = [
+        "sparkles", "chevron.left.forwardslash.chevron.right", "paintbrush.pointed.fill",
+        "character.book.closed.fill", "brain.head.profile", "graduationcap.fill",
+        "briefcase.fill", "lightbulb.fill", "heart.fill", "globe", "function", "wand.and.stars"
+    ]
+
+    /// Hex palette mirrors the iOS system colours used by the built-in
+    /// presets so custom personas sit visually alongside them.
+    static let colorOptions: [String] = [
+        "007AFF", "AF52DE", "FF9500", "34C759", "FF2D55", "5856D6", "FF3B30", "00C7BE"
+    ]
 
     private var title: String {
         switch mode {
-        case .create: return "New preset"
-        case .edit:   return "Edit preset"
+        case .create: return "Nový preset"
+        case .edit:   return "Upravit preset"
         case .view:   return "Preset"
         }
     }
@@ -270,12 +286,16 @@ private struct PresetEditor: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Name") {
-                    TextField("e.g. Coder, Czech assistant", text: $name)
+                Section("Název") {
+                    TextField("např. Programátor, Český asistent", text: $name)
                         .textInputAutocapitalization(.words)
                         .disabled(mode.isReadOnly)
                 }
-                Section("System prompt") {
+                Section("Vzhled") {
+                    iconPicker
+                    colorPicker
+                }
+                Section("Systémový prompt") {
                     TextEditor(text: $prompt)
                         .frame(minHeight: 220)
                         .font(HHTheme.body)
@@ -284,14 +304,14 @@ private struct PresetEditor: View {
                 }
                 if duplicateName && !mode.isReadOnly {
                     Section {
-                        Label("Another preset already uses this name.", systemImage: "exclamationmark.triangle")
+                        Label("Jiný preset už tento název používá.", systemImage: "exclamationmark.triangle")
                             .font(HHTheme.footnote)
                             .foregroundStyle(HHTheme.warning)
                     }
                 }
                 if case .view = mode {
                     Section {
-                        Label("Built-in preset — read-only.", systemImage: "lock")
+                        Label("Vestavěný preset — jen pro čtení.", systemImage: "lock")
                             .font(HHTheme.footnote)
                             .foregroundStyle(HHTheme.textSecondary)
                     }
@@ -302,14 +322,14 @@ private struct PresetEditor: View {
             .toolbar {
                 if mode.isReadOnly {
                     ToolbarItem(placement: .topBarTrailing) {
-                        Button("Done") { dismiss() }
+                        Button("Hotovo") { dismiss() }
                     }
                 } else {
                     ToolbarItem(placement: .topBarLeading) {
-                        Button("Cancel") { dismiss() }
+                        Button("Zrušit") { dismiss() }
                     }
                     ToolbarItem(placement: .topBarTrailing) {
-                        Button("Save") {
+                        Button("Uložit") {
                             commit()
                             dismiss()
                         }
@@ -324,9 +344,76 @@ private struct PresetEditor: View {
                 case .edit(let preset), .view(let preset):
                     name = preset.name
                     prompt = preset.prompt
+                    if let i = preset.icon { icon = i }
+                    if let c = preset.colorHex { colorHex = c }
                 }
             }
         }
+    }
+
+    // MARK: - Appearance pickers
+
+    private var selectedColor: Color {
+        Color(hex: colorHex) ?? .blue
+    }
+
+    @ViewBuilder
+    private var iconPicker: some View {
+        VStack(alignment: .leading, spacing: HHTheme.spaceS) {
+            Text("Ikona")
+                .font(HHTheme.caption)
+                .foregroundStyle(HHTheme.textSecondary)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: HHTheme.spaceM) {
+                    ForEach(Self.iconOptions, id: \.self) { option in
+                        let isSelected = option == icon
+                        Image(systemName: option)
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(isSelected ? .white : selectedColor)
+                            .frame(width: 40, height: 40)
+                            .background(
+                                Circle().fill(isSelected ? selectedColor : selectedColor.opacity(0.12))
+                            )
+                            .overlay(Circle().stroke(selectedColor.opacity(isSelected ? 0 : 0.25), lineWidth: 1))
+                            .contentShape(Circle())
+                            .onTapGesture { if !mode.isReadOnly { icon = option } }
+                            .accessibilityLabel(isSelected ? "Vybraná ikona" : "Ikona")
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+        }
+        .disabled(mode.isReadOnly)
+    }
+
+    @ViewBuilder
+    private var colorPicker: some View {
+        VStack(alignment: .leading, spacing: HHTheme.spaceS) {
+            Text("Barva")
+                .font(HHTheme.caption)
+                .foregroundStyle(HHTheme.textSecondary)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: HHTheme.spaceM) {
+                    ForEach(Self.colorOptions, id: \.self) { option in
+                        let optionColor = Color(hex: option) ?? .blue
+                        let isSelected = option == colorHex
+                        Circle()
+                            .fill(optionColor)
+                            .frame(width: 32, height: 32)
+                            .overlay(
+                                Circle()
+                                    .stroke(HHTheme.textPrimary, lineWidth: isSelected ? 2 : 0)
+                                    .padding(2)
+                            )
+                            .contentShape(Circle())
+                            .onTapGesture { if !mode.isReadOnly { colorHex = option } }
+                            .accessibilityLabel(isSelected ? "Vybraná barva" : "Barva")
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+        }
+        .disabled(mode.isReadOnly)
     }
 
     private func commit() {
@@ -336,14 +423,20 @@ private struct PresetEditor: View {
                 id: UUID(),
                 name: trimmedName,
                 prompt: prompt,
-                isBuiltIn: false
+                isBuiltIn: false,
+                icon: icon,
+                colorHex: colorHex,
+                shortDescription: nil
             ))
         case .edit(let preset):
             onSave(SystemPromptPreset(
                 id: preset.id,
                 name: trimmedName,
                 prompt: prompt,
-                isBuiltIn: false
+                isBuiltIn: false,
+                icon: icon,
+                colorHex: colorHex,
+                shortDescription: preset.shortDescription
             ))
         case .view:
             break

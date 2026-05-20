@@ -55,17 +55,17 @@ struct AddFromURLSheet: View {
                     }
                 }
             }
-            .navigationTitle("Add from URL")
+            .navigationTitle("Přidat z URL")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button("Cancel") {
+                    Button("Zrušit") {
                         probeTask?.cancel()
                         dismiss()
                     }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Add") { submit() }
+                    Button("Přidat") { submit() }
                         .bold()
                         .disabled(!canSubmit)
                 }
@@ -89,9 +89,9 @@ struct AddFromURLSheet: View {
         Section {
             Label {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Support for GGUF and MLX.")
+                    Text("Podpora pro GGUF a MLX.")
                         .font(HHTheme.subheadline.weight(.semibold))
-                    Text("Paste a direct GGUF link for llama.cpp, or use `mlx://repo/id` to import an MLX model from Hugging Face.")
+                    Text("Vlož přímý odkaz na GGUF pro llama.cpp, nebo použij `mlx://repo/id` pro import MLX modelu z Hugging Face.")
                         .font(HHTheme.caption)
                         .foregroundStyle(HHTheme.textSecondary)
                 }
@@ -104,7 +104,7 @@ struct AddFromURLSheet: View {
 
     private var requiredSection: some View {
         Section {
-            TextField("Model name", text: $name)
+            TextField("Název modelu", text: $name)
                 .focused($focusedField, equals: .name)
                 .autocorrectionDisabled()
             TextField("https://…", text: $urlString)
@@ -113,9 +113,9 @@ struct AddFromURLSheet: View {
                 .autocapitalization(.none)
                 .autocorrectionDisabled()
         } header: {
-            Text("Required")
+            Text("Povinné")
         } footer: {
-            Text("Enter a direct .gguf URL (https://...) or an MLX repo (mlx://mlx-community/Llama-3.2-1B-Instruct-4bit).")
+            Text("Zadej přímou .gguf URL (https://...) nebo MLX repo (mlx://mlx-community/Llama-3.2-1B-Instruct-4bit).")
         }
     }
 

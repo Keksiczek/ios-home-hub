@@ -35,12 +35,12 @@ struct MemoryFact: Identifiable, Codable, Equatable, Hashable {
 
         var label: String {
             switch self {
-            case .personal:      return "Personal"
-            case .work:          return "Work"
-            case .preferences:   return "Preferences"
-            case .relationships: return "Relationships"
-            case .projects:      return "Projects"
-            case .other:         return "Other"
+            case .personal:      return "Osobní"
+            case .work:          return "Práce"
+            case .preferences:   return "Předvolby"
+            case .relationships: return "Vztahy"
+            case .projects:      return "Projekty"
+            case .other:         return "Ostatní"
             }
         }
 

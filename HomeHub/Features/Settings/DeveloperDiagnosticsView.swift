@@ -48,7 +48,7 @@ struct DeveloperDiagnosticsView: View {
             exportSection
             smokeTestSection
         }
-        .navigationTitle("Developer Diagnostics")
+        .navigationTitle("Diagnostika runtime")
         .navigationBarTitleDisplayMode(.inline)
         .task { await scanForStubs() }
         .task { await subscribeTelemetry() }

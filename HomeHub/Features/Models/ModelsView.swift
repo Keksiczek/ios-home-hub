@@ -483,7 +483,7 @@ struct ModelsView: View {
                 }
             }
             .listStyle(.insetGrouped)
-            .navigationTitle("Models")
+            .navigationTitle("Modely")
             .searchable(text: $searchText, prompt: "Search models")
             .refreshable {
                 refreshAvailableBytes()
@@ -510,18 +510,25 @@ struct ModelsView: View {
             .onChange(of: container.memoryWarningCount) { _, _ in
                 Task { await refreshMemoryHeadroom() }
             }
-            .task(id: searchText) {
-                if vm.selectedSource == .huggingFace {
-                    do {
-                        try await Task.sleep(nanoseconds: 300_000_000)
-                        await vm.fetchDynamicCatalog(query: searchText.isEmpty ? nil : searchText)
-                    } catch {}
+            // HF catalog refresh. Triggered by source switch, backend
+            // switch, or debounced search-text edits. The VM dedupes
+            // in-flight fetches internally so racing triggers can't
+            // overwrite each other.
+            .task(id: HFFetchTrigger(
+                source:  vm.selectedSource,
+                backend: vm.selectedBackend,
+                query:   searchText
+            )) {
+                guard vm.selectedSource == .huggingFace else { return }
+                // 300 ms debounce so each keystroke doesn't fire a
+                // request. If the trigger changes during the sleep,
+                // SwiftUI cancels this task and we silently bail.
+                do {
+                    try await Task.sleep(nanoseconds: 300_000_000)
+                } catch {
+                    return
                 }
-            }
-            .task(id: vm.selectedSource) {
-                if vm.selectedSource == .huggingFace {
-                    await vm.fetchDynamicCatalog(query: searchText.isEmpty ? nil : searchText)
-                }
+                vm.fetchDynamicCatalog(query: searchText.isEmpty ? nil : searchText)
             }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -529,7 +536,7 @@ struct ModelsView: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { showAddFromURL = true } label: {
-                        Label("Add from URL", systemImage: "plus")
+                        Label("Přidat z URL", systemImage: "plus")
                     }
                 }
             }
@@ -560,7 +567,7 @@ struct ModelsView: View {
                 if let model = downloadTarget {
                     if !hasSufficientSpace(for: model) {
                         // Disk space is a hard block — no Download action.
-                        Button("Cancel", role: .cancel) { downloadTarget = nil }
+                        Button("Zrušit", role: .cancel) { downloadTarget = nil }
                     } else if isRiskyOnPhone(model) {
                         // Soft gate: download proceeds, but the action label
                         // ("Stáhnout přesto") signals the user is opting in
@@ -590,7 +597,7 @@ struct ModelsView: View {
                             }
                             downloadTarget = nil
                         }
-                        Button("Cancel", role: .cancel) { downloadTarget = nil }
+                        Button("Zrušit", role: .cancel) { downloadTarget = nil }
                     }
                 }
             } message: {
@@ -629,7 +636,7 @@ struct ModelsView: View {
                 )
             ) {
                 if let model = deleteTarget {
-                    Button("Delete", role: .destructive) {
+                    Button("Smazat", role: .destructive) {
                         Task {
                             await downloads.deleteModel(model.id, runtime: runtime)
                             if settings.current.selectedModelID == model.id {
@@ -638,7 +645,7 @@ struct ModelsView: View {
                         }
                         deleteTarget = nil
                     }
-                    Button("Cancel", role: .cancel) { deleteTarget = nil }
+                    Button("Zrušit", role: .cancel) { deleteTarget = nil }
                 }
             } message: {
                 if let model = deleteTarget {
@@ -673,6 +680,16 @@ struct ModelsView: View {
 }
 
 // MARK: - ModelBrowserRow
+
+/// Composite key for `.task(id:)` HF refresh trigger. Lets one `.task`
+/// modifier cover all three independent inputs (source / backend /
+/// query) without spawning duplicate parallel fetches the way two
+/// separate `.task(id:)` modifiers did.
+private struct HFFetchTrigger: Equatable {
+    let source: ModelBrowserViewModel.SourceFilter
+    let backend: ModelBrowserViewModel.BackendFilter
+    let query: String
+}
 
 private struct ModelBrowserRow: View {
     let item:             ModelBrowserItem
@@ -982,7 +999,7 @@ private struct ModelBrowserRow: View {
                 mlxProgressView(progress: progress)
             } else if model.format == .mlx {
                 VStack(alignment: .leading, spacing: 4) {
-                    Button("Download") { onDownload() }
+                    Button("Stáhnout") { onDownload() }
                         .buttonStyle(HHSecondaryButtonStyle())
                         .disabled(!item.actions.canDownload)
                         .accessibilityIdentifier("mlx_download_button")
@@ -999,7 +1016,7 @@ private struct ModelBrowserRow: View {
                         .buttonStyle(HHSecondaryButtonStyle())
                         .disabled(!item.actions.canDownload)
                     if item.hasResumeData {
-                        Label("Paused", systemImage: "pause.circle.fill")
+                        Label("Pozastaveno", systemImage: "pause.circle.fill")
                             .font(HHTheme.caption)
                             .foregroundStyle(HHTheme.warning)
                     }
@@ -1022,7 +1039,7 @@ private struct ModelBrowserRow: View {
                     downloadPhaseLabel(progress: progress, phase: phase,
                                        indeterminate: isIndeterminate)
                     Spacer()
-                    Button("Cancel", action: onCancel)
+                    Button("Zrušit", action: onCancel)
                         .font(HHTheme.subheadline)
                         .tint(HHTheme.danger)
                 }
@@ -1037,7 +1054,7 @@ private struct ModelBrowserRow: View {
                         .font(HHTheme.caption)
                         .foregroundStyle(HHTheme.textSecondary)
                     Spacer()
-                    Button("Cancel", action: onCancel)
+                    Button("Zrušit", action: onCancel)
                         .font(HHTheme.subheadline)
                         .tint(HHTheme.danger)
                 }
@@ -1051,7 +1068,7 @@ private struct ModelBrowserRow: View {
             } else {
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: HHTheme.spaceS) {
-                        Button("Load", action: onLoad)
+                        Button("Načíst", action: onLoad)
                             .buttonStyle(HHSecondaryButtonStyle())
                             .disabled(!item.actions.canLoad)
                             .accessibilityIdentifier("mlx_load_button")
@@ -1073,7 +1090,7 @@ private struct ModelBrowserRow: View {
                         .font(HHTheme.caption)
                         .foregroundStyle(HHTheme.textSecondary)
                     Spacer()
-                    Button("Cancel") { onCancelMLXLoad() }
+                    Button("Zrušit") { onCancelMLXLoad() }
                         .font(HHTheme.subheadline)
                         .tint(HHTheme.danger)
                 }
@@ -1083,11 +1100,11 @@ private struct ModelBrowserRow: View {
         case .loaded:
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: HHTheme.spaceS) {
-                    Button("Unload", action: onUnload)
+                    Button("Uvolnit", action: onUnload)
                         .buttonStyle(HHSecondaryButtonStyle())
                         .disabled(!item.actions.canUnload)
                         .accessibilityIdentifier("mlx_unload_button")
-                    Label("Active", systemImage: "bolt.fill")
+                    Label("Aktivní", systemImage: "bolt.fill")
                         .font(HHTheme.caption)
                         .foregroundStyle(HHTheme.success)
                     Spacer()
@@ -1145,7 +1162,7 @@ private struct ModelBrowserRow: View {
                     .foregroundStyle(HHTheme.warning)
                     .lineLimit(3)
                 HStack(spacing: HHTheme.spaceS) {
-                    Button("Retry", action: onLoad)
+                    Button("Zkusit znovu", action: onLoad)
                         .buttonStyle(HHSecondaryButtonStyle())
                         .disabled(!item.actions.canLoad)
                         .accessibilityIdentifier("mlx_retry_button")
@@ -1173,7 +1190,7 @@ private struct ModelBrowserRow: View {
                         .foregroundStyle(HHTheme.textSecondary)
                         .accessibilityIdentifier("mlx_progress_label")
                     Spacer()
-                    Button("Cancel") { onCancelMLXLoad() }
+                    Button("Zrušit") { onCancelMLXLoad() }
                         .font(HHTheme.subheadline)
                         .tint(HHTheme.danger)
                         .accessibilityIdentifier("mlx_cancel_button")

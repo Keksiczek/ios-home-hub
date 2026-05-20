@@ -37,7 +37,7 @@ struct SidebarMenuButton: View {
                     .font(.body.weight(.medium))
             }
             .accessibilityLabel("Menu")
-            .accessibilityHint("Switch between sections")
+            .accessibilityHint("Přepnutí mezi sekcemi aplikace")
         }
     }
 }
@@ -81,7 +81,7 @@ struct SidebarMenuView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Close") { dismiss() }
+                    Button("Zavřít") { dismiss() }
                 }
             }
         }
@@ -108,9 +108,9 @@ struct SidebarMenuView: View {
             return model.displayName
         }
         switch runtime.state {
-        case .loading(let id): return "Loading \(id)…"
-        case .failed:          return "No model — see Developer Diagnostics"
-        default:               return "No model loaded"
+        case .loading(let id): return "Načítám \(id)…"
+        case .failed:          return "Žádný model — viz Diagnostika"
+        default:               return "Žádný model nenačten"
         }
     }
 
