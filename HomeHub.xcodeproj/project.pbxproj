@@ -37,6 +37,7 @@
 		25E4AF28D00F4041E08B6EFD /* PromptMode.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB86AD6EBAB5E48A532A95B7 /* PromptMode.swift */; };
 		280DC313F1010398AD61F752 /* LlamaRuntimeActor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 903A7DCCA8DACF4957B33D57 /* LlamaRuntimeActor.swift */; };
 		2AB8E8807B0938EB0520DBDB /* ChatTemplateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4644B0FCD5A5D456E8752B17 /* ChatTemplateTests.swift */; };
+		2B1F8E65EF38F2606AD31E52 /* MLXRuntime.swift.bak in Resources */ = {isa = PBXBuildFile; fileRef = A206B4FBA6AEE2A5DF04F064 /* MLXRuntime.swift.bak */; };
 		2BC96096B45830EFD1A72FC0 /* PromptStabilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 92D0F0AA299697C9F7EE8F3A /* PromptStabilityTests.swift */; };
 		2C5A587E0A43D3178440A54D /* HFTokenRedactionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7964824A9D3837A73A4C5D1C /* HFTokenRedactionTests.swift */; };
 		2CF74C27F60697FEC71344EF /* ToolCallEnvelope.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7A58CCC7DA2BBA5CEB441BA /* ToolCallEnvelope.swift */; };
@@ -388,6 +389,7 @@
 		A0331937FD8BE5947933D67C /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
 		A134E1B2C695D7EB07C8179F /* IngestJobStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IngestJobStore.swift; sourceTree = "<group>"; };
 		A17B7964C1E977D4C09A6D4B /* DeviceInfoSkill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceInfoSkill.swift; sourceTree = "<group>"; };
+		A206B4FBA6AEE2A5DF04F064 /* MLXRuntime.swift.bak */ = {isa = PBXFileReference; path = MLXRuntime.swift.bak; sourceTree = "<group>"; };
 		A2C3A2463F7B67EBE4CDA281 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		A37B26D0AADE28B715485BF2 /* HomeHubWidget.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = HomeHubWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		A3C1D9A149A12CC9AF610786 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
@@ -462,7 +464,7 @@
 		FC77A0AF6383D117D8F8E3C9 /* HuggingFaceAPIClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HuggingFaceAPIClientTests.swift; sourceTree = "<group>"; };
 		FDFE66596111A6FF50BB05B4 /* MemoryService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryService.swift; sourceTree = "<group>"; };
 		FF3B4090AFA2F0C3D244E359 /* RuntimeManagerLifecycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RuntimeManagerLifecycleTests.swift; sourceTree = "<group>"; };
-		"TEMP_075F453F-E0DB-4DBE-B99C-324E2741C1E1" /* LocalOverride.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = LocalOverride.xcconfig; sourceTree = "<group>"; };
+		"TEMP_3160AD99-0B7C-481F-8B8E-2FD98E27E213" /* LocalOverride.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = LocalOverride.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -778,6 +780,7 @@
 				F48895B5432EA6FA83753567 /* MLXLoader.swift */,
 				ADB0BB14A98647E2C4C531E3 /* MLXLoadProgress.swift */,
 				769B31D437F880BF85AF05C0 /* MLXRuntime.swift */,
+				A206B4FBA6AEE2A5DF04F064 /* MLXRuntime.swift.bak */,
 				7CE7ACCAEAA5FA7A738615B8 /* MockLocalRuntime.swift */,
 				D74EBED5003F8A6B2BF9A414 /* ModelCapabilityProfile.swift */,
 				ABB1D7D818A63E88F04A6018 /* RoutingRuntime.swift */,
@@ -886,10 +889,10 @@
 			path = HomeHubTests;
 			sourceTree = "<group>";
 		};
-		"TEMP_BA67966E-4629-4CD1-B281-77620EFAE2CA" /* ios-home-hub */ = {
+		"TEMP_83E39414-E55D-459B-A36B-4302421D9A57" /* ios-home-hub */ = {
 			isa = PBXGroup;
 			children = (
-				"TEMP_075F453F-E0DB-4DBE-B99C-324E2741C1E1" /* LocalOverride.xcconfig */,
+				"TEMP_3160AD99-0B7C-481F-8B8E-2FD98E27E213" /* LocalOverride.xcconfig */,
 			);
 			path = "ios-home-hub";
 			sourceTree = "<group>";
@@ -994,7 +997,7 @@
 						ProvisioningStyle = Automatic;
 					};
 					27DF3E3541C53527ABBE7AE8 = {
-						DevelopmentTeam = YOUR_TEAM_ID;
+						DevelopmentTeam = 8Y755TXDN8;
 						ProvisioningStyle = Automatic;
 					};
 					BCE3B88C507A9E6C6664FA6D = {
@@ -1037,6 +1040,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				9D5B684F9F258E2111DFA7E7 /* Assets.xcassets in Resources */,
+				2B1F8E65EF38F2606AD31E52 /* MLXRuntime.swift.bak in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1330,7 +1334,7 @@
 		};
 		893D398F804D32CD25261F97 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_075F453F-E0DB-4DBE-B99C-324E2741C1E1" /* LocalOverride.xcconfig */;
+			baseConfigurationReference = "TEMP_3160AD99-0B7C-481F-8B8E-2FD98E27E213" /* LocalOverride.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -1391,7 +1395,7 @@
 		};
 		8C17F1B1F01460AA9A7FAEF3 /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_075F453F-E0DB-4DBE-B99C-324E2741C1E1" /* LocalOverride.xcconfig */;
+			baseConfigurationReference = "TEMP_3160AD99-0B7C-481F-8B8E-2FD98E27E213" /* LocalOverride.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
@@ -1478,7 +1482,7 @@
 		};
 		E21EC51CB5176FD7B5797139 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_075F453F-E0DB-4DBE-B99C-324E2741C1E1" /* LocalOverride.xcconfig */;
+			baseConfigurationReference = "TEMP_3160AD99-0B7C-481F-8B8E-2FD98E27E213" /* LocalOverride.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
@@ -1511,7 +1515,7 @@
 		};
 		E53644E0FEA3DB3617A95788 /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_075F453F-E0DB-4DBE-B99C-324E2741C1E1" /* LocalOverride.xcconfig */;
+			baseConfigurationReference = "TEMP_3160AD99-0B7C-481F-8B8E-2FD98E27E213" /* LocalOverride.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
