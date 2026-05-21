@@ -91,7 +91,7 @@ struct AddFromURLSheet: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Podpora pro GGUF a MLX.")
                         .font(HHTheme.subheadline.weight(.semibold))
-                    Text("Vlož přímý odkaz na GGUF pro llama.cpp, nebo použij `mlx://repo/id` pro import MLX modelu z Hugging Face.")
+                    Text("Vlož přímý odkaz na .gguf soubor, nebo `mlx://autor/repo` pro MLX model z Hugging Face. Po přidání se stahování spustí automaticky na pozadí.")
                         .font(HHTheme.caption)
                         .foregroundStyle(HHTheme.textSecondary)
                 }
@@ -115,7 +115,7 @@ struct AddFromURLSheet: View {
         } header: {
             Text("Povinné")
         } footer: {
-            Text("Zadej přímou .gguf URL (https://...) nebo MLX repo (mlx://mlx-community/Llama-3.2-1B-Instruct-4bit).")
+            Text("Přímá .gguf URL (https://…) nebo Hugging Face MLX repo ve tvaru mlx://autor/repo — stahování začne hned.")
         }
     }
 
@@ -233,7 +233,7 @@ struct AddFromURLSheet: View {
                     color: result.isGGUF || urlString.lowercased().hasPrefix("mlx://") ? HHTheme.success : HHTheme.warning,
                     title: urlString.lowercased().hasPrefix("mlx://") ? "MLX Repo" : (result.isGGUF ? "Valid GGUF" : "Reachable, but not a GGUF"),
                     detail: urlString.lowercased().hasPrefix("mlx://")
-                        ? "MLX repository identifier will be used."
+                        ? "Stahování začne ihned po přidání — průběh uvidíš v seznamu modelů."
                         : (result.isGGUF ? "First 4 bytes match the GGUF magic header." : "First 4 bytes don't match GGUF. Download will fail validation.")
                 )
                 if let size = result.sizeBytes, size > 0 {

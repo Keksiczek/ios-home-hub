@@ -208,17 +208,19 @@ public final class DeviceMemoryProvider: Sendable {
 
         case .moderate:
             // iPhone 13–15 base, iPad Air, *or* iPhone 16 Pro without entitlements.
-            // Gemini: n_ctx 2048, n_batch 256, image_tokens 70.
+            // 4096 context: KV cache for 4K tokens is ~200–400 MB (well under the
+            // 2 GB sandboxed mmap limit); the limit applies to model weight files,
+            // not to KV allocations. Matches what Enclave AI uses on the same hardware.
             return DeviceMemoryProfile(
                 tier: tier,
                 usableRAMBytes: usableRAM,
-                contextWindowTokens: 2048,
+                contextWindowTokens: 4096,
                 batchSizeTokens: 256,
                 microBatchSizeTokens: 64,        // Sweet spot on Apple Neural Engine
-                mlxGPUCacheLimitBytes: 50 * 1024 * 1024,   // 50 MB (Gemini baseline)
+                mlxGPUCacheLimitBytes: 200 * 1024 * 1024,  // 200 MB — 50 MB caused constant buffer eviction during decode
                 maxGPULayers: 99,                // Full GPU offload
-                safeHistoryTokenBudget: 1400,
-                imageTokenBudget: 70,            // Gemini: conservative even on moderate
+                safeHistoryTokenBudget: 2800,
+                imageTokenBudget: 70,            // conservative even on moderate
                 hasKernelEntitlements: entitlements
             )
 
@@ -231,7 +233,7 @@ public final class DeviceMemoryProvider: Sendable {
                 contextWindowTokens: 4096,
                 batchSizeTokens: 512,
                 microBatchSizeTokens: 128,       // Maximize GPU parallelism during decoding
-                mlxGPUCacheLimitBytes: 128 * 1024 * 1024,  // 128 MB (aggressive)
+                mlxGPUCacheLimitBytes: 512 * 1024 * 1024,  // 512 MB — kernel entitlements + 8 GB RAM allow aggressive pool
                 maxGPULayers: 99,                // Full GPU offload
                 safeHistoryTokenBudget: 2800,
                 imageTokenBudget: 256,           // Entitlements present: full image quality

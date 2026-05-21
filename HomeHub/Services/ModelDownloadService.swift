@@ -457,18 +457,22 @@ final class ModelDownloadService: ObservableObject {
         let modelID = "user-\(safeSanitized)-\(Int(Date().timeIntervalSince1970) % 100_000)"
 
         let isMLX = url.scheme?.lowercased() == "mlx"
-        // The pre-stripped repo identifier was previously threaded
-        // through `LocalModel`, but the MLX path now resolves it
-        // directly from `url` downstream. Keeping the computation
-        // would make this look like a Chesterton's-fence bug, so
-        // it's deleted; reintroduce if a future caller needs it
-        // upfront.
+
+        // Derive family and parameter count from the URL + display name so
+        // ModelCapabilityProfile.resolve() picks the right sampling profile
+        // and instruction-follower tier. Without this, every custom model
+        // resolved to the conservative `default` profile (isWeak=true,
+        // lean mode) regardless of actual size — a 7B Mistral got the
+        // same osekaný prompt as a 1B Llama.
+        let searchText = url.absoluteString + " " + trimmedName
+        let detectedFamily = Self.detectFamilyFromText(searchText)
+        let detectedParams = Self.detectParamCountFromText(trimmedName)
 
         let model = LocalModel(
             id: modelID,
             displayName: trimmedName,
-            family: "Custom",
-            parameterCount: "?",
+            family: detectedFamily,
+            parameterCount: detectedParams,
             quantization: "?",
             // Populating sizeBytes from the URL probe lets the disk-space
             // preflight in `start(_:)` actually catch "phone is full"
@@ -488,12 +492,40 @@ final class ModelDownloadService: ObservableObject {
         )
 
         catalog.addUserModel(model)
-        
-        // MLX models don't need a separate download pass — they download 
-        // JIT during the first load. GGUF models start downloading immediately.
-        if !isMLX {
+
+        // Start download immediately for both formats — background URLSession
+        // handles network interruptions and retries, so the user sees real
+        // progress and the load step finds files already on disk.
+        if isMLX {
+            Task { await startMLXDownload(model) }
+        } else {
             start(model)
         }
+    }
+
+    /// Detects the model family from a combined URL + display-name string.
+    /// Mirrors HFModelMapper.detectFamily so custom `mlx://` models get the
+    /// same capability profile as catalog-discovered models of the same family.
+    nonisolated static func detectFamilyFromText(_ text: String) -> String {
+        let t = text.lowercased()
+        if t.contains("llama")                          { return "Llama" }
+        if t.contains("gemma-3n") || t.contains("gemma3n") { return "Gemma3n" }
+        if t.contains("gemma")                          { return "Gemma" }
+        if t.contains("mistral")                        { return "Mistral" }
+        if t.contains("qwen")                           { return "Qwen" }
+        if t.contains("phi")                            { return "Phi" }
+        if t.contains("smollm")                         { return "SmolLM2" }
+        return ""
+    }
+
+    /// Parses a parameter count string (e.g. "7B", "3.8B") from a display name.
+    /// Returns "?" when nothing recognisable is found.
+    nonisolated static func detectParamCountFromText(_ name: String) -> String {
+        let pattern = #"\b(\d+(?:\.\d+)?)\s*[bBmM]\b"#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: name, range: NSRange(name.startIndex..., in: name)),
+              let range = Range(match.range, in: name) else { return "?" }
+        return String(name[range]).uppercased()
     }
 
     /// Rewrites Hugging Face `blob/` URLs to `resolve/` so the download

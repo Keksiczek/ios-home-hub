@@ -1145,7 +1145,8 @@ final class ConversationService: ObservableObject {
         let activeModelSnapshot = runtime.activeModel
         let capabilityProfile = ModelCapabilityProfile.resolve(
             family: activeModelSnapshot?.family ?? "",
-            parameterCount: activeModelSnapshot?.parameterCount
+            parameterCount: activeModelSnapshot?.parameterCount,
+            contextLength: activeModelSnapshot?.contextLength
         )
 
         // Semantic recall over the *truncated* tail of message history.
@@ -1593,7 +1594,8 @@ final class ConversationService: ObservableObject {
 
         let profile = ModelCapabilityProfile.resolve(
             family: runtime.activeModel?.family ?? "",
-            parameterCount: runtime.activeModel?.parameterCount
+            parameterCount: runtime.activeModel?.parameterCount,
+            contextLength: runtime.activeModel?.contextLength
         )
         // Use the NSCache-backed `TokenEstimator.cachedTokens(in:)`
         // path here instead of looping `budgeter.tokensForMessage` —
@@ -2050,7 +2052,8 @@ final class ConversationService: ObservableObject {
 
         let profile = ModelCapabilityProfile.resolve(
             family: runtime.activeModel?.family ?? "",
-            parameterCount: runtime.activeModel?.parameterCount
+            parameterCount: runtime.activeModel?.parameterCount,
+            contextLength: runtime.activeModel?.contextLength
         )
         let budgeter = PromptTokenBudgeter(profile: profile)
 

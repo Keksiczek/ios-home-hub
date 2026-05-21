@@ -420,10 +420,54 @@ final class RuntimeManager: ObservableObject {
             mlxLoadTask = nil
             lastLoadProgressAt = nil
             currentLoadPhase = nil
-            state = .failed(modelID: model.id, reason: error.localizedDescription)
+            state = .failed(modelID: model.id, reason: Self.humanisedLoadError(error))
             log.error("Runtime: Load failed for '\(model.id, privacy: .public)': \(error.localizedDescription, privacy: .public)")
         }
         mlxLoadTask = nil
+    }
+
+    /// Maps a raw load error to a short, user-facing Czech string.
+    /// The raw `error.localizedDescription` from MLX-Swift can contain full
+    /// NSURLError UserInfo blobs (including 2 000-character pre-signed S3 URLs)
+    /// or English-only MLX messages — neither is suitable for direct display.
+    private static func humanisedLoadError(_ error: Error) -> String {
+        let desc = error.localizedDescription.lowercased()
+
+        // Network drop during MLX's own internal download (user-added URL models
+        // whose weights MLX fetches directly, e.g. via HuggingFace XET/CAS).
+        let networkCodes: [URLError.Code] = [
+            .networkConnectionLost, .notConnectedToInternet, .timedOut,
+            .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed,
+            .dataNotAllowed, .internationalRoamingOff,
+        ]
+        if let urlErr = error as? URLError, networkCodes.contains(urlErr.code) {
+            return "Připojení bylo přerušeno při stahování modelu. Zkontroluj Wi-Fi/mobilní data a zkus znovu."
+        }
+        // NSURLError wrapped inside a generic Swift error (MLX wraps it).
+        if desc.contains("network connection was lost") || desc.contains("not connected to the internet")
+            || desc.contains("code=-1005") || desc.contains("code=-1009") {
+            return "Připojení bylo přerušeno při stahování modelu. Zkontroluj Wi-Fi/mobilní data a zkus znovu."
+        }
+
+        // Out-of-memory — MLX throws an English message; map it to Czech.
+        if desc.contains("out of memory") || desc.contains("memory allocation") || desc.contains("cannot allocate")
+            || desc.contains("allocation failed") || desc.contains("enomem") {
+            return "Zařízení nemá dostatek volné paměti pro tento model. Zavři ostatní aplikace a zkus znovu."
+        }
+
+        // Model-file corruption / incomplete download (e.g. XET pointer downloaded
+        // instead of actual safetensors, or file truncated mid-transfer).
+        if desc.contains("invalid header") || desc.contains("magic") || desc.contains("safetensor")
+            || desc.contains("corrupt") || desc.contains("unexpected eof") {
+            return "Soubory modelu jsou poškozené nebo neúplné. Smaž model a stáhni ho znovu."
+        }
+
+        // Fallback: trim to a reasonable length so a 2 000-char URL doesn't fill the cell.
+        let raw = error.localizedDescription
+        if raw.count > 200 {
+            return String(raw.prefix(200)) + "…"
+        }
+        return raw
     }
 
     /// Stall-watchdog deadlines, picked separately per load phase:

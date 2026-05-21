@@ -178,21 +178,10 @@ final class ModelCatalogService: ObservableObject {
         recommendedFor: [DeviceClass],
         memoryProfile: DeviceMemoryProfile
     ) -> Int {
-        // iPad models always get generous allocation (can handle larger context)
-        if recommendedFor.contains(.iPadMSeries) {
-            return memoryProfile.contextWindowTokens
-        }
-
-        // iPhone: scale based on memory tier
-        switch memoryProfile.tier {
-        case .tight:
-            return 1024  // Hard floor for compatibility
-        case .moderate:
-            return memoryProfile.contextWindowTokens  // Use tier default
-        case .generous:
-            // iPhone 16 Pro: 2x context for longer conversations
-            return memoryProfile.contextWindowTokens
-        }
+        // Cap at the device tier limit, but never exceed what the model
+        // architecture supports. Avoids both over-capping (Gemma 3n 4096→2048)
+        // and over-assigning (SmolLM2 1024→2048).
+        return min(base, memoryProfile.contextWindowTokens)
     }
 
     // MARK: - Build-availability filtered views
@@ -528,7 +517,7 @@ enum ModelCatalog {
             downloadURL: URL(static: "https://huggingface.co/mlx-community/gemma-3n-E4B-it-4bit"),
             sha256: nil,
             installState: .notInstalled,
-            recommendedFor: [.iPadMSeries],
+            recommendedFor: [.iPhone, .iPadMSeries],
             license: "Gemma Terms of Use",
             backend: .mlx,
             format: .mlx,

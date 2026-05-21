@@ -462,7 +462,8 @@ final class PromptAssemblyService {
         You are a conversation summarizer. Produce a concise factual summary \
         of the conversation below. Be neutral, factual, and under 120 words. \
         Focus on key topics, decisions, and conclusions. Output only the summary \
-        text — no preamble, no labels.
+        text — no preamble, no labels. \
+        Use the same language as the conversation (if the conversation is in Czech, summarize in Czech).
         """
     }
 
@@ -499,6 +500,8 @@ final class PromptAssemblyService {
         - Extract at most 5 items total (facts + episodes combined). \
         Prefer the highest-confidence, most durable items; omit the rest.
         - If nothing is worth extracting, return empty arrays.
+        - Write all extracted content in the same language as the conversation \
+        (Czech if the conversation is in Czech).
         - Return ONLY valid JSON. No prose, no markdown fencing, no \
         explanation outside the JSON object.
 

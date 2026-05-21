@@ -156,7 +156,7 @@ extension ModelCapabilityProfile {
         supportsFlashAttention: true,
         nUBatch: 64,
         safeHistoryTokenBudget: 1400,
-        generationReserveTokens: 512,
+        generationReserveTokens: 1024,
         messageTokenOverhead: 7,
         supportsStructuredToolCalling: false,
         prefersDeferredMemoryExtraction: false,
@@ -177,7 +177,7 @@ extension ModelCapabilityProfile {
         supportsFlashAttention: true,
         nUBatch: 64,
         safeHistoryTokenBudget: 1400,
-        generationReserveTokens: 512,
+        generationReserveTokens: 1024,
         messageTokenOverhead: 5,
         supportsStructuredToolCalling: false,
         prefersDeferredMemoryExtraction: false,
@@ -196,7 +196,7 @@ extension ModelCapabilityProfile {
         supportsFlashAttention: true,
         nUBatch: 64,
         safeHistoryTokenBudget: 1400,
-        generationReserveTokens: 512,
+        generationReserveTokens: 1024,
         messageTokenOverhead: 6,
         supportsStructuredToolCalling: false,
         prefersDeferredMemoryExtraction: false,
@@ -218,7 +218,7 @@ extension ModelCapabilityProfile {
         supportsFlashAttention: true,
         nUBatch: 64,
         safeHistoryTokenBudget: 1200,
-        generationReserveTokens: 512,
+        generationReserveTokens: 1024,
         messageTokenOverhead: 6,
         supportsStructuredToolCalling: false,
         prefersDeferredMemoryExtraction: false,
@@ -261,11 +261,11 @@ extension ModelCapabilityProfile {
         supportsFlashAttention: true,
         nUBatch: 64,
         safeHistoryTokenBudget: 1600,
-        generationReserveTokens: 512,
+        generationReserveTokens: 1024,
         messageTokenOverhead: 6,
         supportsStructuredToolCalling: false,
         prefersDeferredMemoryExtraction: false,
-        recommendedTemperature: 0.35,
+        recommendedTemperature: 0.40,
         recommendedTopP: 0.9,
         recommendedTopK: 32,
         recommendedMinP: 0.08,
@@ -285,7 +285,7 @@ extension ModelCapabilityProfile {
         supportsFlashAttention: false,
         nUBatch: 64,
         safeHistoryTokenBudget: 1200,
-        generationReserveTokens: 512,
+        generationReserveTokens: 1024,
         messageTokenOverhead: 5,
         supportsStructuredToolCalling: false,
         prefersDeferredMemoryExtraction: false,
@@ -352,14 +352,29 @@ extension ModelCapabilityProfile {
     /// Russian tokens bleed into Czech replies), hallucinates entities.
     /// Treat anything ≤ 2B as weak regardless of family.
     ///
+    /// Additionally, any model with a context window ≤ 2 048 tokens is
+    /// promoted to weak regardless of parameter count. The full chat system
+    /// prompt (persona + user profile + facts + hard rules + tool policy)
+    /// consumes 1 500–2 000 tokens, leaving almost no room for conversation
+    /// history on a 2 048-token context. Llama 3.2 3B is the canonical
+    /// example: 3B > 2B threshold so it was treated as strong, but its
+    /// 2 048-token context caused it to fill with the system prompt on turn 2
+    /// and hallucinate names/fragments from the user-memory block.
+    ///
     /// - Parameters:
     ///   - family: `LocalModel.family`.
     ///   - parameterCount: `LocalModel.parameterCount` (e.g. `"1B"`, `"3B"`,
     ///     `"8B"`). When `nil`, behaves identically to `resolve(family:)`.
-    static func resolve(family: String, parameterCount: String?) -> ModelCapabilityProfile {
+    ///   - contextLength: `LocalModel.contextLength`. When ≤ 2 048 the model
+    ///     is promoted to weak regardless of parameter count.
+    static func resolve(
+        family: String,
+        parameterCount: String?,
+        contextLength: Int? = nil
+    ) -> ModelCapabilityProfile {
         let baseProfile = Self.baseProfile(for: family)
         let adjustedBudget = Self.dynamicHistoryBudget(baseProfile: baseProfile)
-        let isSmall = Self.isSmallVariant(parameterCount: parameterCount)
+        let isSmall = Self.isSmallVariant(parameterCount: parameterCount, contextLength: contextLength)
         let promotedWeak = baseProfile.isWeakInstructionFollower || isSmall
 
         // For small variants of otherwise-strong families: also tighten
@@ -394,17 +409,22 @@ extension ModelCapabilityProfile {
         )
     }
 
-    /// Parses `parameterCount` ("1B", "1.5B", "3B", "8B", "13B"…) and
-    /// returns `true` for anything ≤ 2B. Defensive against junk strings —
-    /// unparseable returns `false` (assume the catalog author knew what
-    /// they were doing).
+    /// Returns `true` when the model should be treated as a weak instruction
+    /// follower based on parameter count or context window size.
     ///
-    /// nonisolated for direct use from `resolve(family:parameterCount:)`
-    /// without crossing actor isolation.
-    nonisolated static func isSmallVariant(parameterCount: String?) -> Bool {
+    /// Two independent triggers:
+    /// - Parameter count ≤ 2B (unchanged).
+    /// - Context window ≤ 2 048 tokens: the full system prompt is
+    ///   1 500–2 000 tokens, leaving almost nothing for conversation history.
+    ///   Llama 3.2 3B (2 048-token context) is the motivating case — it
+    ///   was above the 2B threshold but exhibited identical hallucination
+    ///   symptoms on the second turn.
+    nonisolated static func isSmallVariant(
+        parameterCount: String?,
+        contextLength: Int? = nil
+    ) -> Bool {
+        if let ctx = contextLength, ctx <= 2048 { return true }
         guard let raw = parameterCount?.uppercased() else { return false }
-        // Strip trailing "B" / "M" / whitespace; M is megaparameters and
-        // is unambiguously small.
         let trimmed = raw.trimmingCharacters(in: .whitespaces)
         if trimmed.hasSuffix("M") { return true }
         let body = trimmed.hasSuffix("B") ? String(trimmed.dropLast()) : trimmed
@@ -439,13 +459,11 @@ extension ModelCapabilityProfile {
 
         switch memoryProfile.tier {
         case .tight:
-            // Conservative: trim history more aggressively
             return max(400, Int(Double(base) * 0.5))
         case .moderate:
-            // Keep base budget unchanged
-            return base
+            // Context doubled from 2048 → 4096; scale budget proportionally.
+            return Int(Double(base) * 1.5)
         case .generous:
-            // Generous: allow longer conversation history
             return Int(Double(base) * 2.0)
         }
     }

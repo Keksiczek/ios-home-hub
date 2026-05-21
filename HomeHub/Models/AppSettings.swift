@@ -65,7 +65,7 @@ struct AppSettings: Codable, Equatable {
         memoryEnabled: true,
         autoExtractMemory: true,
         streamingEnabled: true,
-        maxResponseTokens: 768,
+        maxResponseTokens: 1024,
         temperature: 0.7,
         topP: 0.9,
         topK: 40,
@@ -108,7 +108,7 @@ struct AppSettings: Codable, Equatable {
         /// when the user hasn't touched this slider — comparing
         /// against this constant is the same "factory baseline"
         /// detection used for the sampling knobs.
-        let maxResponseTokens: Int = 768
+        let maxResponseTokens: Int = 1024
     }
     static let factorySampling = FactorySampling()
 
