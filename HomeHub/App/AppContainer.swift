@@ -397,17 +397,24 @@ final class AppContainer: ObservableObject {
         //    we don't accidentally treat a still-known model as gone.
         modelDownloadService.pruneStaleResumeData()
 
-        // 3b. Sweep orphan MLX cache directories. Typical sources:
-        //     a user deleted a custom model while its multi-GB download
-        //     was running (cancel cleanup is best-effort and skips
-        //     half-downloaded shards iOS hadn't flushed yet), or a
-        //     curated entry was renamed across an app version bump.
+        // 3b. Sweep MLX cache directories — both orphans (no catalog
+        //     entry) and broken installs (catalog says installed but the
+        //     cache is missing weights / tokenizer / config for at least
+        //     7 days). Typical sources:
+        //       * orphan: user deleted a custom model while its multi-GB
+        //         download was running; curated entry renamed across an
+        //         app version bump.
+        //       * broken: download interrupted by force-quit / jetsam;
+        //         partial restore from iCloud; bit-rot on a shard.
+        //     The broken-cache pass also flips the catalog entry back to
+        //     `.notInstalled` so the user gets a Download button instead
+        //     of a deceptive "Installed" badge on a half-broken model.
         //     Detached so a slow disk walk on a large cache doesn't
         //     stall onboarding; cleanup is purely a hygiene pass and
         //     the result lands when it lands.
         Task.detached(priority: .utility) { [weak self] in
             guard let self else { return }
-            _ = await self.modelDownloadService.cleanOrphanedMLXCaches()
+            _ = await self.modelDownloadService.runMLXCacheHygiene()
         }
 
         if onboardingService.state.isCompleted {
@@ -615,21 +622,47 @@ final class AppContainer: ObservableObject {
         }
     }
 
-    /// Registers `WebSearchSkill(engine: DuckDuckGoLiteEngine())` with the
-    /// shared `SkillManager` iff the user has `WebSearch` in
-    /// `AppSettings.enabledTools`. Idempotent — re-registering with the
-    /// same name just replaces the engine.
+    /// Builds the active `WebSearchEngine` from settings.
+    ///
+    /// - When `searxngBaseURL` is configured, returns a `Fallback`
+    ///   engine that tries SearXNG first and falls through to DDG when
+    ///   SearXNG returns no results (down, misconfigured, query the
+    ///   instance refuses to handle).
+    /// - When no SearXNG URL is set (default), returns the standalone
+    ///   DDG Lite scraper.
+    ///
+    /// The fallback shape means users who paste a SearXNG URL get its
+    /// quality without losing offline-friendly DDG fallback when the
+    /// instance is unavailable. Users who never touch the field keep
+    /// working with DDG exactly like before.
+    private func makeWebSearchEngine() -> any WebSearchEngine {
+        let raw = settingsService.current.searxngBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty, let url = URL(string: raw) else {
+            return DuckDuckGoLiteEngine()
+        }
+        return FallbackWebSearchEngine(
+            primary: SearXNGEngine(baseURL: url),
+            fallback: DuckDuckGoLiteEngine()
+        )
+    }
+
+    /// Registers `WebSearchSkill` with the shared `SkillManager` iff
+    /// the user has `WebSearch` in `AppSettings.enabledTools`. The
+    /// engine is resolved via `makeWebSearchEngine()` so a configured
+    /// SearXNG URL fronts the DDG fallback. Idempotent —
+    /// re-registering with the same name replaces the engine, which is
+    /// the path users hit when they paste / clear their SearXNG URL
+    /// without toggling the WebSearch row.
     ///
     /// Called from `bootstrap()` after settings load, and from
-    /// `setWebSearchEnabled(_:)` whenever the user toggles the row in
-    /// Settings. The toggle path keeps the registry aligned with the
-    /// allow-list without forcing a relaunch.
+    /// `setWebSearchEnabled(_:)` / `setSearxngBaseURL(_:)` whenever
+    /// the user changes a field that affects the engine chain.
     private func registerWebSearchIfEnabled() async {
         let enabled = settingsService.current.enabledTools
             .map { $0.lowercased() }
             .contains("websearch")
         if enabled {
-            await SkillManager.shared.register(WebSearchSkill(engine: DuckDuckGoLiteEngine()))
+            await SkillManager.shared.register(WebSearchSkill(engine: makeWebSearchEngine()))
         }
     }
 
@@ -652,6 +685,103 @@ final class AppContainer: ObservableObject {
         await settingsService.set(\.enabledTools, to: current)
     }
 
+    // MARK: - iCloud sync
+
+    /// Toggles iCloud Drive sync for the persistent JSON store.
+    ///
+    /// Two-phase operation:
+    ///   1. Copy every file from the current root (local or iCloud) to
+    ///      the other root via `iCloudStorageBridge.migrate(...)`.
+    ///   2. Persist the new preference so subsequent `FileStore()`
+    ///      instantiations (cold launch) pick the new root.
+    ///
+    /// The currently-running `FileStore` keeps writing to its original
+    /// root for the rest of this session — switching the live store's
+    /// root would require coordinating with every actor mid-flight,
+    /// which is much more invasive than the kill-and-respawn cold
+    /// launch handles. The user sees a "Restart the app for sync to
+    /// take effect" message in the Settings row when this returns.
+    ///
+    /// Migration is best-effort: any individual file copy that fails
+    /// is logged and skipped (the user can re-toggle to retry). When
+    /// iCloud is unavailable (no entitlement, signed-out, or container
+    /// not provisioned in the developer portal), enabling the toggle
+    /// is a silent no-op — the bridge degrades to local storage and
+    /// no migration runs.
+    ///
+    /// - Parameter enabled: Whether iCloud sync should be active.
+    /// - Returns: Telemetry tuple — copied / failed file counts and a
+    ///   `requiresRelaunch` hint the Settings UI uses for its banner.
+    @discardableResult
+    func setICloudSyncEnabled(_ enabled: Bool) async -> (copied: Int, failed: Int, requiresRelaunch: Bool) {
+        // Refuse the migration when iCloud isn't actually reachable —
+        // we'd just no-op on resolveStorageDirectory anyway, and the
+        // user would see the toggle flip back on next launch (because
+        // the bridge re-resolves to local). Surface the unavailable
+        // state by leaving the setting where it was.
+        if enabled && !iCloudStorageBridge.isAvailable {
+            let log = Logger(subsystem: "HomeHub", category: "AppContainer")
+            log.notice("iCloud sync toggle: enable requested but iCloud unavailable — leaving preference at \(self.settingsService.current.iCloudSyncEnabled, privacy: .public)")
+            return (0, 0, false)
+        }
+
+        // Resolve source / destination once, before we mutate the
+        // setting — the bridge resolves directories based on the
+        // preference, so a snapshot here keeps the migration honest.
+        let currentRoot: URL
+        if let fileStore = store as? FileStore {
+            currentRoot = await fileStore.currentRootURL()
+        } else {
+            currentRoot = iCloudStorageBridge.resolveStorageDirectory(
+                preferICloud: settingsService.current.iCloudSyncEnabled
+            )
+        }
+        let targetRoot = iCloudStorageBridge.resolveStorageDirectory(preferICloud: enabled)
+
+        // Persist the preference FIRST so a crash mid-migration leaves
+        // the user in the "wanted state" — the next launch's FileStore
+        // will resolve to `targetRoot` and the cold launch's bootstrap
+        // re-runs the migration if any orphans remain. (The reverse
+        // ordering would risk persisting `false` after a successful
+        // copy, leaving data in iCloud the user thinks they enabled.)
+        await settingsService.set(\.iCloudSyncEnabled, to: enabled)
+
+        let result = try? await iCloudStorageBridge.migrate(from: currentRoot, to: targetRoot)
+        let copied = result?.copied ?? 0
+        let failed = result?.failed ?? 0
+
+        let log = Logger(subsystem: "HomeHub", category: "AppContainer")
+        log.info("iCloud sync toggle → \(enabled, privacy: .public): migrated \(copied, privacy: .public) item(s), \(failed, privacy: .public) failure(s)")
+
+        // Restart hint surfaces in the Settings footer. The live store
+        // keeps writing to its old root until cold launch picks up the
+        // new preference — that's a stale-write hazard for a session
+        // that lingers post-toggle (settings save lands in the old
+        // location, mismatching the iCloud copy). One forced cold
+        // launch eliminates the divergence.
+        return (copied: copied, failed: failed, requiresRelaunch: true)
+    }
+
+    /// Updates the SearXNG base URL and re-registers WebSearch so the
+    /// next chat turn uses the new engine chain. No-op when WebSearch
+    /// is disabled — the engine won't be referenced until the user
+    /// flips the row on, at which point `setWebSearchEnabled` will
+    /// rebuild from the latest settings anyway.
+    ///
+    /// The URL is trimmed but not otherwise validated; an unreachable
+    /// URL just means `SearXNGEngine.search` logs an error and falls
+    /// through to DDG, so the worst case for a typo is "behaves like
+    /// the WebSearch did before SearXNG was added".
+    func setSearxngBaseURL(_ raw: String) async {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        await settingsService.set(\.searxngBaseURL, to: trimmed)
+        let isEnabled = settingsService.current.enabledTools
+            .map { $0.lowercased() }
+            .contains("websearch")
+        guard isEnabled else { return }
+        await SkillManager.shared.register(WebSearchSkill(engine: makeWebSearchEngine()))
+    }
+
     /// Convenience: toggle the WebSearch tool from Settings UI without
     /// reaching into both `SettingsService` and `SkillManager` directly.
     /// Persists the allow-list change AND registers/unregisters the skill
@@ -661,7 +791,7 @@ final class AppContainer: ObservableObject {
         if enabled {
             tools.insert("WebSearch")
             await settingsService.set(\.enabledTools, to: tools)
-            await SkillManager.shared.register(WebSearchSkill(engine: DuckDuckGoLiteEngine()))
+            await SkillManager.shared.register(WebSearchSkill(engine: makeWebSearchEngine()))
         } else {
             tools.remove("WebSearch")
             await settingsService.set(\.enabledTools, to: tools)
@@ -975,6 +1105,17 @@ final class AppContainer: ObservableObject {
             // banner the next time Settings or a gated download is
             // attempted, never blocks the foreground transition.
             Task { await refreshHFTokenStatusIfStale() }
+
+            // MLX cache hygiene — throttled to at most once every 24 h
+            // per running process so the disk walk only fires when it
+            // could plausibly find new work to do. Bootstrap already
+            // runs the same pass on cold-launch; this catches users who
+            // keep the app suspended for days between sessions and
+            // accumulate broken caches in the background. Detached so
+            // the I/O can't stall the foreground transition.
+            Task { [weak self] in
+                await self?.runMLXCacheHygieneIfStale()
+            }
         default:
             break
         }
@@ -1021,6 +1162,37 @@ final class AppContainer: ObservableObject {
     /// Explicit user actions (the Settings "Re-ověřit" button) bypass
     /// this gate — they go through `forceRevalidateHFToken()` directly.
     private var lastHFRefreshAt: Date?
+
+    /// Minimum gap between two foreground-triggered MLX cache hygiene
+    /// runs. 24 h matches the natural cadence of someone using the app
+    /// daily: the bootstrap pass at cold launch covers the rare case,
+    /// and this catches users who keep the app suspended for multiple
+    /// days. Tighter than 24 h would burn disk I/O for no payoff (the
+    /// cache state doesn't change while the app is suspended).
+    private static let mlxHygieneMinInterval: TimeInterval = 24 * 60 * 60
+
+    /// Wall-clock of the most recent foreground-triggered cache pass.
+    /// The bootstrap pass doesn't update this — they're separate code
+    /// paths and the bootstrap one always runs unconditionally.
+    private var lastMLXHygieneAt: Date?
+
+    /// Foreground-triggered MLX cache hygiene gated by `mlxHygieneMinInterval`.
+    /// Repeated foreground transitions inside the throttle window are
+    /// no-ops; the first call after the window elapsed runs the full
+    /// orphan + broken-cache pass via `runMLXCacheHygiene()`. Sized to
+    /// pair with the existing `refreshHFTokenStatusIfStale` pattern.
+    func runMLXCacheHygieneIfStale() async {
+        if let last = lastMLXHygieneAt,
+           Date().timeIntervalSince(last) < Self.mlxHygieneMinInterval {
+            return
+        }
+        lastMLXHygieneAt = Date()
+        let result = await modelDownloadService.runMLXCacheHygiene()
+        if result.orphans > 0 || result.broken > 0 {
+            let log = Logger(subsystem: "HomeHub", category: "AppContainer")
+            log.info("Foreground MLX hygiene: \(result.orphans, privacy: .public) orphan(s) + \(result.broken, privacy: .public) broken cache(s) removed, reclaimed \(result.reclaimedBytes, privacy: .public) B")
+        }
+    }
 
     /// Runs the re-validation iff the stored verification is older than
     /// `hfTokenStaleThreshold` (or has never been recorded at all even
@@ -1129,6 +1301,32 @@ final class AppContainer: ObservableObject {
         )
         container.modelDownloadService.onModelInstalled = { [weak container] model in
             await container?.autoActivateAfterInstall(model)
+        }
+
+        // Broken-cache recovery: when MLXRuntime refuses to load a
+        // model because the on-disk cache is missing weights /
+        // tokenizer / config, flip the catalog back to `.notInstalled`
+        // and remove the broken cache directory. The Models view will
+        // re-render with a Download CTA on the next state push;
+        // without this, the user sees a load-failed banner over a
+        // row that still says "Installed", which is confusing and
+        // requires manual Delete + Download.
+        container.runtimeManager.onBrokenCacheDetected = { [weak container] model, _ in
+            guard let container else { return }
+            container.modelCatalogService.setInstallState(.notInstalled, for: model.id)
+            // Wipe the MLX cache so the next Download starts clean.
+            // GGUF models don't have a cache directory — `remove(_:)`
+            // is a no-op for missing files. Detached because we're
+            // already inside a load-failure log line and don't want
+            // disk I/O to delay the state mutation above.
+            Task { [weak container] in
+                guard let container else { return }
+                if model.format == .mlx, let repoId = model.repoId {
+                    try? await container.localModelService.removeMLXCache(for: repoId)
+                } else {
+                    try? await container.localModelService.remove(model.id)
+                }
+            }
         }
 
         // Plumb the GGUF metadata cache into the llama.cpp runtime so it

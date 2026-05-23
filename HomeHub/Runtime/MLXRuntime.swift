@@ -13,6 +13,13 @@ private final class PhaseSignal: @unchecked Sendable {
     var preparingSent = false
 }
 
+// Throttle helper for the download-progress diagnostic log. Same sequential-
+// access invariant as `PhaseSignal` — the MLX downloader calls the progress
+// adapter from a single task at a time, so the @unchecked is safe.
+private final class ProgressLogThrottle: @unchecked Sendable {
+    var lastLoggedFraction: Double = -1
+}
+
 /// MLX-backed local runtime for Apple Silicon — the primary backend.
 ///
 /// **Why this is the default:** MLX has no native binary dependency beyond
@@ -415,9 +422,28 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
         // Emit .preparing when download fraction hits 1.0 (download done,
         // Metal compilation begins). For warm-cache loads where no progress
         // callbacks fire, we emit .preparing after loader.load() returns.
+        //
+        // **Observability**: diagnostic counter so the Console log shows
+        // whether the upstream `HubApiDownloader` actually surfaces
+        // intermediate progress or only fires once at 100 %. If the user
+        // reports "stuck at 'Preparing…' with no progress bar", this
+        // line lets us tell whether the bug is in the callback wiring
+        // (our side) or the MLX framework's reporting cadence (their
+        // side). One log per ~10 % step keeps the noise bounded for the
+        // common case where progress reports continuously.
         let phaseSignal = PhaseSignal()
-        let progressAdapter: @Sendable (Progress) -> Void = { progress in
+        let logThrottle = ProgressLogThrottle()
+        let logRef = self.log
+        let progressAdapter: @Sendable (Progress) -> Void = { [logRef, repoId, logThrottle] progress in
             let fraction = max(0, min(1, progress.fractionCompleted))
+            // Throttled diagnostic log at every 10 % step so the user can
+            // confirm in Console that intermediate progress IS arriving.
+            // First fire (fraction < 0.1) always logs so the absence of
+            // any log = "framework never called us during this download".
+            if fraction - logThrottle.lastLoggedFraction >= 0.1 || logThrottle.lastLoggedFraction < 0 {
+                logThrottle.lastLoggedFraction = fraction
+                logRef.debug("MLX: download progress for '\(repoId, privacy: .public)' → \(Int(fraction * 100), privacy: .public)%")
+            }
             if fraction >= 1.0, !phaseSignal.preparingSent {
                 phaseSignal.preparingSent = true
                 progressHandler?(.preparing)

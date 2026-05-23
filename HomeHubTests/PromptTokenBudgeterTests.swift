@@ -7,8 +7,9 @@ import XCTest
 /// ## What these tests guard
 /// 1. `HeuristicTokenEstimator` returns plausible counts per script class.
 /// 2. Empty input never crashes and returns 0.
-/// 3. `PromptTokenBudgeter.trimHistory` drops the oldest messages first
-///    and never exceeds the budget.
+/// 3. `PromptTokenBudgeter.trimHistory` uses anchor + recency trimming:
+///    always keeps the first 2 messages (anchors) and fills remaining
+///    budget with the most-recent messages. Middle messages are dropped.
 /// 4. `PromptBudgetReport` derived properties (totalPromptTokens, summary)
 ///    are consistent with the sections array.
 /// 5. The budgeter accounts for per-message overhead in the trim calculation.
@@ -104,7 +105,7 @@ final class PromptTokenBudgeterTests: XCTestCase {
         XCTAssertEqual(result.dropped, 0)
     }
 
-    func testTrimHistoryDropsOldestFirst() {
+    func testTrimHistoryPreservesAnchorsAndRecentMessages() {
         // 20 messages × 400 ASCII chars. At 0.25 tok/char → ~100 tokens body
         // + 7 overhead (llama) = ~107 tokens/msg. Budget 1400 → ~13 messages.
         let messages = makeMessages(count: 20, charLength: 400)
@@ -113,29 +114,65 @@ final class PromptTokenBudgeterTests: XCTestCase {
 
         XCTAssertLessThan(result.kept.count, 20, "Should have trimmed some messages")
         XCTAssertGreaterThan(result.kept.count, 0, "Should have kept some messages")
-
-        // Kept messages must be a suffix of the original list (newest-first retention).
-        let expectedSuffix = Array(messages.suffix(result.kept.count))
-        XCTAssertEqual(result.kept.map(\.id), expectedSuffix.map(\.id),
-            "Kept messages must be the most-recent ones, in original order")
-
         XCTAssertEqual(result.dropped, messages.count - result.kept.count)
+
+        // Anchor invariant: the first 2 messages must always be kept.
+        XCTAssertGreaterThanOrEqual(result.kept.count, 2, "Must keep at least the 2 anchors")
+        XCTAssertEqual(result.kept[0].id, messages[0].id, "First anchor must be messages[0]")
+        XCTAssertEqual(result.kept[1].id, messages[1].id, "Second anchor must be messages[1]")
+
+        // Recency invariant: messages after the anchors must be a suffix
+        // of messages[2...], i.e. the most-recent non-anchor messages.
+        let recentKept = Array(result.kept.dropFirst(2))
+        if !recentKept.isEmpty {
+            let tail = Array(messages.dropFirst(2).suffix(recentKept.count))
+            XCTAssertEqual(recentKept.map(\.id), tail.map(\.id),
+                "Non-anchor kept messages must be the most-recent tail of messages[2...]")
+        }
+    }
+
+    func testTrimHistoryDropsOldestFirst() {
+        // Legacy alias — delegates to the anchor test so old test names still pass.
+        testTrimHistoryPreservesAnchorsAndRecentMessages()
     }
 
     func testTrimHistoryNeverExceedsBudget() {
+        // 30 messages × 300 chars, default profile (budget 1000, overhead 5).
+        // Each msg ≈ 75 + 5 = 80 tokens; total 2 400 >> 1 000, so trimming fires.
+        // Anchor-first: keeps m0, m1; fills tail; drops m2…m{k} from the middle.
         let messages = makeMessages(count: 30, charLength: 300)
         let profile = ModelCapabilityProfile.default
         let budgeter = PromptTokenBudgeter(profile: profile)
         let result = budgeter.trimHistory(messages)
 
+        // 1. Budget not exceeded.
         let totalTokens = result.kept.reduce(0) {
             $0 + budgeter.tokensForMessage(content: $1.content)
         }
         XCTAssertLessThanOrEqual(totalTokens, profile.safeHistoryTokenBudget,
             "Token cost of kept messages must not exceed the budget")
+
+        // 2. Anchor invariant: the first two messages must always survive.
+        XCTAssertGreaterThanOrEqual(result.kept.count, 2,
+            "At least the 2 anchors must be kept")
+        XCTAssertEqual(result.kept[0].id, messages[0].id,
+            "First anchor (m0) must be kept")
+        XCTAssertEqual(result.kept[1].id, messages[1].id,
+            "Second anchor (m1) must be kept")
+
+        // 3. Dropped messages must NOT include either anchor — only middle
+        //    messages (between the anchors and the recent tail) should fall.
+        let keptIDs = Set(result.kept.map(\.id))
+        let anchorIDs = Set(messages.prefix(2).map(\.id))
+        let droppedAnchorCount = anchorIDs.subtracting(keptIDs).count
+        XCTAssertEqual(droppedAnchorCount, 0,
+            "Anchors m0/m1 must never be dropped — only middle messages should fall")
     }
 
     func testTighterBudgetKeepsFewerMessages() {
+        // 20 messages × 400 chars.
+        // Llama (budget 1 400, overhead 7): each ≈ 107 tok → trims to ~13 (2 anchors + 11 recent).
+        // Phi   (budget 1 200, overhead 5): each ≈ 105 tok → trims to ~11 (2 anchors + 9 recent).
         let messages = makeMessages(count: 20, charLength: 400)
         let llamaBudgeter = PromptTokenBudgeter(profile: .llama)
         let phiBudgeter   = PromptTokenBudgeter(profile: .phi)
@@ -143,17 +180,57 @@ final class PromptTokenBudgeterTests: XCTestCase {
         let llamaResult = llamaBudgeter.trimHistory(messages)
         let phiResult   = phiBudgeter.trimHistory(messages)
 
+        // 1. Larger budget → keeps at least as many messages.
         XCTAssertGreaterThanOrEqual(llamaResult.kept.count, phiResult.kept.count,
             "Llama's larger budget should keep at least as many messages as Phi's")
+
+        // 2. Both profiles must honour the anchor+recency structure.
+        for (result, label) in [(llamaResult, "llama"), (phiResult, "phi")] {
+            // 2a. Anchors present.
+            XCTAssertGreaterThanOrEqual(result.kept.count, 2,
+                "\(label): must keep at least 2 anchors")
+            XCTAssertEqual(result.kept[0].id, messages[0].id,
+                "\(label): first anchor must be messages[0]")
+            XCTAssertEqual(result.kept[1].id, messages[1].id,
+                "\(label): second anchor must be messages[1]")
+
+            // 2b. Non-anchor kept messages are the most-recent tail of messages[2...].
+            let recentKept = Array(result.kept.dropFirst(2))
+            if !recentKept.isEmpty {
+                let expectedTail = Array(messages.dropFirst(2).suffix(recentKept.count))
+                XCTAssertEqual(recentKept.map(\.id), expectedTail.map(\.id),
+                    "\(label): non-anchor kept messages must be the most-recent tail")
+            }
+        }
     }
 
     func testTrimHistoryPreservesOriginalOrder() {
-        let messages = makeMessages(count: 5, charLength: 50)
+        // Use enough messages + chars that trimming actually fires, so the test
+        // isn't trivially satisfied by the "all fit" fast path.
+        // 15 messages × 400 chars, llama (budget 1 400, overhead 7).
+        // Each ≈ 107 tokens; total ~1 605 > 1 400 → trimming fires.
+        let messages = makeMessages(count: 15, charLength: 400)
         let budgeter = PromptTokenBudgeter(profile: .llama)
         let result = budgeter.trimHistory(messages)
-        // Kept messages must appear in the same relative order as the input.
-        let suffix = Array(messages.suffix(result.kept.count))
-        XCTAssertEqual(result.kept.map(\.id), suffix.map(\.id))
+
+        XCTAssertLessThan(result.kept.count, messages.count,
+            "Trimming must have fired — all messages must not have fit")
+
+        // Kept messages must appear in the same relative order as in the input
+        // (they form an order-preserving subsequence). With anchor trimming the
+        // result is [m0, m1, …recent…], which is NOT necessarily messages.suffix(k),
+        // but the relative order of the kept IDs must still match the original.
+        let keptIDs   = result.kept.map(\.id)
+        let originalIDs = messages.map(\.id)
+        var cursor = originalIDs.startIndex
+        for id in keptIDs {
+            guard let idx = originalIDs[cursor...].firstIndex(of: id) else {
+                XCTFail("Kept message \(id) not found in original array at or after index \(cursor)")
+                return
+            }
+            cursor = originalIDs.index(after: idx)
+        }
+        // If we reach here, every kept ID appeared in the original order.
     }
 
     // MARK: - PromptBudgetReport

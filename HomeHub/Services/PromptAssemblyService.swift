@@ -278,6 +278,20 @@ final class PromptAssemblyService {
             5. Use Markdown sparingly: short paragraphs, lists only when they \
             help, fenced code blocks for code. Never wrap a one-line answer in \
             a list or heading.
+            6. Always give a complete answer of at least 2 sentences. \
+            If you cannot answer, briefly explain why.
+            """)
+        }
+
+        // Minimum-response guard for weak models. Strong models get the
+        // same rule via the hard-rules block above. Weak models skip hard
+        // rules entirely but still need this single line — without it,
+        // small quantised models (≤3B) frequently produce 1–2 word replies
+        // or a bare sentence fragment when the system prompt is lean.
+        if isWeak {
+            stableChunks.append("""
+            Always answer with at least 2 complete sentences. \
+            If you cannot answer the question, briefly explain why.
             """)
         }
 
@@ -440,12 +454,19 @@ final class PromptAssemblyService {
         appendFacts(from: package, to: &chunks, limit: 3)
         appendEpisodes(from: package, to: &chunks)
 
-        // Short, direct tool reminder. Prevents the model from repeating 
+        // Short, direct tool reminder. Prevents the model from repeating
         // instructions and gets straight to the user's answer.
+        // Min-length guard appended here: toolFollowup is the one place where
+        // small models routinely produce a single word or a bare noun after
+        // seeing the <Observation> tag, because the abbreviated prompt leaves
+        // them with no explicit output-length signal. The .chat path has this
+        // guard in the stable system chunks; for toolFollowup we bake it into
+        // the tool reminder so both entry-points are covered.
         chunks.append("""
         Tool Observation: Use the provided <Observation> to answer the user. \
-        Be direct and natural. Do NOT use another tool unless the observation \
-        is missing critical data.
+        Be direct and natural, and always answer with at least 2 complete \
+        sentences. Do NOT use another tool unless the observation is missing \
+        critical data.
         """)
 
         if package.settings.guardrailsConfig.privacyGuardrailEnabled {
@@ -568,8 +589,25 @@ final class PromptAssemblyService {
         }
         let factLines = package.facts.prefix(limit).map { fact -> String in
             let raw = fact.content
-            if raw.count <= perFactCap { return "- \(raw)" }
-            return "- \(raw.prefix(perFactCap))…"
+            // Cap is calibrated in BPE-token-proxy units, which align
+            // more closely with Unicode scalars than with Swift's
+            // Character / grapheme-cluster `count`. A single emoji is
+            // one Character but 4–6 BPE pieces; a CJK character is one
+            // Character but ~1 token; flag emoji are 2 scalars and
+            // routinely 8+ tokens. Switching to `unicodeScalars.count`
+            // brings the cap closer to the real budget impact across
+            // scripts at the cost of a few percent over-truncation on
+            // pure Latin text (which still over-counts diacritics into
+            // 2 scalars). When truncating we cut on Character
+            // boundaries to avoid producing an orphan combining mark.
+            let measure = raw.unicodeScalars.count
+            if measure <= perFactCap { return "- \(raw)" }
+            // Approximate scalar→character ratio so the truncated
+            // prefix targets the cap measured in scalars while still
+            // slicing on grapheme boundaries.
+            let avgScalarsPerChar = max(1, measure / max(1, raw.count))
+            let charCap = max(1, perFactCap / avgScalarsPerChar)
+            return "- \(raw.prefix(charCap))…"
         }
         chunks.append("""
         Remembered facts (user-controlled, may be incomplete):

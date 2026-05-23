@@ -123,15 +123,35 @@ struct HeuristicTokenEstimator: TokenEstimating {
         case 0x00...0x1F, 0x7F:
             return 0.125
 
-        // ASCII punctuation and symbols — usually one token per
-        // character or slightly better; calibrate to ~2.8 chars/token.
+        // ASCII punctuation and symbols — BPE tokenisers usually keep
+        // one token per character; a few merged digraphs (`.\n`, `, `,
+        // `: `) sneak in but the dominant case is 1:1. Earlier 1/2.8
+        // (≈ 0.36) under-counted punctuation-dense Czech prose because
+        // diacritic-letter+punct sequences split aggressively. 0.5 is
+        // the same anchor we use for non-ASCII scripts — slightly
+        // over-counts on pure English but errs on the safe side for
+        // mixed-language inputs, which is the right direction for a
+        // budget guard.
         case 0x21...0x2F, 0x3A...0x40, 0x5B...0x60, 0x7B...0x7E:
-            return 1.0 / 2.8
+            return 0.5
 
-        // Everything else — Cyrillic, Greek, Latin-Extended, etc.
-        // BPE vocabularies tokenise these around 2–3 chars/token.
+        // Latin-Extended (covers Czech, Polish, Hungarian, German
+        // umlauts) — ASCII letters with diacritics. Llama 3 / Qwen /
+        // Gemma BPE tokenizers split most diacritic-bearing words into
+        // 1.5–2 chars/token (more aggressive than plain ASCII because
+        // the diacritic forms aren't always in the vocab). Czech "ě"
+        // / "ř" / "ů" routinely split into 2 BPE pieces. Weight 0.5
+        // (= 2 chars/token) over-estimates by ~10–20 % for typical
+        // mixed Czech prose, which is the safe direction for a budget
+        // guard — under-estimating Czech caused real-world prompt
+        // overruns on Llama 3.2 3B with a 2 048-token context.
+        case 0x80...0x024F:      // Latin-1 Supplement + Latin-Extended-A/B
+            return 0.5
+
+        // Everything else — Cyrillic, Greek, Arabic, etc.
+        // BPE vocabularies tokenise these around 2 chars/token.
         default:
-            return 0.4
+            return 0.5
         }
     }
 }
@@ -251,26 +271,62 @@ struct PromptTokenBudgeter: Sendable {
         estimator.tokens(in: content) + profile.messageTokenOverhead
     }
 
-    /// Keeps as many of the most-recent messages as fit inside the
-    /// profile's `safeHistoryTokenBudget`. Oldest messages are dropped
-    /// first; ordering of the kept messages is preserved.
+    /// Keeps as many messages as fit inside the profile's
+    /// `safeHistoryTokenBudget` using an anchor + recency strategy:
+    ///
+    /// 1. The first two messages are always kept ("anchors") — they
+    ///    establish the conversation topic and the persona expectations
+    ///    the user set at turn 0. Losing them in long threads causes the
+    ///    model to drift off-topic or forget the user's initial framing.
+    /// 2. The remaining budget is filled by the most-recent messages
+    ///    (newest first), so the immediate context is never starved.
+    /// 3. Messages in the middle are dropped when the budget is tight —
+    ///    those are the least load-bearing for continuity.
+    ///
+    /// Falls back to pure recency when the anchors alone exceed the
+    /// budget (extremely tight profile + very long opening messages).
     ///
     /// - Returns: `kept` contains the surviving messages in their
     ///   original order; `dropped` counts how many were removed.
     func trimHistory(_ messages: [Message]) -> (kept: [Message], dropped: Int) {
+        guard !messages.isEmpty else { return ([], 0) }
         let budget = profile.safeHistoryTokenBudget
-        var running = 0
-        var keptReversed: [Message] = []
-        keptReversed.reserveCapacity(messages.count)
 
-        for message in messages.reversed() {
-            let cost = tokensForMessage(content: message.content)
-            if running + cost > budget { break }
-            running += cost
-            keptReversed.append(message)
+        // Fast path: everything fits.
+        let totalCost = messages.reduce(0) { $0 + tokensForMessage(content: $1.content) }
+        if totalCost <= budget { return (messages, 0) }
+
+        // Anchor phase: reserve cost for the first two messages.
+        let anchorSlice = messages.prefix(2)
+        let anchorCost = anchorSlice.reduce(0) { $0 + tokensForMessage(content: $1.content) }
+
+        // Fallback to pure-recency when anchors are too expensive.
+        guard anchorCost < budget else {
+            var running = 0
+            var keptReversed: [Message] = []
+            for message in messages.reversed() {
+                let cost = tokensForMessage(content: message.content)
+                if running + cost > budget { break }
+                running += cost
+                keptReversed.append(message)
+            }
+            let kept = Array(keptReversed.reversed())
+            return (kept, messages.count - kept.count)
         }
 
-        let kept = Array(keptReversed.reversed())
+        // Recency phase: fill remaining budget from the tail (skipping anchors).
+        let tail = Array(messages.dropFirst(anchorSlice.count))
+        let remainingBudget = budget - anchorCost
+        var running = 0
+        var recentReversed: [Message] = []
+        for message in tail.reversed() {
+            let cost = tokensForMessage(content: message.content)
+            if running + cost > remainingBudget { break }
+            running += cost
+            recentReversed.append(message)
+        }
+        let recent = Array(recentReversed.reversed())
+        let kept = Array(anchorSlice) + recent
         return (kept, messages.count - kept.count)
     }
 }

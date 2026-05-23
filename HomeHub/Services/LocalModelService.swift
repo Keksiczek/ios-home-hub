@@ -343,6 +343,22 @@ actor LocalModelService {
         return total
     }
 
+    /// Returns the wall-clock age (seconds since the most-recent modification)
+    /// of an MLX cache directory. `nil` when the directory doesn't exist
+    /// or the attribute lookup fails. Used by `pruneBrokenMLXCaches` to
+    /// avoid yanking a cache that's still being actively written into
+    /// (a download that finished its last shard 20 seconds ago could
+    /// momentarily fail inspection while the move-into-place hop runs).
+    func mlxCacheAge(for repoId: String) -> TimeInterval? {
+        let cacheDir = mlxCacheURL(for: repoId)
+        guard fileManager.fileExists(atPath: cacheDir.path) else { return nil }
+        guard let attrs = try? fileManager.attributesOfItem(atPath: cacheDir.path),
+              let modDate = attrs[.modificationDate] as? Date else {
+            return nil
+        }
+        return Date().timeIntervalSince(modDate)
+    }
+
     // MARK: - GGUF Support
     func isInstalled(_ modelID: String) -> Bool {
         fileManager.fileExists(atPath: localURL(for: modelID).path)

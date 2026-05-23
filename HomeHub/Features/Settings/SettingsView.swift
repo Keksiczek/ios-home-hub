@@ -58,6 +58,26 @@ struct SettingsView: View {
     /// size shown in the prompt match exactly what the user tapped.
     @State private var bulkRetryTarget: [LocalModel]?
 
+    /// Editable mirror of `AppSettings.searxngBaseURL`. Loaded from
+    /// settings on appear and written back via the AppContainer setter
+    /// when the user submits (Return key) or the row loses focus. Kept
+    /// as a separate @State so the user can type freely without each
+    /// keystroke firing a re-register of the WebSearch skill.
+    @State private var searxngBaseURLDraft: String = ""
+    /// One-shot status message ("Uloženo", "Vymazáno") shown below the
+    /// SearXNG field after a save. Cleared by an `await Task.sleep` so
+    /// it auto-dismisses after a couple of seconds without needing a
+    /// SwiftUI timer.
+    @State private var searxngStatusMessage: String?
+
+    /// One-shot message rendered below the iCloud sync row after a
+    /// toggle. Tells the user how many files were migrated and that
+    /// a relaunch is recommended. Cleared on dismiss.
+    @State private var iCloudMigrationMessage: String?
+    /// Disables the toggle while the migration is in flight so a
+    /// double-tap can't kick off two concurrent copy passes.
+    @State private var iCloudMigrating: Bool = false
+
     /// Route enum for path-based navigation. Lets a deep link push
     /// the right destination from outside without the user having
     /// to tap through Settings → Developer → Knowledge Base.
@@ -80,6 +100,9 @@ struct SettingsView: View {
 
                 DisclosureGroup {
                     toolsSection
+                    if settings.current.enabledTools.contains("WebSearch") {
+                        searxngSection
+                    }
                     memorySection
                 } label: {
                     Label("Intelligence & Skills", systemImage: "cpu.fill")
@@ -391,6 +414,102 @@ struct SettingsView: View {
     private func openAppSettings() {
         guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
         UIApplication.shared.open(url)
+    }
+
+    // MARK: - SearXNG
+
+    /// Optional SearXNG instance configuration. Only visible when
+    /// WebSearch is enabled (the parent DisclosureGroup gates it),
+    /// because configuring SearXNG without WebSearch being on would
+    /// have no observable effect — the skill is filtered out of the
+    /// agentic loop at dispatch time.
+    ///
+    /// **UX contract**: typing in the field doesn't fire a save on
+    /// every keystroke. The URL is committed on Return (submit) or
+    /// when the field loses focus to avoid re-registering the
+    /// WebSearchSkill 20× while the user is mid-paste.
+    private var searxngSection: some View {
+        Section {
+            VStack(alignment: .leading, spacing: 8) {
+                TextField(
+                    "https://searx.example.org",
+                    text: $searxngBaseURLDraft
+                )
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled(true)
+                .keyboardType(.URL)
+                .submitLabel(.done)
+                .onSubmit { Task { await commitSearxngURL() } }
+
+                if let msg = searxngStatusMessage {
+                    Text(msg)
+                        .font(HHTheme.caption)
+                        .foregroundStyle(.secondary)
+                        .transition(.opacity)
+                }
+
+                HStack {
+                    Button("Uložit") {
+                        Task { await commitSearxngURL() }
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(searxngBaseURLDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                              == settings.current.searxngBaseURL)
+
+                    if !settings.current.searxngBaseURL.isEmpty {
+                        Button(role: .destructive) {
+                            searxngBaseURLDraft = ""
+                            Task { await commitSearxngURL() }
+                        } label: {
+                            Text("Vymazat")
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                }
+            }
+        } header: {
+            Text("SearXNG (volitelné)")
+        } footer: {
+            Text(
+                "Pokud máš vlastní SearXNG instanci (nebo důvěryhodnou veřejnou), " +
+                "vlož její URL — vyhledávání pak půjde přes ní s vyšší kvalitou " +
+                "a stabilnějším JSON API. Pokud instance nereaguje nebo nevrátí " +
+                "výsledky, automaticky se přejde na DuckDuckGo. " +
+                "Prázdné pole = používá se jen DuckDuckGo."
+            )
+        }
+        .onAppear {
+            // Sync the draft from current settings on every appearance.
+            // Defensive: a foreground re-validation or another
+            // configuration code path could have updated the persisted
+            // value while this view was off-screen.
+            searxngBaseURLDraft = settings.current.searxngBaseURL
+        }
+    }
+
+    /// Persists the SearXNG URL via `AppContainer.setSearxngBaseURL`
+    /// and shows a brief inline status message. The setter already
+    /// short-circuits when no real change occurred (empty + already
+    /// empty, or unchanged URL), so we don't need to deduplicate
+    /// here — but we still update the status string so the user
+    /// gets feedback either way.
+    private func commitSearxngURL() async {
+        let trimmed = searxngBaseURLDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        await container.setSearxngBaseURL(trimmed)
+        searxngStatusMessage = trimmed.isEmpty
+            ? "Vymazáno — používá se DuckDuckGo."
+            : "Uloženo."
+        // Auto-dismiss after a couple of seconds. Detached + check via
+        // a small token so a rapid second save doesn't see the first
+        // dismissal racing in.
+        let token = trimmed
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            // Only clear if no newer save replaced it.
+            if searxngBaseURLDraft.trimmingCharacters(in: .whitespacesAndNewlines) == token {
+                searxngStatusMessage = nil
+            }
+        }
     }
 
     // MARK: - Memory
@@ -902,6 +1021,7 @@ struct SettingsView: View {
             NavigationLink("Soukromí a data") {
                 PrivacyView()
             }
+            iCloudSyncRow
             Button(role: .destructive) {
                 showRestartOnboardingConfirm = true
             } label: {
@@ -928,6 +1048,71 @@ struct SettingsView: View {
             // actions deserve unambiguous wording at the decision
             // point itself.
             Text("Smaže tvůj profil a styl asistenta a znovu spustí uvítací průvodce. Chaty, paměť ani nainstalované modely se nemažou.")
+        }
+    }
+
+    // MARK: - iCloud sync row
+
+    /// Single-row UI for the iCloud Documents sync toggle. Three
+    /// states it must distinguish:
+    ///
+    ///   * **Available + on**: green checkmark, "Syncing to iCloud"
+    ///   * **Available + off**: standard toggle, "Off"
+    ///   * **Unavailable**: toggle disabled, helper text below explains
+    ///     why (signed out, no entitlement, or container not yet
+    ///     provisioned in the developer portal). Disabled-state is
+    ///     critical UX — without it, the user flips the toggle, sees
+    ///     no change, and assumes the feature is broken.
+    @ViewBuilder
+    private var iCloudSyncRow: some View {
+        let available = iCloudStorageBridge.isAvailable
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle(isOn: Binding(
+                get: { settings.current.iCloudSyncEnabled },
+                set: { newValue in
+                    iCloudMigrating = true
+                    Task {
+                        let result = await container.setICloudSyncEnabled(newValue)
+                        let copiedSegment = result.copied > 0 ? "\(result.copied) souborů přeneseno. " : ""
+                        let restartSegment = result.requiresRelaunch ? "Restartuj appku, aby se sync plně projevil." : ""
+                        iCloudMigrationMessage = newValue
+                            ? "\(copiedSegment)\(restartSegment)"
+                            : "\(copiedSegment)Sync vypnutý — data zůstávají lokálně."
+                        iCloudMigrating = false
+                        // Auto-dismiss after a few seconds so the
+                        // banner doesn't linger forever.
+                        try? await Task.sleep(nanoseconds: 6_000_000_000)
+                        iCloudMigrationMessage = nil
+                    }
+                }
+            )) {
+                Label {
+                    Text("Synchronizovat přes iCloud")
+                } icon: {
+                    Image(systemName: available ? "icloud.fill" : "icloud.slash")
+                        .foregroundStyle(available ? Color.accentColor : .secondary)
+                }
+            }
+            .disabled(!available || iCloudMigrating)
+
+            if !available {
+                Text("iCloud zatím není dostupný — přihlas se na zařízení k iCloud účtu a v Xcode → Signing & Capabilities ověř, že je přidána capability iCloud Documents.")
+                    .font(HHTheme.caption)
+                    .foregroundStyle(.secondary)
+            } else if let msg = iCloudMigrationMessage, !msg.isEmpty {
+                Text(msg)
+                    .font(HHTheme.caption)
+                    .foregroundStyle(.secondary)
+                    .transition(.opacity)
+            } else if settings.current.iCloudSyncEnabled {
+                Text("Tvoje chaty, paměť a profil se zálohují do iCloud Drive a synchronizují se mezi tvými zařízeními. Modely (.gguf, MLX váhy) zůstávají lokálně — jsou příliš velké pro sync.")
+                    .font(HHTheme.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("Bez iCloud syncu se data ukládají pouze lokálně — clean install z Xcode nebo \"Smazat appku\" je nenávratně smaže.")
+                    .font(HHTheme.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 

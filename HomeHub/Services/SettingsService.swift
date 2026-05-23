@@ -31,6 +31,7 @@ final class SettingsService: ObservableObject {
         do {
             if let saved = try await store.loadAppSettings() {
                 current = saved
+                mirrorICloudPreference(saved.iCloudSyncEnabled)
                 return
             }
             // File is simply absent — first launch or post-reset.
@@ -43,6 +44,14 @@ final class SettingsService: ObservableObject {
         }
         current = .default
         await persist(.default)
+        mirrorICloudPreference(AppSettings.default.iCloudSyncEnabled)
+    }
+
+    /// Writes the iCloud-sync preference into `UserDefaults` so
+    /// `FileStore.init()` can read it before the settings JSON loads.
+    /// See `FileStore.iCloudPreferenceKey` for the bootstrap rationale.
+    private func mirrorICloudPreference(_ enabled: Bool) {
+        UserDefaults.standard.set(enabled, forKey: FileStore.iCloudPreferenceKey)
     }
 
     // MARK: - Writes
@@ -53,6 +62,7 @@ final class SettingsService: ObservableObject {
     func update(_ settings: AppSettings) async {
         if await persist(settings) {
             current = settings
+            mirrorICloudPreference(settings.iCloudSyncEnabled)
         }
     }
 
