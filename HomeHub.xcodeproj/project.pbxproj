@@ -67,7 +67,6 @@
 		459235F0B7FA21EA42CB75B7 /* MLXLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = F48895B5432EA6FA83753567 /* MLXLoader.swift */; };
 		4620F4E0ADF0BD53827E8BE1 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2C3A2463F7B67EBE4CDA281 /* AppDelegate.swift */; };
 		471BB2311B56FB1274D128C8 /* FileStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53DE65D19366D761237CBB17 /* FileStore.swift */; };
-		E1CDB8B7C0F4A5E6B9012345 /* iCloudStorageBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2DEC9C8D1F5B6F7C0123456 /* iCloudStorageBridge.swift */; };
 		4C9846057A525BF73774A3F9 /* ShareViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0331937FD8BE5947933D67C /* ShareViewController.swift */; };
 		50380EBD6888D9FC5F89C187 /* SummarizationServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 82A2E4A3B6B3790456B2C1F0 /* SummarizationServiceTests.swift */; };
 		5124D866F6280F3FFEA3D0EC /* PersonaPickerSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6B4FD7CBFE807C2D81485BA /* PersonaPickerSheet.swift */; };
@@ -108,6 +107,7 @@
 		7D53293B070C9C2EC64D0594 /* ExtractionPayload.swift in Sources */ = {isa = PBXBuildFile; fileRef = 09DAA76051EEFF6D2E8215DC /* ExtractionPayload.swift */; };
 		7D97B22CD92260C99CC9BF45 /* MLXLoadProgress.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADB0BB14A98647E2C4C531E3 /* MLXLoadProgress.swift */; };
 		7F82669422F6CC38CBB72E04 /* BackgroundDownloadCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3BC9E0FDD68A0DB9199618F6 /* BackgroundDownloadCoordinator.swift */; };
+		801971F6ADF29EF3FEBF3C00 /* iCloudStorageBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 145A768C5E1DCBA07B5CDBED /* iCloudStorageBridge.swift */; };
 		80D4267A41CC0604579197EB /* IngestJobStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A134E1B2C695D7EB07C8179F /* IngestJobStore.swift */; };
 		8128EE6E252F7F2C64AC3CAC /* SkillManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC7F3C528063C314CCDBF0CF /* SkillManagerTests.swift */; };
 		82D65671D72C0318A4D551B4 /* MLXLMCommon in Frameworks */ = {isa = PBXBuildFile; productRef = 6C3B2A986E385D4C601A2766 /* MLXLMCommon */; };
@@ -264,6 +264,7 @@
 		0D6E69D750B847169DDF38B9 /* DashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardView.swift; sourceTree = "<group>"; };
 		0F5C0A7C0DAD06616D6A8CBE /* SystemPromptPreset.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemPromptPreset.swift; sourceTree = "<group>"; };
 		12BA3113EE77914F7D7C60B7 /* RuntimeManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RuntimeManager.swift; sourceTree = "<group>"; };
+		145A768C5E1DCBA07B5CDBED /* iCloudStorageBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = iCloudStorageBridge.swift; sourceTree = "<group>"; };
 		149D5CEB395DB0533A6D2706 /* ModelImportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelImportTests.swift; sourceTree = "<group>"; };
 		14F56F13E17D9A38363D6734 /* HHTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HHTheme.swift; sourceTree = "<group>"; };
 		150D6725C49C164B4D42BED7 /* ModelsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelsView.swift; sourceTree = "<group>"; };
@@ -325,7 +326,6 @@
 		52883734A26E98454CA86B73 /* ImageVisionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageVisionService.swift; sourceTree = "<group>"; };
 		53C71ACED9B9946D612C744F /* Store.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Store.swift; sourceTree = "<group>"; };
 		53DE65D19366D761237CBB17 /* FileStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileStore.swift; sourceTree = "<group>"; };
-		F2DEC9C8D1F5B6F7C0123456 /* iCloudStorageBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = iCloudStorageBridge.swift; sourceTree = "<group>"; };
 		5779CBB193E71E8D6EADB598 /* LocalLLMRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalLLMRuntime.swift; sourceTree = "<group>"; };
 		5783F49A1038AB3611E13C45 /* WebSearchSkill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSearchSkill.swift; sourceTree = "<group>"; };
 		57A5CB25A449448E1344C41E /* ModelInfoSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelInfoSheet.swift; sourceTree = "<group>"; };
@@ -464,7 +464,6 @@
 		FC77A0AF6383D117D8F8E3C9 /* HuggingFaceAPIClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HuggingFaceAPIClientTests.swift; sourceTree = "<group>"; };
 		FDFE66596111A6FF50BB05B4 /* MemoryService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryService.swift; sourceTree = "<group>"; };
 		FF3B4090AFA2F0C3D244E359 /* RuntimeManagerLifecycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RuntimeManagerLifecycleTests.swift; sourceTree = "<group>"; };
-		"TEMP_3160AD99-0B7C-481F-8B8E-2FD98E27E213" /* LocalOverride.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = LocalOverride.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -617,7 +616,7 @@
 			isa = PBXGroup;
 			children = (
 				53DE65D19366D761237CBB17 /* FileStore.swift */,
-				F2DEC9C8D1F5B6F7C0123456 /* iCloudStorageBridge.swift */,
+				145A768C5E1DCBA07B5CDBED /* iCloudStorageBridge.swift */,
 				4B520B3F720FB7A8E4596432 /* InMemoryStore.swift */,
 				53C71ACED9B9946D612C744F /* Store.swift */,
 				AA6B25A64A60D529BE39FD09 /* SwiftDataStore.swift */,
@@ -889,14 +888,6 @@
 			path = HomeHubTests;
 			sourceTree = "<group>";
 		};
-		"TEMP_83E39414-E55D-459B-A36B-4302421D9A57" /* ios-home-hub */ = {
-			isa = PBXGroup;
-			children = (
-				"TEMP_3160AD99-0B7C-481F-8B8E-2FD98E27E213" /* LocalOverride.xcconfig */,
-			);
-			path = "ios-home-hub";
-			sourceTree = "<group>";
-		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -1084,7 +1075,6 @@
 				EE00CD35806F2E8BAE02C02F /* ExtractionPromptBuilder.swift in Sources */,
 				B2FBB8F5932E44AEFF1566D6 /* FakeMLXLoader.swift in Sources */,
 				471BB2311B56FB1274D128C8 /* FileStore.swift in Sources */,
-				E1CDB8B7C0F4A5E6B9012345 /* iCloudStorageBridge.swift in Sources */,
 				F82CC40539FCDB2D77D69F17 /* GGUFMetadata.swift in Sources */,
 				3676B62B7A241935EFEBD8C4 /* GGUFModelMetadata.swift in Sources */,
 				21D0AD5D6CA02B9483119B50 /* GenerationWatchdog.swift in Sources */,
@@ -1204,6 +1194,7 @@
 				6BB96D7D13D4EF43BD0C908D /* WidgetActionHandler.swift in Sources */,
 				F998F1F00D3CBD088EB71FCA /* WidgetBridge.swift in Sources */,
 				DF791AF833ADC64FC847EB65 /* WidgetRenderer.swift in Sources */,
+				801971F6ADF29EF3FEBF3C00 /* iCloudStorageBridge.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1334,7 +1325,6 @@
 		};
 		893D398F804D32CD25261F97 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_3160AD99-0B7C-481F-8B8E-2FD98E27E213" /* LocalOverride.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -1395,7 +1385,6 @@
 		};
 		8C17F1B1F01460AA9A7FAEF3 /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_3160AD99-0B7C-481F-8B8E-2FD98E27E213" /* LocalOverride.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
@@ -1482,7 +1471,6 @@
 		};
 		E21EC51CB5176FD7B5797139 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_3160AD99-0B7C-481F-8B8E-2FD98E27E213" /* LocalOverride.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
@@ -1515,7 +1503,6 @@
 		};
 		E53644E0FEA3DB3617A95788 /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_3160AD99-0B7C-481F-8B8E-2FD98E27E213" /* LocalOverride.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;

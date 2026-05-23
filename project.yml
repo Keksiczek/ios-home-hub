@@ -105,10 +105,6 @@ packages:
     url: https://github.com/argmaxinc/WhisperKit
     from: 0.11.0
 
-configFiles:
-  Debug: LocalOverride.xcconfig
-  Release: LocalOverride.xcconfig
-
 settings:
   base:
     DEVELOPMENT_TEAM: 8Y755TXDN8
@@ -130,6 +126,12 @@ targets:
       properties:
         com.apple.security.application-groups:
           - group.cz.keksiczek.homehub.shared
+        com.apple.developer.icloud-container-identifiers:
+          - iCloud.cz.keksiczek.homehub
+        com.apple.developer.icloud-services:
+          - CloudDocuments
+        com.apple.developer.ubiquity-container-identifiers:
+          - iCloud.cz.keksiczek.homehub
     sources:
       - path: HomeHub
         # `*.md` documentation files are sprinkled across feature
@@ -180,9 +182,6 @@ targets:
       # PlugIns folder at build time. Without this, the extension
       # builds but iOS never registers it with the share sheet.
       - target: HomeHubShareExtension
-    configFiles:
-      Debug: LocalOverride.xcconfig
-      Release: LocalOverride.xcconfig
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: cz.keksiczek.homehub

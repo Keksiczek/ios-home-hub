@@ -1,42 +1,28 @@
-// LocalOverride.xcconfig — developer-local overrides (NOT committed to git)
+// Developer-local Xcode build settings.
 //
-// First-time setup:
+// Usage:
 //   cp LocalOverride.xcconfig.template LocalOverride.xcconfig
-//   # Then edit LocalOverride.xcconfig and replace YOUR_TEAM_ID with your
-//   # Apple Developer Team ID (10-character alphanumeric string).
-//   # Find yours at: https://developer.apple.com/account → Membership
 //
-// This file (LocalOverride.xcconfig) is listed in .gitignore so your
-// personal signing identity is never committed.
+// LocalOverride.xcconfig is in .gitignore — never commit it.
+// Settings declared here apply to the project via Xcode's
+// "Based On" mechanism. To wire it in, add the file manually
+// in Xcode → Project → Info → Configurations, or uncomment
+// the configFiles block in project.yml (then run xcodegen generate).
 //
-// The template (LocalOverride.xcconfig.template) IS committed so every
-// developer on the team gets the setup instructions on a fresh clone.
-
-DEVELOPMENT_TEAM = YOUR_TEAM_ID
-
-// ── Kernel entitlements (optional, requires paid Apple Developer account) ──────
-//
-// Uncomment the line below ONLY after:
-//   1. Upgrading to a paid Apple Developer Program account ($99/year)
-//   2. Adding "Increased Memory Limit" and "Extended Virtual Addressing"
-//      capabilities in Xcode → Signing & Capabilities
-//   3. Confirming the provisioning profile includes both entitlements
-//
-// This unlocks the generous memory tier on iPhone 16 Pro / iPad Pro:
-//   - n_ctx up to 4096 tokens (vs 2048 without)
-//   - MLX GPU cache up to 128 MB (vs 50 MB without)
-//   - Full image token budget (256 vs 70 tokens)
-//   - Models > 2 GB load safely (mmap limit lifted)
-//
-// Without a paid account, leave this commented out (sandboxed mode).
-// The app runs correctly with conservative memory limits.
-// See KERNEL_ENTITLEMENTS.md for full setup instructions.
+// ── Kernel entitlements (paid developer account required) ─────────────────────
+// Unlocks generous memory tier: 4096-token context, 128 MB MLX cache,
+// full image budget, and safe loading of models > 2 GB.
+// Requires com.apple.developer.kernel.* entitlements added in Xcode →
+// Signing & Capabilities.  See KERNEL_ENTITLEMENTS.md.
 //
 // SWIFT_ACTIVE_COMPILATION_CONDITIONS = $(inherited) HOMEHUB_HAS_KERNEL_ENTITLEMENTS
-
-// ── Optional: llama.cpp GGUF runtime ─────────────────────────────────────────
-// Uncomment BOTH lines when llama.xcframework is placed alongside the repo root.
-// See README.md → "Optional: llama.cpp opt-in"
+//
+// ── llama.cpp backend (optional, framework must be placed separately) ──────────
+// See project.yml header for the full opt-in checklist.
 //
 // SWIFT_ACTIVE_COMPILATION_CONDITIONS = $(inherited) HOMEHUB_LLAMA_RUNTIME
 // GCC_PREPROCESSOR_DEFINITIONS = $(inherited) HOMEHUB_LLAMA_RUNTIME=1
+//
+// ── SwiftData persistence (replaces JSON FileStore) ───────────────────────────
+//
+// SWIFT_ACTIVE_COMPILATION_CONDITIONS = $(inherited) HOMEHUB_SWIFTDATA

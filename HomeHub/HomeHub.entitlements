@@ -1,56 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
-<!--
-  HomeKit entitlement (`com.apple.developer.homekit`) is INTENTIONALLY
-  omitted. Apple gates HomeKit capability behind the paid Developer
-  Program; including it here would break local builds for contributors
-  signing with a personal Apple ID team. Without the entitlement,
-  `HMHomeManager` simply reports zero homes and `HomeKitSkill` returns
-  `noHomeFound` — already handled gracefully (no crash). To enable
-  real HomeKit control, add `<key>com.apple.developer.homekit</key>
-  <true/>` below in your local fork and ensure your provisioning
-  profile includes the HomeKit capability.
-
-  iOS LLM Optimization: Kernel Entitlements
-  ────────────────────────────────────────
-  The following entitlements significantly improve LLM performance on
-  memory-constrained devices and are STRONGLY RECOMMENDED for production builds:
-    - com.apple.developer.kernel.increased-memory-limit
-    - com.apple.developer.kernel.extended-virtual-addressing
-
-  ⚠️  These require a PAID Apple Developer account.
-  Personal/free developer teams cannot use these entitlements.
-
-  See KERNEL_ENTITLEMENTS.md for setup instructions.
-
-  iCloud Documents Sync
-  ─────────────────────
-  Enables the `AppSettings.iCloudSyncEnabled` toggle to write the
-  FileStore JSON tree into the user's iCloud Drive instead of sandbox-
-  local Application Support. Data then survives reinstalls AND syncs
-  across the user's iCloud-signed-in devices.
-
-  CONTAINER ID: `iCloud.cz.keksiczek.homehub` — must match a container
-  the developer has provisioned in their Apple Developer portal AND
-  enabled on the App ID. The free Apple ID flow:
-    1. Open Xcode → HomeHub target → Signing & Capabilities → "+ Capability"
-    2. Add "iCloud", then check "iCloud Documents" service.
-    3. Click "+ Container" under "Containers" and create
-       `iCloud.cz.keksiczek.homehub` (or pick your own and update the
-       string below).
-
-  If the container isn't provisioned, `forUbiquityContainerIdentifier:`
-  returns nil at runtime and the bridge silently falls back to local
-  Application Support — the app keeps working, the user just doesn't
-  get cross-device sync (and they see "iCloud unavailable" in
-  Settings).
--->
 <dict>
-	<key>com.apple.security.application-groups</key>
-	<array>
-		<string>group.cz.keksiczek.homehub.shared</string>
-	</array>
 	<key>com.apple.developer.icloud-container-identifiers</key>
 	<array>
 		<string>iCloud.cz.keksiczek.homehub</string>
@@ -62,6 +13,10 @@
 	<key>com.apple.developer.ubiquity-container-identifiers</key>
 	<array>
 		<string>iCloud.cz.keksiczek.homehub</string>
+	</array>
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.cz.keksiczek.homehub.shared</string>
 	</array>
 </dict>
 </plist>
