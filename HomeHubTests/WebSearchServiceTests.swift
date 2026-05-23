@@ -132,4 +132,68 @@ final class WebSearchServiceTests: XCTestCase {
     func testParseHits_EmptyHTMLYieldsNoHits() {
         XCTAssertTrue(WebSearchService.parseHits(from: "<html></html>", limit: 5).isEmpty)
     }
+
+    // MARK: - FallbackWebSearchEngine
+
+    /// Primary returning results — fallback must never fire.
+    func testFallbackEngine_ReturnsPrimaryResultsWhenNonEmpty() async {
+        let primary  = FixedResultEngine(results: [SearchResult(title: "P", url: "https://p", snippet: "sp")])
+        let fallback = FixedResultEngine(results: [SearchResult(title: "F", url: "https://f", snippet: "sf")])
+        let engine   = FallbackWebSearchEngine(primary: primary, fallback: fallback)
+
+        let results = await engine.search(query: "test")
+        XCTAssertEqual(results.count, 1)
+        XCTAssertEqual(results[0].title, "P", "Primary result must be returned when non-empty")
+        XCTAssertEqual(fallback.callCount, 0, "Fallback must not be called when primary has results")
+    }
+
+    /// Primary returning empty — fallback must fire and its results returned.
+    func testFallbackEngine_UsesFallbackWhenPrimaryReturnsEmpty() async {
+        let primary  = FixedResultEngine(results: [])
+        let fallback = FixedResultEngine(results: [SearchResult(title: "F", url: "https://f", snippet: "sf")])
+        let engine   = FallbackWebSearchEngine(primary: primary, fallback: fallback)
+
+        let results = await engine.search(query: "test")
+        XCTAssertEqual(results.count, 1)
+        XCTAssertEqual(results[0].title, "F", "Fallback result must be returned when primary is empty")
+        XCTAssertEqual(fallback.callCount, 1, "Fallback must be called exactly once")
+    }
+
+    /// Both engines empty — must return [] without crashing.
+    func testFallbackEngine_ReturnsEmptyWhenBothEmpty() async {
+        let engine = FallbackWebSearchEngine(
+            primary:  FixedResultEngine(results: []),
+            fallback: FixedResultEngine(results: [])
+        )
+        let results = await engine.search(query: "test")
+        XCTAssertTrue(results.isEmpty)
+    }
+
+    /// displayName is stable "Web" regardless of the underlying engines.
+    func testFallbackEngine_DisplayNameIsWeb() {
+        let engine = FallbackWebSearchEngine(
+            primary:  FixedResultEngine(results: []),
+            fallback: FixedResultEngine(results: [])
+        )
+        XCTAssertEqual(engine.displayName, "Web")
+    }
+}
+
+// MARK: - Test helpers
+
+/// Deterministic engine stub. Counts how many times `search` is called so
+/// tests can assert on primary-vs-fallback routing without mocking URLSession.
+private final class FixedResultEngine: WebSearchEngine, @unchecked Sendable {
+    let displayName = "Fixed"
+    let results: [SearchResult]
+    private(set) var callCount = 0
+
+    init(results: [SearchResult]) {
+        self.results = results
+    }
+
+    func search(query: String) async -> [SearchResult] {
+        callCount += 1
+        return results
+    }
 }

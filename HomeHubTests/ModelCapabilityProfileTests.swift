@@ -266,6 +266,75 @@ final class ModelCapabilityProfileTests: XCTestCase {
         XCTAssertFalse(ModelCapabilityProfile.isSmallVariant(parameterCount: "garbage"))
     }
 
+    // MARK: - contextLength-based weak detection
+
+    func testIsSmallVariantContextLength2048IsWeak() {
+        XCTAssertTrue(
+            ModelCapabilityProfile.isSmallVariant(parameterCount: "3B", contextLength: 2048),
+            "Context window ≤ 2048 must trigger weak regardless of parameter count"
+        )
+    }
+
+    func testIsSmallVariantContextLength8192IsStrong() {
+        XCTAssertFalse(
+            ModelCapabilityProfile.isSmallVariant(parameterCount: "3B", contextLength: 8192),
+            "Context window > 2048 with large param count must remain strong"
+        )
+    }
+
+    func testIsSmallVariantContextLengthBoundary2049IsStrong() {
+        XCTAssertFalse(
+            ModelCapabilityProfile.isSmallVariant(parameterCount: "3B", contextLength: 2049),
+            "Exactly one above the threshold must not be promoted to weak"
+        )
+    }
+
+    func testResolveWith1B5ParamAnd2048ContextIsWeak() {
+        // Both triggers fire: parameterCount ≤ 2B AND contextLength ≤ 2048.
+        let profile = ModelCapabilityProfile.resolve(
+            family: "llama",
+            parameterCount: "1.5B",
+            contextLength: 2048
+        )
+        XCTAssertTrue(profile.isWeakInstructionFollower)
+    }
+
+    func testResolveWith3BParamAnd8192ContextIsStrong() {
+        // Neither trigger fires: parameterCount > 2B AND contextLength > 2048.
+        let profile = ModelCapabilityProfile.resolve(
+            family: "llama",
+            parameterCount: "3B",
+            contextLength: 8192
+        )
+        XCTAssertFalse(profile.isWeakInstructionFollower,
+                       "3B param + 8192 context must remain a strong model")
+        // Sampling must not be tightened for a strong model.
+        XCTAssertEqual(profile.recommendedTemperature, ModelCapabilityProfile.llama.recommendedTemperature)
+        XCTAssertEqual(profile.recommendedRepeatPenalty, ModelCapabilityProfile.llama.recommendedRepeatPenalty)
+    }
+
+    func testWeakProfileHasTighterSamplingThanBaseFamily() {
+        // Weak (1B) vs strong (8B) from the same llama family.
+        // The weak variant must have ≥ penalty and narrower temperature.
+        let weak   = ModelCapabilityProfile.resolve(family: "llama", parameterCount: "1B")
+        let strong = ModelCapabilityProfile.resolve(family: "llama", parameterCount: "8B")
+        XCTAssertGreaterThanOrEqual(
+            weak.recommendedRepeatPenalty,
+            strong.recommendedRepeatPenalty,
+            "Weak model must have higher or equal repeat penalty"
+        )
+        XCTAssertGreaterThanOrEqual(
+            weak.recommendedRepeatPenaltyLastN,
+            strong.recommendedRepeatPenaltyLastN,
+            "Weak model must have larger or equal repeat-penalty window"
+        )
+        XCTAssertLessThanOrEqual(
+            weak.recommendedTemperature,
+            strong.recommendedTemperature,
+            "Weak model must have lower or equal temperature"
+        )
+    }
+
     private func makePackage(messages: [Message], profile: ModelCapabilityProfile?) -> PromptContextPackage {
         PromptContextPackage(
             assistant: AssistantProfile.defaultAssistant,
