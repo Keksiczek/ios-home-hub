@@ -12,18 +12,17 @@ actor FileStore: Store {
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
 
+    /// Convenience initialiser — reads the iCloud preference from
+    /// `UserDefaults` (mirror of `AppSettings.iCloudSyncEnabled`) so
+    /// the store can resolve its root path *before* the settings JSON
+    /// is loaded. The mirror is written by `SettingsService` every
+    /// time the user toggles the row. Without it we'd hit a chicken-
+    /// and-egg: settings live inside the store, but the store needs
+    /// to know the preference to pick its root.
     init() {
-        let fileManager = FileManager.default
-        // `URL.applicationSupportDirectory` is non-failable on iOS 16+ and
-        // returns the sandboxed Application Support path. We intentionally
-        // do NOT consult `forUbiquityContainerIdentifier:` — the app ships
-        // without an iCloud entitlement (private, offline-first by design),
-        // so that call would always return nil and the dead branch was
-        // pure noise. If iCloud sync is ever added, gate the bridge on the
-        // entitlement and put it behind a feature flag like HOMEHUB_SWIFTDATA.
-        self.rootURL = URL.applicationSupportDirectory
-            .appendingPathComponent("HomeHub", isDirectory: true)
-        try? fileManager.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        let preferICloud = UserDefaults.standard.bool(forKey: FileStore.iCloudPreferenceKey)
+        self.rootURL = iCloudStorageBridge.resolveStorageDirectory(preferICloud: preferICloud)
+        try? FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
 
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
@@ -34,6 +33,36 @@ actor FileStore: Store {
         decoder.dateDecodingStrategy = .iso8601
         self.decoder = decoder
     }
+
+    /// Test seam — lets unit tests inject a deterministic root URL
+    /// without depending on the iCloud bridge or UserDefaults. The
+    /// path is created on disk if it doesn't exist.
+    init(rootURL: URL) {
+        self.rootURL = rootURL
+        try? FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        self.encoder = encoder
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        self.decoder = decoder
+    }
+
+    /// UserDefaults key for the iCloud-sync preference mirror. Kept
+    /// here (rather than in `SettingsService`) so the store can read
+    /// it during `init()` without taking a dependency on the settings
+    /// service. `SettingsService` writes the same key whenever the
+    /// user toggles the row in Settings.
+    static let iCloudPreferenceKey = "com.homehub.app.icloudSyncEnabled"
+
+    /// Returns the current root directory. Exposed so the migration
+    /// path in `AppContainer.setICloudSyncEnabled(_:)` can ask the
+    /// store where its files currently live before mutating the
+    /// preference.
+    func currentRootURL() -> URL { rootURL }
 
     private func read<T: Decodable>(_ type: T.Type, from file: String) throws -> T? {
         let url = rootURL.appendingPathComponent(file)

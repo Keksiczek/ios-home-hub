@@ -61,6 +61,29 @@ struct AppSettings: Codable, Equatable {
     /// See `PerformanceProfile` for the exact factor mapping.
     var performanceProfile: PerformanceProfile
 
+    /// Base URL of the user's SearXNG instance (e.g. their own
+    /// `http://192.168.1.10:8080`, or a public one like
+    /// `https://search.brave4u.com`). Empty string disables SearXNG —
+    /// when WebSearch is enabled the engine then falls back to the
+    /// DuckDuckGo Lite scraper. Decoupled from `enabledTools` so a user
+    /// can configure a URL once and toggle WebSearch on/off freely.
+    var searxngBaseURL: String
+
+    /// When `true`, `FileStore` writes into the app's iCloud Drive
+    /// container instead of sandbox-local Application Support. Data
+    /// then survives reinstalls AND syncs across the user's iCloud-
+    /// signed-in devices via Apple's transparent file-coordination
+    /// path. When `false` (the default for fresh installs), data
+    /// lives only in the local sandbox — fast, private, but gone the
+    /// next time Xcode reinstalls the binary.
+    ///
+    /// Toggling this fires a one-shot migration in
+    /// `AppContainer.setICloudSyncEnabled(_:)` that copies every JSON
+    /// file from the old root to the new root. The toggle is
+    /// effectively a no-op when the iCloud entitlement isn't present
+    /// in the build (the bridge silently keeps using local storage).
+    var iCloudSyncEnabled: Bool
+
     static let `default` = AppSettings(
         memoryEnabled: true,
         autoExtractMemory: true,
@@ -84,7 +107,9 @@ struct AppSettings: Codable, Equatable {
         locationHint: "Nymburk, CZ",
         guardrailsConfig: .default,
         generationTimeoutSeconds: 120,
-        performanceProfile: .balanced
+        performanceProfile: .balanced,
+        searxngBaseURL: "",
+        iCloudSyncEnabled: false
     )
 
     /// Sampling-knob factory defaults. Field-by-field equality against
@@ -156,6 +181,8 @@ struct AppSettings: Codable, Equatable {
         case guardrailsConfig
         case generationTimeoutSeconds
         case performanceProfile
+        case searxngBaseURL
+        case iCloudSyncEnabled
         // Retained only for migration from the previous schema.
         case responseStyle
     }
@@ -183,7 +210,9 @@ struct AppSettings: Codable, Equatable {
         locationHint: String,
         guardrailsConfig: GuardrailsConfig = .default,
         generationTimeoutSeconds: Int = 120,
-        performanceProfile: PerformanceProfile = .balanced
+        performanceProfile: PerformanceProfile = .balanced,
+        searxngBaseURL: String = "",
+        iCloudSyncEnabled: Bool = false
     ) {
         self.memoryEnabled = memoryEnabled
         self.autoExtractMemory = autoExtractMemory
@@ -208,6 +237,8 @@ struct AppSettings: Codable, Equatable {
         self.guardrailsConfig = guardrailsConfig
         self.generationTimeoutSeconds = generationTimeoutSeconds
         self.performanceProfile = performanceProfile
+        self.searxngBaseURL = searxngBaseURL
+        self.iCloudSyncEnabled = iCloudSyncEnabled
     }
 
     init(from decoder: Decoder) throws {
@@ -260,6 +291,8 @@ struct AppSettings: Codable, Equatable {
         self.guardrailsConfig = try c.decodeIfPresent(GuardrailsConfig.self, forKey: .guardrailsConfig) ?? fallback.guardrailsConfig
         self.generationTimeoutSeconds = try c.decodeIfPresent(Int.self, forKey: .generationTimeoutSeconds) ?? fallback.generationTimeoutSeconds
         self.performanceProfile = try c.decodeIfPresent(PerformanceProfile.self, forKey: .performanceProfile) ?? fallback.performanceProfile
+        self.searxngBaseURL = try c.decodeIfPresent(String.self, forKey: .searxngBaseURL) ?? fallback.searxngBaseURL
+        self.iCloudSyncEnabled = try c.decodeIfPresent(Bool.self, forKey: .iCloudSyncEnabled) ?? fallback.iCloudSyncEnabled
 
         // Migration path for installs that persisted the previous
         // `responseStyle: "leanCI" | "casual"` field. Map leanCI→concise
@@ -302,6 +335,8 @@ struct AppSettings: Codable, Equatable {
         try c.encode(guardrailsConfig, forKey: .guardrailsConfig)
         try c.encode(generationTimeoutSeconds, forKey: .generationTimeoutSeconds)
         try c.encode(performanceProfile, forKey: .performanceProfile)
+        try c.encode(searxngBaseURL, forKey: .searxngBaseURL)
+        try c.encode(iCloudSyncEnabled, forKey: .iCloudSyncEnabled)
     }
 
 }

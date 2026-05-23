@@ -16,7 +16,7 @@ struct WebSearchSkill: Skill {
 
     private let engine: any WebSearchEngine
 
-    init(engine: any WebSearchEngine = MockWebSearchEngine()) {
+    init(engine: any WebSearchEngine = DuckDuckGoLiteEngine()) {
         self.engine = engine
     }
 

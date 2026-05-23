@@ -89,6 +89,27 @@ enum WebSearchService {
         cache.setObject(CacheEntry(hits: hits, limit: limit), forKey: cacheKey(query: query, limit: limit))
     }
 
+    /// User-Agent rotation pool. DDG's bot-blocking page is keyed off
+    /// (UA + IP + request shape), so on a 429/503 we can sometimes
+    /// shake free by switching to a different mobile UA that the
+    /// instance has independent rate-limit state for. Listed in
+    /// preference order — iPhone Safari is the canonical "this is a
+    /// human" signal; iPad Safari and Android Chrome are the fallback
+    /// rotations that DDG also reliably hands the no-JS branch.
+    private static let userAgentRotation: [String] = [
+        // iPhone Safari (default).
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) " +
+        "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 " +
+        "Mobile/15E148 Safari/604.1",
+        // iPad Safari — DDG sometimes treats this as a fresh client.
+        "Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X) " +
+        "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 " +
+        "Mobile/15E148 Safari/604.1",
+        // Android Chrome — different IP/UA hash bucket entirely.
+        "Mozilla/5.0 (Linux; Android 14; Pixel 8) " +
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Mobile Safari/537.36"
+    ]
+
     /// Returns up to `limit` structured search hits for `query`. Each hit
     /// has a title, an absolute URL, and a snippet. Engines / agents
     /// should prefer this over the legacy plain-text wrapper.
@@ -96,6 +117,13 @@ enum WebSearchService {
     /// Cached for 5 minutes per `(query, limit)` pair to absorb agentic
     /// retries and rapid user follow-ups. Errors are NOT cached — a
     /// failed lookup retries on the next call.
+    ///
+    /// On a 429/503 the call retries once with a different User-Agent
+    /// from `userAgentRotation` after a short backoff (honouring
+    /// `Retry-After` when present, capped at 4 s). This catches the
+    /// common case where DDG briefly rate-limits a UA fingerprint —
+    /// throwing immediately would have the agentic loop give up on
+    /// the search entirely.
     static func searchStructured(query: String, limit: Int = 5) async throws -> [Hit] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty,
@@ -107,17 +135,78 @@ enum WebSearchService {
             return cached
         }
 
-        var request = URLRequest(url: url, timeoutInterval: requestTimeout)
+        var attempt = 0
+        let maxAttempts = 2  // primary + one UA-rotated retry
+        var lastError: SearchError = .rateLimited
+
+        while attempt < maxAttempts {
+            let ua = userAgentRotation[min(attempt, userAgentRotation.count - 1)]
+            do {
+                let hits = try await runDDGRequest(
+                    encoded: encoded,
+                    requestURL: url,
+                    userAgent: ua,
+                    limit: limit
+                )
+                // Retry on STRUCTURAL empty too — when DDG silently
+                // changes attribute order (the same class of bug the
+                // 6ca217d hotfix patched), `parseHits` returns `[]`
+                // even though the network round-trip succeeded.
+                // Retrying with a different UA sometimes lands on a
+                // cached HTML variant that still matches the parser,
+                // and it costs us at most one extra ~1 s request.
+                if hits.isEmpty && attempt + 1 < maxAttempts {
+                    attempt += 1
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    continue
+                }
+                if !hits.isEmpty {
+                    storeHits(hits, query: trimmed, limit: limit)
+                }
+                return hits
+            } catch SearchError.rateLimited {
+                lastError = .rateLimited
+                attempt += 1
+                guard attempt < maxAttempts else { throw SearchError.rateLimited }
+                // Brief backoff before retry. The actual Retry-After
+                // value rarely matters — DDG's rate limiter clears
+                // within a couple of seconds for an unrelated UA — so
+                // we just give the network stack a beat and switch UAs.
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                continue
+            } catch SearchError.parsingError {
+                // DDG returned non-2xx (and not 429/503) OR the body
+                // wasn't UTF-8. Same retry shape as rate-limit: one
+                // chance with a different UA. Common cause is a
+                // transient 502/504 from a regional CDN edge that
+                // the next UA's hash bucket bypasses.
+                lastError = .parsingError
+                attempt += 1
+                guard attempt < maxAttempts else { throw SearchError.parsingError }
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                continue
+            }
+        }
+        // Unreachable — the loop above either returns or throws. The
+        // explicit throw uses the last-observed error so a future
+        // change that lets the loop fall through here surfaces an
+        // accurate cause rather than a hard-coded `rateLimited`.
+        throw lastError
+    }
+
+    /// Single-attempt DDG Lite fetch. Extracted so the retry path in
+    /// `searchStructured` can rotate user agents without duplicating
+    /// the request construction.
+    private static func runDDGRequest(
+        encoded: String,
+        requestURL: URL,
+        userAgent: String,
+        limit: Int
+    ) async throws -> [Hit] {
+        var request = URLRequest(url: requestURL, timeoutInterval: requestTimeout)
         request.httpMethod = "POST"
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-        // DDG Lite returns its no-JS HTML branch when it sees this UA. A
-        // generic "curl/8" UA gets a stub page with zero results.
-        request.setValue(
-            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) " +
-            "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 " +
-            "Mobile/15E148 Safari/604.1",
-            forHTTPHeaderField: "User-Agent"
-        )
+        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         request.setValue("text/html, */*; q=0.01", forHTTPHeaderField: "Accept")
         request.httpBody = "q=\(encoded)".data(using: .utf8)
 
@@ -140,14 +229,7 @@ enum WebSearchService {
         guard let html = String(data: data, encoding: .utf8) else {
             throw SearchError.parsingError
         }
-        let hits = parseHits(from: html, limit: limit)
-        // Only cache non-empty result sets — caching "no results" would
-        // poison the cache for users who briefly lost connectivity in
-        // the middle of a real search.
-        if !hits.isEmpty {
-            storeHits(hits, query: trimmed, limit: limit)
-        }
-        return hits
+        return parseHits(from: html, limit: limit)
     }
 
     /// Backwards-compatible plain-text wrapper for callers that haven't

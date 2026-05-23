@@ -123,6 +123,25 @@ final class RuntimeManager: ObservableObject {
     /// itself `@MainActor`.
     var ggufMetadataProvider: (@MainActor (String) -> GGUFModelMetadata?)?
 
+    /// Callback fired when a load attempt fails because the on-disk
+    /// cache is broken (`RuntimeError.missingFiles` or
+    /// `.invalidModelDirectory`). Lets `AppContainer` flip the
+    /// catalog entry back to `.notInstalled` AND wipe the broken
+    /// cache so the user's next view shows a clean Download CTA
+    /// instead of a stale Load button on a model whose disk
+    /// representation is structurally unusable.
+    ///
+    /// The callback is invoked even when the runtime state was set
+    /// to `.failed(...)` — the two paths are complementary:
+    ///   * `state = .failed(...)`        → UI surfaces the load error.
+    ///   * `onBrokenCacheDetected(...)`  → catalog + disk are reset so
+    ///                                     the next interaction starts
+    ///                                     from a known-good state.
+    /// Both fire from the same catch branch; the closure is fire-
+    /// and-forget so a slow catalog mutation doesn't block the load
+    /// error from surfacing in the UI.
+    var onBrokenCacheDetected: (@MainActor (LocalModel, String) -> Void)?
+
     /// Active performance profile — drives `memorySafetyFactor` selection
     /// inside `memoryCheck(for:)`. Changing this only affects *future*
     /// load calls; an already-loaded model keeps the factor it loaded
@@ -422,6 +441,25 @@ final class RuntimeManager: ObservableObject {
             currentLoadPhase = nil
             state = .failed(modelID: model.id, reason: Self.humanisedLoadError(error))
             log.error("Runtime: Load failed for '\(model.id, privacy: .public)': \(error.localizedDescription, privacy: .public)")
+
+            // Broken-cache hook. When the error is one of the typed
+            // "directory is structurally broken" cases, notify the
+            // host so it can reset the catalog + wipe the bad cache.
+            // The user's next view then shows a clean Download CTA
+            // instead of a stale Load button that would just fail
+            // identically next time. Wrapped in a check rather than
+            // always fired so a network or memory error doesn't get
+            // miscategorised as bad-cache and trigger a destructive
+            // disk wipe.
+            if let runtimeError = error as? RuntimeError {
+                switch runtimeError {
+                case .missingFiles, .invalidModelDirectory:
+                    let reason = Self.humanisedLoadError(error)
+                    onBrokenCacheDetected?(model, reason)
+                default:
+                    break
+                }
+            }
         }
         mlxLoadTask = nil
     }

@@ -280,6 +280,8 @@ extension ModelCapabilityProfile {
     /// output on at least some quantised checkpoints; keep it off.
     /// Sampling: Phi-3 docs recommend moderate temperature; the
     /// quantised checkpoints repeat without a penalty.
+    /// RepeatPenalty 1.2 / window 128 — field evidence shows Phi-3 Mini
+    /// (3.8B, always isWeak) loops at 1.1/64; 1.2/128 stops it.
     static let phi = ModelCapabilityProfile(
         family: "phi",
         supportsFlashAttention: false,
@@ -293,12 +295,38 @@ extension ModelCapabilityProfile {
         recommendedTopP: 0.9,
         recommendedTopK: 40,
         recommendedMinP: 0.05,
-        recommendedRepeatPenalty: 1.1,
-        recommendedRepeatPenaltyLastN: 64,
+        recommendedRepeatPenalty: 1.2,
+        recommendedRepeatPenaltyLastN: 128,
         // Phi-3 Mini (3.8B) is small enough that the L1-L7 stack
         // overwhelms it. Phi-4 (14B) doesn't have the issue but we
         // can't distinguish them by family string alone; lean mode
         // is the safer default for everything on the phi branch.
+        isWeakInstructionFollower: true
+    )
+
+    /// SmolLM2 — Hugging Face's small (135M / 360M / 1.7B) on-device
+    /// chat models, ChatML template. All sizes ship at ≤ 2B params so
+    /// the family is universally weak; sampling is tightened to match
+    /// the gemma3n / phi-3-mini calibration that proved necessary for
+    /// small Q4 models in the field (cross-language drift, repetition
+    /// loops under default 1.1/64 penalty).
+    static let smolLM2 = ModelCapabilityProfile(
+        family: "smollm2",
+        supportsFlashAttention: true,
+        nUBatch: 64,
+        safeHistoryTokenBudget: 1000,
+        generationReserveTokens: 768,
+        messageTokenOverhead: 5,            // ChatML — same as Qwen
+        supportsStructuredToolCalling: false,
+        prefersDeferredMemoryExtraction: false,
+        recommendedTemperature: 0.4,        // tight; small model + Q4
+        recommendedTopP: 0.9,
+        recommendedTopK: 40,
+        recommendedMinP: 0.08,
+        recommendedRepeatPenalty: 1.2,
+        recommendedRepeatPenaltyLastN: 128,
+        // All released SmolLM2 sizes are 1.7B or smaller — weak by
+        // construction, lean mode on.
         isWeakInstructionFollower: true
     )
 
@@ -307,6 +335,8 @@ extension ModelCapabilityProfile {
     /// Most conservative settings: no flash attention, smallest history
     /// budget. A model that doesn't match any known family is most likely
     /// experimental; err on the safe side.
+    /// RepeatPenalty 1.2 / window 128 — unknown/small models (SmolLM2,
+    /// custom imports) have the same repetition tendency as Phi-3 Mini.
     static let `default` = ModelCapabilityProfile(
         family: "",
         supportsFlashAttention: false,
@@ -320,8 +350,8 @@ extension ModelCapabilityProfile {
         recommendedTopP: 0.9,
         recommendedTopK: 40,
         recommendedMinP: 0.05,
-        recommendedRepeatPenalty: 1.1,
-        recommendedRepeatPenaltyLastN: 64,
+        recommendedRepeatPenalty: 1.2,
+        recommendedRepeatPenaltyLastN: 128,
         // Unknown family → conservative: assume weak. Users running
         // a large unknown model can override by tagging the family
         // string correctly in the catalog.
@@ -378,15 +408,22 @@ extension ModelCapabilityProfile {
         let promotedWeak = baseProfile.isWeakInstructionFollower || isSmall
 
         // For small variants of otherwise-strong families: also tighten
-        // sampling (lower temp, harder repetition penalty, smaller minP
-        // floor). Mirrors what gemma3n does for the same reason.
-        let temp = isSmall && !baseProfile.isWeakInstructionFollower
+        // sampling (lower temp, harder repetition penalty, wider penalty
+        // window, smaller minP floor). Mirrors what gemma3n does for the
+        // same reason. phi/default already have 1.2/128 in their base
+        // profiles so the max() is a no-op for those; this path matters
+        // for e.g. Llama 3.2 1B (strong base, small variant).
+        let isSmallOfStrong = isSmall && !baseProfile.isWeakInstructionFollower
+        let temp = isSmallOfStrong
             ? min(baseProfile.recommendedTemperature, 0.5)
             : baseProfile.recommendedTemperature
-        let repeatPenalty = isSmall && !baseProfile.isWeakInstructionFollower
+        let repeatPenalty = isSmallOfStrong
             ? max(baseProfile.recommendedRepeatPenalty, 1.2)
             : baseProfile.recommendedRepeatPenalty
-        let minP = isSmall && !baseProfile.isWeakInstructionFollower
+        let repeatLastN = isSmallOfStrong
+            ? max(baseProfile.recommendedRepeatPenaltyLastN, 128)
+            : baseProfile.recommendedRepeatPenaltyLastN
+        let minP = isSmallOfStrong
             ? max(baseProfile.recommendedMinP, 0.1)
             : baseProfile.recommendedMinP
 
@@ -404,7 +441,7 @@ extension ModelCapabilityProfile {
             recommendedTopK: baseProfile.recommendedTopK,
             recommendedMinP: minP,
             recommendedRepeatPenalty: repeatPenalty,
-            recommendedRepeatPenaltyLastN: baseProfile.recommendedRepeatPenaltyLastN,
+            recommendedRepeatPenaltyLastN: repeatLastN,
             isWeakInstructionFollower: promotedWeak
         )
     }
@@ -442,6 +479,7 @@ extension ModelCapabilityProfile {
         if f.contains("gemma-3n") || f.contains("gemma3n") { return .gemma3n }  // MatFormer: check before generic gemma
         if f.contains("gemma")   { return .gemma }
         if f.contains("phi")     { return .phi }
+        if f.contains("smollm")  { return .smolLM2 }
         return .default
     }
 

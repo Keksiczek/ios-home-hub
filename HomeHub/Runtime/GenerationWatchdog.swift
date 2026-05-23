@@ -107,17 +107,33 @@ final class GenerationWatchdog: @unchecked Sendable {
         lock.unlock()
 
         guard let threshold = toFire else { return }
-        let message: String
-        switch threshold {
-        case 30:  message = "Model neodpovídá déle než 30 s — pravděpodobně kompiluje Metal pipeline."
-        case 60:  message = "Model je tichý více než 60 s — můžete pokračovat čekáním nebo generování zrušit."
-        default:  message = "Model je tichý více než \(threshold) s — pokud se generování zdá zaseknuté, zkuste Cancel."
-        }
+        let message = Self.stallMessage(forThreshold: threshold)
         log.warning("MLX: generation stall \(threshold)s for \(self.conversationID, privacy: .public)")
         continuation.yield(.warning(RuntimeWarning(
             kind: .generationStall,
             message: message,
             secondsSilent: silentFor
         )))
+    }
+
+    /// Locale-aware stall message. Picks Czech or English based on the
+    /// current Locale's primary language so users on an English iOS
+    /// don't see a Czech banner (the rest of the app routes copy via
+    /// `AppLanguage` but the watchdog has no access to settings — it's
+    /// constructed inside the MLX runtime which is purely async).
+    ///
+    /// Returns the localized free-form sentence; the threshold value
+    /// is interpolated by the caller's `\(threshold)` only on the
+    /// catch-all branch where the timing isn't a magic number.
+    static func stallMessage(forThreshold threshold: Int) -> String {
+        let isCzech = Locale.current.language.languageCode?.identifier.lowercased() == "cs"
+        switch (threshold, isCzech) {
+        case (30, true):  return "Model neodpovídá déle než 30 s — pravděpodobně kompiluje Metal pipeline."
+        case (30, false): return "Model has been silent for more than 30 s — probably compiling the Metal pipeline."
+        case (60, true):  return "Model je tichý více než 60 s — můžeš dál čekat nebo generování zrušit."
+        case (60, false): return "Model has been silent for over 60 s — keep waiting or cancel the generation."
+        case (_, true):   return "Model je tichý více než \(threshold) s — pokud se generování zdá zaseknuté, zkus Cancel."
+        case (_, false):  return "Model has been silent for over \(threshold) s — if it seems stuck, try Cancel."
+        }
     }
 }

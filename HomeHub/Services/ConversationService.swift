@@ -1258,6 +1258,39 @@ final class ConversationService: ObservableObject {
         var currentLoop = 0
         var loopPackage = package
 
+        // Dead-end detection state for the agentic loop. Two consecutive
+        // observations that look empty / "no results" suggest the data
+        // source can't answer the user's question — keep looping in that
+        // state and the model just chains identical tool calls until the
+        // hard ceiling at `maxLoops`. Track the run-length of empty
+        // observations and force the next iteration into synthesis mode
+        // (`isFinalAllowedLoop == true`) once it hits 2.
+        var consecutiveEmptyObservations = 0
+        var forceSynthesisNextLoop = false
+
+        // Session-duration budget for the agentic loop. The outer
+        // `watchdog` task (line ~945) already enforces a hard cancel at
+        // `generationTimeoutSeconds` (default 120 s) for the whole
+        // performSend, but that path leaves the message in a `.failed`
+        // / `.cancelled` state with a terse "⏱ Generation timeout"
+        // banner. This budget is SOFTER: at iteration boundaries we
+        // check elapsed time and, if it's past `loopBudgetSeconds`,
+        // we flip the next iteration to synthesis mode so the model
+        // gets one bounded pass to wrap up with whatever context it
+        // already has. Catches the "model burned 90 s on three
+        // identical tool calls and still has 30 s of pre-watchdog
+        // headroom" case, which would otherwise eat into the user's
+        // perceived latency budget without producing an answer.
+        //
+        // Budget is intentionally ~75 % of the hard timeout so the
+        // synthesis pass itself has room to finish before the hard
+        // watchdog fires.
+        let loopBudgetSeconds: TimeInterval = max(
+            30,
+            TimeInterval(settings.current.generationTimeoutSeconds) * 0.75
+        )
+        let loopStartedAt = Date()
+
         while currentLoop < maxLoops {
             // Honor user-initiated cancellation between agentic-loop iterations
             // so we don't kick off another inference pass once `cancelStream`
@@ -1267,7 +1300,21 @@ final class ConversationService: ObservableObject {
             // `runtime.generate(...)`.
             if Task.isCancelled { break }
             currentLoop += 1
-            let isFinalAllowedLoop = (currentLoop == maxLoops)
+
+            // Soft session-budget check at the iteration boundary.
+            // Past the budget we still allow this iteration to RUN
+            // (so the model gets its synthesis pass) but mark it as
+            // final so the action parser at the bottom of the loop
+            // body refuses to issue another tool call. Logged at
+            // `notice` because hitting this regularly is a signal
+            // that the user is asking the model questions whose
+            // tool-loops don't fit the configured budget.
+            let elapsed = Date().timeIntervalSince(loopStartedAt)
+            if elapsed > loopBudgetSeconds && !forceSynthesisNextLoop {
+                HHLog.tool.notice("loop \(currentLoop) → forcing synthesis: session budget \(Int(loopBudgetSeconds), privacy: .public)s exceeded (elapsed=\(Int(elapsed), privacy: .public)s)")
+                forceSynthesisNextLoop = true
+            }
+            let isFinalAllowedLoop = (currentLoop == maxLoops) || forceSynthesisNextLoop
 
             // Re-pick sampling params for the current loop's mode. The
             // first iteration is `.chat`; subsequent iterations after a
@@ -1300,6 +1347,33 @@ final class ConversationService: ObservableObject {
                     return
                 }
                 self.promptBudgetReporter?.recordRealTokenCount(real)
+            }
+
+            // Dynamic maxTokens cap — clamp the configured ceiling to the
+            // actual remaining context window so a long prompt + a
+            // generous `maxResponseTokens` slider can't bust the model's
+            // hard context limit mid-stream. Previously the runtime would
+            // truncate the reply silently (small-context models like Llama
+            // 3.2 3B with 2 048-token context were the prime victims —
+            // a 1 800-token prompt + 1 024 requested tokens = guaranteed
+            // mid-sentence cutoff).
+            //
+            // Heuristic vs ground truth: we use the budgeter (heuristic
+            // estimator + family overhead) instead of waiting for the
+            // async `realTokenCount` hop above. The heuristic tends to
+            // OVER-estimate Latin-script prompts by ~15 %, which is the
+            // right direction for a safety cap — we'd rather leave a few
+            // tokens on the table than overflow. The safety margin
+            // covers chat-template wrapper tokens (eot_id, im_end, etc.)
+            // that the heuristic doesn't account for.
+            if let contextLength = activeModelSnapshot?.contextLength {
+                let promptEstimate = budgeter.tokens(in: promptForCounting)
+                let safetyMargin = 64
+                let remaining = max(64, contextLength - promptEstimate - safetyMargin)
+                if parameters.maxTokens > remaining {
+                    HHLog.runtime.notice("Dynamic maxTokens cap: \(parameters.maxTokens, privacy: .public) → \(remaining, privacy: .public) (ctx=\(contextLength, privacy: .public) prompt≈\(promptEstimate, privacy: .public))")
+                    parameters.maxTokens = remaining
+                }
             }
 
             // UX: Subtle haptic to confirm generation has physically started
@@ -1447,6 +1521,33 @@ final class ConversationService: ObservableObject {
                     // reasons so we can decide whether to loop once more or
                     // bail out.
                     let result = await SkillManager.shared.run(actionCommand, enabled: enabledTools)
+
+                    // Dead-end detection: an observation that looks empty
+                    // (literally empty, or a "no results" marker from the
+                    // engine) two iterations in a row tells us the data
+                    // source can't help — schedule the next loop to be
+                    // the final synthesis pass so the model gives a
+                    // graceful "I couldn't find that" answer instead of
+                    // chaining identical tool calls until the ceiling.
+                    let obsLower = result.observationText.lowercased()
+                    let obsLooksEmpty = result.observationText.isEmpty
+                        || obsLower.contains("no results")
+                        || obsLower.contains("not found")
+                        || obsLower.contains("nebyly nalezeny")
+                        || obsLower.contains("nenalezeno")
+                        || obsLower.contains("žádné výsledky")
+                        || obsLower.contains("zadne vysledky")    // Czech keyboard without diacritics
+                        || obsLower.contains("nepodařilo se")
+                        || obsLower.contains("error: empty")
+                    if obsLooksEmpty {
+                        consecutiveEmptyObservations += 1
+                        if consecutiveEmptyObservations >= 2 {
+                            HHLog.tool.notice("loop \(currentLoop) → forcing synthesis next: 2 consecutive empty observations from \(actionCommand.skillName, privacy: .public)")
+                            forceSynthesisNextLoop = true
+                        }
+                    } else {
+                        consecutiveEmptyObservations = 0
+                    }
 
                     // Seed the context for the next loop so LLM sees what it did and what came back
                     let actionMsg = Message.assistantPlaceholder(in: conversationID)

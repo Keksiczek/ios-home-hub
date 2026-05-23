@@ -95,6 +95,24 @@ final class ModelDownloadService: ObservableObject {
     /// into the shared GGUF/MLX progress struct.
     private var pendingRepoSHAs: [String: String] = [:]
 
+    /// Per-modelID expected total cache bytes from the manifest at
+    /// download-start time. Captured so the completion-side validator
+    /// can compare against `mlxCacheSizeBytes(for:)` and reject a
+    /// download that was structurally complete (config + tokenizer +
+    /// safetensors all present, passed `inspectMLXCache`) yet
+    /// noticeably smaller than what the manifest promised — the
+    /// classic signature of one or more LFS shards being truncated
+    /// without an error from the underlying transport (HTTP
+    /// chunked-encoding aborts, sandbox quota hit mid-stream, etc.).
+    ///
+    /// A full SHA-256 verification would need the HF blobs API or
+    /// X-Linked-Etag interception; size-based matching is the
+    /// pragmatic substitute that catches the most common corruption
+    /// mode (partial bytes) with no extra network round-trip.
+    /// Tolerance of 1 % below expected — covers compression /
+    /// filesystem-attribute differences without admitting truncation.
+    private var pendingManifestTotals: [String: Int64] = [:]
+
     /// User-visible error message from the most recent destructive
     /// operation (currently: `deleteModel`). Set when an underlying
     /// FileManager / catalog mutation throws; cleared by
@@ -106,6 +124,20 @@ final class ModelDownloadService: ObservableObject {
 
     /// UI hook — clears the alert after the user taps OK.
     func acknowledgeDeleteError() { lastDeleteError = nil }
+
+    /// Wall-clock duration past which a partial / broken artefact on
+    /// disk (resume blob, broken MLX cache directory) is considered
+    /// stale and safe to remove. 7 days is the sweet spot:
+    ///   * **Long enough** that a user who started a multi-GB download
+    ///     on the train and didn't open the app until next weekend
+    ///     still has their resume data intact.
+    ///   * **Short enough** that a download attempt that failed
+    ///     silently last month doesn't keep nagging the user with a
+    ///     stale "Paused" badge or eating disk space they can't
+    ///     recover from the UI.
+    /// Used by both `pruneStaleResumeData` and `pruneBrokenMLXCaches`
+    /// so the two retention policies stay aligned automatically.
+    static let staleArtefactTTL: TimeInterval = 7 * 24 * 60 * 60
 
     /// Called on the main actor after a model successfully transitions to
     /// `.installed`. `AppContainer` wires this up to auto-activate the first
@@ -212,6 +244,7 @@ final class ModelDownloadService: ObservableObject {
         // Drop any pending SHA sidecar so a re-download with a different
         // upstream revision can't accidentally inherit the stale pin.
         pendingRepoSHAs.removeValue(forKey: modelID)
+        pendingManifestTotals.removeValue(forKey: modelID)
         endDownloadSignpost(modelID, outcome: "cancelled")
         DownloadManager.shared.cancel(modelID: modelID)
         catalog.setInstallState(.notInstalled, for: modelID)
@@ -654,6 +687,112 @@ final class ModelDownloadService: ObservableObject {
         return (removed, reclaimed)
     }
 
+    /// Removes MLX cache directories that BELONG to a catalog entry but
+    /// have been structurally broken for at least `staleThreshold` seconds.
+    ///
+    /// **Why both criteria?** `cleanOrphanedMLXCaches` handles the case
+    /// where the catalog has no record of a repo (user deleted it, repo
+    /// renamed across releases). This handles the dual case: the catalog
+    /// still expects the model to be installed, but the on-disk cache is
+    /// missing weights / tokenizer / config — typical sources are a
+    /// download interrupted by force-quit, a partial restore from iCloud,
+    /// or a bit-rot wiping a shard.
+    ///
+    /// The age gate avoids racing with an in-flight download: a freshly
+    /// downloaded cache temporarily looks broken between the manifest
+    /// fetch and the moveItem that closes the final shard. We require the
+    /// cache to have been broken for ≥ 7 days before yanking it so we
+    /// never destroy a download the user is actively waiting on.
+    ///
+    /// When a cache is removed, the catalog state for that model is
+    /// reset to `.notInstalled` so the row in the Models screen flips
+    /// from a half-broken "Installed" badge to a "Download" CTA the
+    /// user can act on.
+    ///
+    /// - Parameter staleThreshold: Minimum age (in seconds) of the cache
+    ///   directory before broken state qualifies for removal. Default 7
+    ///   days. Tests can pass `0` to exercise the cleanup path
+    ///   deterministically.
+    /// - Returns: Count of removed directories and total reclaimed bytes.
+    @discardableResult
+    func pruneBrokenMLXCaches(
+        staleThreshold: TimeInterval = ModelDownloadService.staleArtefactTTL
+    ) async -> (count: Int, reclaimedBytes: Int64) {
+        let candidates = catalog.models.filter { model in
+            guard model.format == .mlx, model.repoId != nil else { return false }
+            // Only look at models the catalog believes are installed.
+            // For models in .downloading state we'd be racing with a
+            // transport; .notInstalled / .failed have no cache to prune.
+            if case .installed = model.installState { return true }
+            return false
+        }
+
+        guard !candidates.isEmpty else {
+            log.debug("Broken MLX cache scan: no installed MLX candidates")
+            return (0, 0)
+        }
+
+        var reclaimed: Int64 = 0
+        var removed = 0
+
+        for model in candidates {
+            guard let repoId = model.repoId else { continue }
+
+            // Skip caches with an in-flight transport. The orphan scan
+            // already guards this for unknown repos; mirror the check
+            // here for known ones.
+            if DownloadManager.shared.isActive(model.id) { continue }
+            if active[model.id] != nil { continue }
+
+            let inspection = await localModels.inspectMLXCache(for: repoId)
+            guard inspection.state != .ready else { continue }  // healthy → leave alone
+
+            // Age gate: don't touch caches that may still be in the
+            // tail of a write. `mlxCacheAge` returns nil for missing
+            // directories — those are treated as "old enough" because
+            // we're about to flip the catalog back to .notInstalled
+            // anyway (state and disk are out of sync).
+            let age = await localModels.mlxCacheAge(for: repoId)
+            if let age, age < staleThreshold {
+                log.debug("Broken MLX cache '\(repoId, privacy: .public)' is too young (\(Int(age))s < \(Int(staleThreshold))s) — leaving for next pass")
+                continue
+            }
+
+            let size = await localModels.mlxCacheSizeBytes(for: repoId)
+            do {
+                try await localModels.removeMLXCache(for: repoId)
+                reclaimed += size
+                removed += 1
+                let reason = inspection.failureReason ?? "structurally incomplete"
+                log.info("Removed broken MLX cache '\(repoId, privacy: .public)' (\(size) B, reason: \(reason, privacy: .public)) and reset catalog state for '\(model.id, privacy: .public)'")
+                // Flip catalog so the UI offers Download instead of pretending
+                // the model is still installed. Best-effort — if the catalog
+                // mutation throws (it shouldn't), we still reclaimed the disk.
+                catalog.setInstallState(.notInstalled, for: model.id)
+            } catch {
+                log.error("Failed to remove broken MLX cache '\(repoId, privacy: .public)': \(error.localizedDescription, privacy: .public)")
+            }
+        }
+
+        log.info("Broken MLX cache scan: removed \(removed) dir(s) reclaiming \(reclaimed) B")
+        return (removed, reclaimed)
+    }
+
+    /// Composite hygiene pass — runs both orphan and broken-cache cleanup
+    /// in one call. Callers in the bootstrap path use this so the
+    /// scheduling story stays in one place; tests can still hit either
+    /// half independently.
+    @discardableResult
+    func runMLXCacheHygiene() async -> (orphans: Int, broken: Int, reclaimedBytes: Int64) {
+        let orphanResult = await cleanOrphanedMLXCaches()
+        let brokenResult = await pruneBrokenMLXCaches()
+        return (
+            orphans: orphanResult.count,
+            broken: brokenResult.count,
+            reclaimedBytes: orphanResult.reclaimedBytes + brokenResult.reclaimedBytes
+        )
+    }
+
     /// Cancels all active downloads, deletes every `.gguf` file on disk,
     /// and resets every catalog entry to `.notInstalled`.
     func resetAllModels() async {
@@ -924,6 +1063,14 @@ final class ModelDownloadService: ObservableObject {
             let cacheDir = await localModels.resolvedMLXCacheURL(for: repoId)
             try FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
             DownloadManager.shared.startMLX(modelID: model.id, repoId: repoId, cacheDir: cacheDir, files: files)
+            // Pin the manifest's total expected size so the completion-side
+            // validator can compare against the on-disk total. Only stored
+            // when at least one file in the manifest reported a size —
+            // otherwise we have nothing to compare against and the
+            // structural-inspection check has to suffice.
+            if manifestTotal > 0 {
+                pendingManifestTotals[model.id] = manifestTotal
+            }
             // Move into the .downloading phase so the UI flips from the
             // brief "Preparing…" spinner to a real progress bar as soon
             // as the first byte lands.
@@ -1020,8 +1167,33 @@ final class ModelDownloadService: ObservableObject {
                         try? await self.localModels.removeMLXCache(for: repoId)
                         self.catalog.setInstallState(.failed(reason: reason), for: id)
                         self.active[id] = nil
+                        self.pendingManifestTotals.removeValue(forKey: id)
                         return
                     }
+
+                    // Size-vs-manifest verification. Structural inspection
+                    // (.ready) confirms config + tokenizer + ≥ 1 MB of
+                    // safetensors weight, but it can't tell a complete
+                    // download from one where a shard finished short
+                    // without raising a transport error. Compare the
+                    // on-disk total against the manifest's sum-of-sizes
+                    // with a 1 % tolerance (covers small attribute /
+                    // alignment differences) and refuse anything smaller.
+                    if let expected = self.pendingManifestTotals[id], expected > 0 {
+                        let actual = await self.localModels.mlxCacheSizeBytes(for: repoId)
+                        let tolerance = max(Int64(65_536), expected / 100)  // 1 % or 64 KB floor
+                        if actual + tolerance < expected {
+                            let reason = "Download appears truncated: got \(actual) B, expected ~\(expected) B from the manifest."
+                            self.log.error("MLX: Size validation failed for '\(id, privacy: .public)' — actual=\(actual) expected=\(expected) tolerance=\(tolerance)")
+                            try? await self.localModels.removeMLXCache(for: repoId)
+                            self.catalog.setInstallState(.failed(reason: reason), for: id)
+                            self.active[id] = nil
+                            self.pendingManifestTotals.removeValue(forKey: id)
+                            return
+                        }
+                        self.log.info("MLX: Size validation OK for '\(id, privacy: .public)' (actual=\(actual) B, expected=\(expected) B)")
+                    }
+                    self.pendingManifestTotals.removeValue(forKey: id)
                     self.active[id]?.phase = .installing
                     self.catalog.setInstallState(.installed(localURL: cacheDir), for: id)
                     // Pin the upstream SHA captured at manifest-fetch
@@ -1042,6 +1214,7 @@ final class ModelDownloadService: ObservableObject {
                 DownloadManager.shared.markFinished(modelID: id)
                 guard let self else { return }
                 self.pendingRepoSHAs.removeValue(forKey: id)
+                self.pendingManifestTotals.removeValue(forKey: id)
                 self.endDownloadSignpost(id, outcome: "failed")
                 let reason = error.localizedDescription
                 self.log.error("MLX: Download failed for '\(id, privacy: .public)': \(reason, privacy: .public)")
@@ -1223,7 +1396,7 @@ final class ModelDownloadService: ObservableObject {
     ///   Default 7 days — long enough that a user who started a download
     ///   on the train can finish it the next morning, short enough that
     ///   stale blobs from old test runs don't accumulate.
-    func pruneStaleResumeData(maxAge: TimeInterval = 7 * 24 * 60 * 60) {
+    func pruneStaleResumeData(maxAge: TimeInterval = ModelDownloadService.staleArtefactTTL) {
         let prefix = "com.homehub.app.resumeData."
         let timestampPrefix = "com.homehub.app.resumeTimestamp."
         let knownIDs = Set(catalog.models.map(\.id))
