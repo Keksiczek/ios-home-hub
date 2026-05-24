@@ -725,6 +725,34 @@ final class ConversationService: ObservableObject {
     /// all funnel through the same path so the chat UI can offer
     /// "Try again" on a failed bubble without a separate code path.
     /// No-op if a stream is already active in this conversation.
+    /// Asks the model to continue from where it stopped — used when
+    /// the previous assistant reply was cut off because it hit the
+    /// max-tokens budget (`finishReason == "length"`).
+    ///
+    /// Implementation: sends an automatic "Pokračuj" user turn. The
+    /// model sees the previous assistant message in the conversation
+    /// history, then a directive to keep going, and produces a new
+    /// assistant bubble that picks up the thread. Simpler than trying
+    /// to inject the partial as a prefix at the runtime level — that
+    /// would need cooperation from every backend (MLX, llama.cpp) and
+    /// the chat-template formatter for every model family.
+    ///
+    /// No-op when:
+    ///   * the conversation is already streaming (avoids interleaving)
+    ///   * the last assistant message wasn't truncated by length
+    ///     (avoid useless continuation prompts on natural stops)
+    func continueLastAssistantResponse(in conversationID: UUID) {
+        guard activeStreams[conversationID] == nil else { return }
+        let list = messagesByConversation[conversationID] ?? []
+        guard let lastAssistant = list.last(where: { $0.role == .assistant }),
+              lastAssistant.wasTruncatedByLength else { return }
+
+        // The directive is intentionally short + imperative — small
+        // models occasionally over-summarise long context-bearing
+        // instructions, but a two-word command lands every time.
+        send(userInput: "Pokračuj.", in: conversationID)
+    }
+
     func regenerate(in conversationID: UUID) {
         guard activeStreams[conversationID] == nil else { return }
         var list = messagesByConversation[conversationID] ?? []
@@ -1442,6 +1470,19 @@ final class ConversationService: ObservableObject {
                         }
                     case .finished(let reason, _):
                         assistantMessage.status = (reason == .cancelled) ? .cancelled : .complete
+                        // Persist the finish reason as a raw string so
+                        // the chat layer can surface "Pokračovat" on
+                        // `.length` cuts without importing the runtime
+                        // enum. The string keys mirror
+                        // `RuntimeEvent.FinishReason` exactly.
+                        assistantMessage.finishReason = {
+                            switch reason {
+                            case .stop:      return "stop"
+                            case .length:    return "length"
+                            case .cancelled: return "cancelled"
+                            case .error:     return "error"
+                            }
+                        }()
                         messagesByConversation[conversationID]?[assistantIndex] = assistantMessage
                         try? await store.save(message: assistantMessage)
 

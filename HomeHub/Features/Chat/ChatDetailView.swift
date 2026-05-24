@@ -792,6 +792,21 @@ struct ChatDetailView: View {
         return true
     }
 
+    /// "Pokračovat" button on truncated replies. Three guards:
+    ///   * Must be an assistant message that the runtime stopped
+    ///     because it hit max-tokens (`.length`).
+    ///   * Must be the most recent assistant message — older truncated
+    ///     turns are presumed to have been continued or moved past.
+    ///   * Must not be currently streaming — avoid interleaving an
+    ///     in-flight reply with a new "Pokračuj" turn.
+    /// Mirrors the `canRegenerate` shape so the bubble factory can
+    /// resolve both callbacks the same way.
+    private func canContinue(_ message: Message) -> Bool {
+        guard message.role == .assistant, !isStreaming else { return false }
+        guard message.wasTruncatedByLength else { return false }
+        return messages.last(where: { $0.role == .assistant })?.id == message.id
+    }
+
     // MARK: - Bubble factory
     //
     // Split out of the body so SwiftUI's type-checker doesn't have to
@@ -832,6 +847,9 @@ struct ChatDetailView: View {
                 Task { await conversations.toggleBookmark(messageID: message.id, in: conversationID) }
             }
             : nil
+        let continueReply: (() -> Void)? = canContinue(message)
+            ? { conversations.continueLastAssistantResponse(in: conversationID) }
+            : nil
 
         MessageBubbleView(
             message: message,
@@ -839,6 +857,7 @@ struct ChatDetailView: View {
             onDelete: delete,
             onEdit: edit,
             onToggleBookmark: bookmark,
+            onContinue: continueReply,
             isPrefill: isPrefillBubble(message)
         )
     }
