@@ -10,6 +10,7 @@
 		0076860D20E30488E3A81BF4 /* MemoryExtractionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69F8C7A4201CA906B88E721E /* MemoryExtractionTests.swift */; };
 		00E72FE78A0EB7534225DA87 /* HHButtonStyles.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1ECEE048C9C9CCAA773D1EDC /* HHButtonStyles.swift */; };
 		01582957FB873DEAB13C22E2 /* SwiftDataStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA6B25A64A60D529BE39FD09 /* SwiftDataStore.swift */; };
+		0264C0D3753C4226A58131EB /* OOMTelemetryService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07661FCABCC9B44152EAEA17 /* OOMTelemetryService.swift */; };
 		0268E1035119AE4177CDC2EE /* OnboardingProfileView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE2285B2E26885088A2B7CD3 /* OnboardingProfileView.swift */; };
 		02F71CCC8D6CA4E9ED07DAC0 /* ToolExecutionResult.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5094BD53886597FC3CF669D4 /* ToolExecutionResult.swift */; };
 		0324625B07ABFA06342D9BE7 /* ConversationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE8824F44274F1BFCA74AB43 /* ConversationService.swift */; };
@@ -256,6 +257,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		07661FCABCC9B44152EAEA17 /* OOMTelemetryService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OOMTelemetryService.swift; sourceTree = "<group>"; };
 		0849DBA3B58F500B866BAEF3 /* EmbeddingService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmbeddingService.swift; sourceTree = "<group>"; };
 		09312790940AEED7D967E37C /* ExtractionPromptBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExtractionPromptBuilder.swift; sourceTree = "<group>"; };
 		09DAA76051EEFF6D2E8215DC /* ExtractionPayload.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExtractionPayload.swift; sourceTree = "<group>"; };
@@ -818,6 +820,7 @@
 				635733D15E400F41BD0C3AA4 /* ModelDownloadService.swift */,
 				7DA90D3CD0DAC38466D0F263 /* NLExtractionPass.swift */,
 				C7DD4C3AAC22054797C578A1 /* OnboardingService.swift */,
+				07661FCABCC9B44152EAEA17 /* OOMTelemetryService.swift */,
 				612A9EC5E2CB563817EA487D /* PersonalizationService.swift */,
 				731BC1094B49DE338DB7AABA /* PromptAssemblyService.swift */,
 				FBAE7DE844F8AA59B0950B96 /* PromptBudgetReporter.swift */,
@@ -1132,6 +1135,7 @@
 				CE53BB67DEEBB559A32D0B18 /* ModelInfoSheet.swift in Sources */,
 				176A80528E29A02F7A1171C2 /* ModelsView.swift in Sources */,
 				C3255CC2686294D3AC8EB739 /* NLExtractionPass.swift in Sources */,
+				0264C0D3753C4226A58131EB /* OOMTelemetryService.swift in Sources */,
 				D20C632060CBA3580318BE18 /* OnboardingAssistantStyleView.swift in Sources */,
 				34F951CE1B0D8EAD8530F248 /* OnboardingDrafts.swift in Sources */,
 				95E362EBA1E1A3C7E02DF336 /* OnboardingFinishView.swift in Sources */,

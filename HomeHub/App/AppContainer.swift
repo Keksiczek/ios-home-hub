@@ -1268,6 +1268,14 @@ final class AppContainer: ObservableObject {
     static let shared = AppContainer.live()
 
     static func live() -> AppContainer {
+        // Kick off the OOM breadcrumb pipeline before any other
+        // initialisation so even a panic during runtime construction
+        // gets a `session.start` landmark in the persisted log. The
+        // service is a `@MainActor` singleton — `start()` is
+        // idempotent so a second call (e.g. from a future test seam)
+        // is a no-op.
+        OOMTelemetryService.shared.start()
+
         let mlx = makeMLXRuntime()
 
         #if HOMEHUB_LLAMA_RUNTIME

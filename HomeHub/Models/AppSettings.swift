@@ -84,6 +84,17 @@ struct AppSettings: Codable, Equatable {
     /// in the build (the bridge silently keeps using local storage).
     var iCloudSyncEnabled: Bool
 
+    /// Restore the pre-2026-05 Gemma 3n sampling defaults
+    /// (`temperature 0.40 / topK 32 / minP 0.08 / repeat 1.25 / window 192`)
+    /// for the `gemma3n` family only. Affects the same auto-pick path
+    /// used by `PromptMode.resolvedSampling` — sliders the user has
+    /// already manually moved keep their custom values, untouched
+    /// sliders get the tight numbers instead of the new looser
+    /// defaults. Off by default. Provided as a safety hatch in case
+    /// the new `temperature 0.7` baseline re-surfaces foreign-language
+    /// drift on a specific quant or device.
+    var gemma3nTightSamplingOverride: Bool
+
     static let `default` = AppSettings(
         memoryEnabled: true,
         autoExtractMemory: true,
@@ -109,7 +120,8 @@ struct AppSettings: Codable, Equatable {
         generationTimeoutSeconds: 120,
         performanceProfile: .balanced,
         searxngBaseURL: "",
-        iCloudSyncEnabled: false
+        iCloudSyncEnabled: false,
+        gemma3nTightSamplingOverride: false
     )
 
     /// Sampling-knob factory defaults. Field-by-field equality against
@@ -183,6 +195,7 @@ struct AppSettings: Codable, Equatable {
         case performanceProfile
         case searxngBaseURL
         case iCloudSyncEnabled
+        case gemma3nTightSamplingOverride
         // Retained only for migration from the previous schema.
         case responseStyle
     }
@@ -212,7 +225,8 @@ struct AppSettings: Codable, Equatable {
         generationTimeoutSeconds: Int = 120,
         performanceProfile: PerformanceProfile = .balanced,
         searxngBaseURL: String = "",
-        iCloudSyncEnabled: Bool = false
+        iCloudSyncEnabled: Bool = false,
+        gemma3nTightSamplingOverride: Bool = false
     ) {
         self.memoryEnabled = memoryEnabled
         self.autoExtractMemory = autoExtractMemory
@@ -239,6 +253,7 @@ struct AppSettings: Codable, Equatable {
         self.performanceProfile = performanceProfile
         self.searxngBaseURL = searxngBaseURL
         self.iCloudSyncEnabled = iCloudSyncEnabled
+        self.gemma3nTightSamplingOverride = gemma3nTightSamplingOverride
     }
 
     init(from decoder: Decoder) throws {
@@ -293,6 +308,7 @@ struct AppSettings: Codable, Equatable {
         self.performanceProfile = try c.decodeIfPresent(PerformanceProfile.self, forKey: .performanceProfile) ?? fallback.performanceProfile
         self.searxngBaseURL = try c.decodeIfPresent(String.self, forKey: .searxngBaseURL) ?? fallback.searxngBaseURL
         self.iCloudSyncEnabled = try c.decodeIfPresent(Bool.self, forKey: .iCloudSyncEnabled) ?? fallback.iCloudSyncEnabled
+        self.gemma3nTightSamplingOverride = try c.decodeIfPresent(Bool.self, forKey: .gemma3nTightSamplingOverride) ?? fallback.gemma3nTightSamplingOverride
 
         // Migration path for installs that persisted the previous
         // `responseStyle: "leanCI" | "casual"` field. Map leanCI→concise
@@ -337,6 +353,7 @@ struct AppSettings: Codable, Equatable {
         try c.encode(performanceProfile, forKey: .performanceProfile)
         try c.encode(searxngBaseURL, forKey: .searxngBaseURL)
         try c.encode(iCloudSyncEnabled, forKey: .iCloudSyncEnabled)
+        try c.encode(gemma3nTightSamplingOverride, forKey: .gemma3nTightSamplingOverride)
     }
 
 }

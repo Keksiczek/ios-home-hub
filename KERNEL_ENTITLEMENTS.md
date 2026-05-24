@@ -119,18 +119,57 @@ To confirm the entitlements are active:
 
 Without entitlements, the context will be capped at 2048 tokens even on a high-memory device.
 
+## Sideload paths: what actually unlocks these entitlements
+
+These two kernel entitlements are gated by Apple's signing server, not by
+how the app reaches the device. Whether the entitlements take effect at
+runtime depends on **what cert signed the build** — not on which app
+store the user installed it from. The matrix below is the honest version
+of what works in 2026:
+
+| Path | Cost | `increased-memory-limit` | `extended-virtual-addressing` | Reinstall cadence | Notes |
+|---|---|---|---|---|---|
+| **Paid Apple Developer + Xcode direct install** | $99/year | ✅ | ✅ | Once (1 year per cert) | The clean path. Add the capabilities to your provisioning profile, build, run on a connected device. |
+| **Paid Apple Developer + AltStore / SideStore / Sideloadly** | $99/year | ✅ | ✅ | Same as Xcode | Works but offers nothing over plain Xcode. Useful only if Xcode isn't an option (Linux/Windows host). |
+| **TrollStore** (iOS 14.0 – 17.0) | Free | ✅ | ✅ | Permanent | Uses the CoreTrust bug to install IPAs with arbitrary entitlements, bypassing Apple's signing-server entitlement validation. Build the IPA with the `.entitlements` file already declaring the kernel keys, install via TrollStore, both entitlements are honored at runtime. **Apple closed the CoreTrust bug in iOS 17.0 release**, so this only works on iOS 14.0 – 16.6.1 + a few early 17.0 betas. Check [trollstore.app](https://trollstore.app/) for current device/iOS compatibility before counting on it. |
+| **AltStore / SideStore with a free Apple ID** | Free | ❌ | ❌ | 7-day reinstall | The free Apple ID cert flow is restricted to basic capabilities — Apple's signing server strips kernel entitlements regardless of what `.entitlements` declares. The 4.5 GB Gemma 3n E4B still won't mmap. Use the free-tier model lineup (Gemma 3n **E2B**, Gemma 2 2B, SmolLM2, …) which is calibrated to fit without these entitlements. |
+| **AltStore PAL (EU, iOS 17.4+)** | Free for users; PAL fee for developer | ❓ | ❓ | Permanent | Theoretical: alternative marketplaces still route IPAs through Apple notarization, which restricts entitlements. No reliable confirmation that the kernel entitlements pass notarization on PAL. Treat as "untested, probably no" until somebody reports a working build. |
+| **Esign / Scarlet / Feather** | Varies | ❌ | ❌ | Varies | Same as AltStore-free: re-signs with Apple's signing server, same entitlement restrictions. |
+
+### Practical recommendation by device
+
+- **iOS < 17.0 device, jailbreak-friendly or already running TrollStore** → TrollStore is the no-cost path. Build the IPA with kernel entitlements declared, drop it in, you're done.
+- **iOS 17.0+ device, no paid Apple Developer account** → No realistic free path to these entitlements. Run the E2B / smaller models — they're tuned to fit. If you want E4B / Mistral 7B specifically, the $99 paid account is the only stable answer.
+- **Already paying $99 anyway** → Use Xcode direct install. AltStore on top of a paid account is just additional moving parts for the same result.
+
+### Why "AltStore with a free Apple ID" doesn't fix this
+
+When you sign an IPA via AltStore with a free Apple ID, AltStore submits the bundle to Apple's signing server. The server validates entitlements against your developer-account tier and **silently strips any restricted entitlements before returning the signature**. This happens server-side, so changing the local `.entitlements` file has no effect on the installed binary. The `extended-virtual-addressing` line is gone by the time iOS evaluates the runtime entitlement check.
+
+TrollStore bypasses this because it doesn't use Apple's signing server at all — the CoreTrust bug allowed locally-signed binaries with arbitrary entitlements to pass the runtime check. That's why TrollStore worked on every entitlement (including the ones Apple gates behind enterprise tier) until Apple closed the bug.
+
 ## Free Account Workarounds
 
-If you have a personal/free developer account, you have two options:
+If you have a personal/free developer account and TrollStore isn't an
+option on your device, you have two practical paths:
 
-### Option 1: Use Conservative Memory Settings (Current Default)
+### Option 1: Use the smaller-model lineup (current default)
 
 The app automatically detects your account type and uses reduced memory allocations:
 - iPhone SE: 600 tokens safe history
 - iPhone 16 Pro: 1400 tokens safe history
 - iPad Pro: 2800 tokens safe history
 
-This is stable but doesn't maximize performance. **No changes needed** — just build normally.
+The model catalog includes a calibrated free-tier lineup that fits
+inside the ~2 GB single-shard mmap ceiling without entitlements:
+- **Gemma 3n E2B** (~2.8 GB) — same MatFormer architecture as E4B but with the 2B-active routing slice
+- **Gemma 2 2B** (~1.5 GB)
+- **SmolLM2 1.7B** (~1 GB)
+- **Phi-3 Mini variants**
+
+Larger models like Gemma 3n E4B (~4.5 GB single shard) are now refused
+at load time with a clear error pointing back to this document — see
+`MLXRuntime.swift` per-shard mmap pre-flight.
 
 ### Option 2: Upgrade to Paid Developer Account
 

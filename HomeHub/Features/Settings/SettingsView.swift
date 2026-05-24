@@ -665,10 +665,25 @@ struct SettingsView: View {
                 get: { settings.current.showTokenUsage },
                 set: { newValue in Task { await settings.set(\.showTokenUsage, to: newValue) } }
             ))
+
+            // Safety hatch: restore the pre-2026-05 tight Gemma 3n
+            // sampling defaults. The new looser defaults (temp 0.7 /
+            // topK 64) match Google's model card and produce livelier
+            // replies, but if a specific Q4 quant or device re-surfaces
+            // the historical foreign-language drift, flipping this on
+            // pins the old tight stack (temp 0.40 / topK 32) for the
+            // Gemma 3n family without forcing a manual slider reset on
+            // every other model.
+            Toggle("Tight Gemma 3n sampling (rollback)", isOn: Binding(
+                get: { settings.current.gemma3nTightSamplingOverride },
+                set: { newValue in
+                    Task { await settings.set(\.gemma3nTightSamplingOverride, to: newValue) }
+                }
+            ))
         } header: {
             Text("Generování")
         } footer: {
-            Text("Vyšší teplota je kreativnější, ale méně předvídatelná. Pro většinu úloh se hodí 0,6–0,8. Penalizace opakování 1,1 a Min-p 0,05 jsou rozumné výchozí hodnoty — menší modely se s nimi tolik nezacyklí ani neprodukují nesmysly.")
+            Text("Vyšší teplota je kreativnější, ale méně předvídatelná. Pro většinu úloh se hodí 0,6–0,8. Penalizace opakování 1,1 a Min-p 0,05 jsou rozumné výchozí hodnoty — menší modely se s nimi tolik nezacyklí ani neprodukují nesmysly.\n\nTight Gemma 3n sampling vrátí starší přísnější výchozí hodnoty (temp 0.40, topK 32) jen pro rodinu Gemma 3n. Zapni jen pokud nové uvolněné hodnoty produkují drift do cizích jazyků.")
         }
     }
 

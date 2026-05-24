@@ -286,6 +286,31 @@ extension ModelCapabilityProfile {
         isWeakInstructionFollower: true
     )
 
+    /// Pre-2026-05 Gemma 3n sampling stack — preserved so the
+    /// `gemma3nTightSamplingOverride` user toggle has a stable reference
+    /// to fall back to. These values were originally tuned against early
+    /// Q4 quants exhibiting foreign-language token drift; the new
+    /// `gemma3n.recommended*` baseline is looser because the underlying
+    /// sampler bug was fixed and the drift no longer reproduces on the
+    /// current mlx-swift-lm builds. If a user reports the old drift on
+    /// a specific device / quant, flipping the toggle restores this
+    /// stack without a rebuild.
+    static let gemma3nTightSampling: (
+        temperature: Double,
+        topP: Double,
+        topK: Int,
+        minP: Double,
+        repeatPenalty: Double,
+        repeatPenaltyLastN: Int
+    ) = (
+        temperature: 0.40,
+        topP: 0.9,
+        topK: 32,
+        minP: 0.08,
+        repeatPenalty: 1.25,
+        repeatPenaltyLastN: 192
+    )
+
     /// Phi-3 Mini/Medium and Phi-4 — flash_attn = true causes incorrect
     /// output on at least some quantised checkpoints; keep it off.
     /// Sampling: Phi-3 docs recommend moderate temperature; the

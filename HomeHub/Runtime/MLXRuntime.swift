@@ -255,6 +255,14 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
     /// hammered every 5 s during sustained pressure.
     private var currentCacheTier: CachePressureTier = .normal
 
+    /// Idle-time baseline for the MLX GPU buffer pool — i.e. the
+    /// ceiling when no model is loaded, or when the loaded model is
+    /// small enough that headroom isn't the constraint. Computed once
+    /// from the device-memory profile × hardware safe ceiling and
+    /// kept around so `unload()` and `recomputeCacheLimitForLoad`
+    /// can both fall back to a consistent number.
+    private let idleBaselineCacheLimitBytes: Int
+
     init(loader: any MLXLoader = DefaultMLXLoader()) {
         self.loader = loader
         // Configure MLX GPU memory cache limit using the *minimum* of two budgets:
@@ -268,6 +276,7 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
         let memoryBudget   = DeviceMemoryProvider.shared.profile.mlxGPUCacheLimitBytes
         let hardwareBudget = HardwareCapabilities.shared.safeGPUCacheLimitBytes
         let cacheLimitBytes = min(memoryBudget, hardwareBudget)
+        self.idleBaselineCacheLimitBytes = Int(cacheLimitBytes)
         self.baselineCacheLimitBytes = Int(cacheLimitBytes)
         MLX.Memory.cacheLimit = self.baselineCacheLimitBytes
 
@@ -280,6 +289,53 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                 "MLX: safe-attention mode active for SoC \(HardwareCapabilities.shared.soc.label, privacy: .public) — GPU cache clamped to \(Int(cacheLimitBytes / 1024 / 1024), privacy: .public) MB"
             )
         }
+    }
+
+    /// Dial the buffer-pool ceiling down at load time when the model
+    /// is large relative to the per-process memory budget. The default
+    /// idle baseline (typically 200 MB on the moderate tier) is the
+    /// "small model" value — it leaves Metal enough scratch to keep
+    /// prefill responsive. When weights eat most of the budget the
+    /// same 200 MB is the *first* thing jetsam reclaims during
+    /// prefill's dirty-page spike. Reserving a quarter of the
+    /// post-weights headroom for the pool (floored at 64 MB, capped
+    /// at the idle baseline) trades a small prefill slowdown on big
+    /// models for survivability of the first turn.
+    ///
+    /// Pure read-mostly: protected only against `baselineCacheLimitBytes`
+    /// being touched from the pressure-tier helpers, which run on the
+    /// same `@MainActor`-rooted call chain that `loadWithProgress`
+    /// uses, so no extra lock is needed.
+    private func recomputeCacheLimitForLoad(weightsBytes: Int64) {
+        guard idleBaselineCacheLimitBytes > 0 else { return }
+        let available = Int64(os_proc_available_memory())
+        let weights = max(0, weightsBytes)
+        // Floor / ceiling on the dynamic value.
+        let minPool: Int64 = 64 * 1024 * 1024
+        let maxPool = Int64(idleBaselineCacheLimitBytes)
+        // Headroom-over-weights quarter. Negative numbers (weights >
+        // available) collapse to `minPool` via the max() — same outcome
+        // as the existing pre-load gate's "attempt anyway" path.
+        let headroomQuarter = (available - weights) / 4
+        let target = min(maxPool, max(minPool, headroomQuarter))
+        baselineCacheLimitBytes = Int(target)
+        MLX.Memory.cacheLimit = baselineCacheLimitBytes
+        // Reset the pressure-tier tracking so the next L1 / L2 event
+        // shrinks from the *new* baseline, not the idle one.
+        currentCacheTier = .normal
+        let mb = baselineCacheLimitBytes / 1_048_576
+        let idle = idleBaselineCacheLimitBytes / 1_048_576
+        log.info("MLX: cache limit at load \(mb, privacy: .public) MB (idle baseline \(idle, privacy: .public) MB; weights \(weights / 1_048_576, privacy: .public) MB, available \(available / 1_048_576, privacy: .public) MB)")
+    }
+
+    /// Restore the buffer-pool ceiling to the idle baseline. Called
+    /// from `unload()` so a subsequent fresh load starts from a known
+    /// state rather than inheriting the previous model's tight cap.
+    private func restoreIdleBaselineCacheLimit() {
+        guard idleBaselineCacheLimitBytes > 0 else { return }
+        baselineCacheLimitBytes = idleBaselineCacheLimitBytes
+        MLX.Memory.cacheLimit = idleBaselineCacheLimitBytes
+        currentCacheTier = .normal
     }
 
     /// Adjust the MLX GPU buffer-pool ceiling based on current pressure
@@ -340,6 +396,10 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
         }
 
         self.log.info("MLX: Preparing to load model '\(model.displayName, privacy: .public)'")
+        await OOMTelemetryService.shared.breadcrumb("mlx.load.start", context: [
+            "modelID": model.id,
+            "weightsMB": "\(model.sizeBytes / 1_048_576)"
+        ])
 
         guard let repoId = model.repoId else {
             throw RuntimeError.incompatibleModel(
@@ -391,6 +451,11 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                 let mbShard = preflight.largestShardBytes / 1_048_576
                 let mbCeiling = mmapCeiling / 1_048_576
                 self.log.error("MLX: Pre-load mmap check failed — largest shard \(mbShard) MB exceeds \(mbCeiling) MB sandbox ceiling (no extended-virtual-addressing entitlement)")
+                await OOMTelemetryService.shared.breadcrumb("mlx.load.refused.mmapCeiling", context: [
+                    "modelID": model.id,
+                    "largestShardMB": "\(mbShard)",
+                    "ceilingMB": "\(mbCeiling)"
+                ])
                 throw RuntimeError.initializationFailed(
                     "Model \"\(model.displayName)\" má jediný weight soubor \(mbShard) MB, ale tato verze HomeHubu (bez placeného Apple Developer účtu) zvládne nejvýše ~\(mbCeiling) MB v jednom kuse. Vyber menší variantu modelu (např. Gemma 3n E2B), nebo pro tento konkrétní model použij build s entitlementem extended-virtual-addressing — viz KERNEL_ENTITLEMENTS.md."
                 )
@@ -426,6 +491,11 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
             let mbAvailable = available / 1_048_576
             if available > 0, raw > available * 2 {
                 self.log.error("MLX: Pre-load memory check failed — weights ~\(mbRaw) MB exceed 2× available \(mbAvailable) MB; refusing")
+                await OOMTelemetryService.shared.breadcrumb("mlx.load.refused.oom", context: [
+                    "modelID": model.id,
+                    "weightsMB": "\(mbRaw)",
+                    "availableMB": "\(mbAvailable)"
+                ])
                 throw RuntimeError.outOfMemory
             }
             if available > 0, raw > available {
@@ -510,6 +580,16 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
             self.loadedModel = model
             await telemetry.emit(.modelLoaded(handle: ModelHandle(from: model), durationMs: duration))
             self.log.info("MLX: Model '\(model.displayName, privacy: .public)' loaded in \(duration)ms")
+            await OOMTelemetryService.shared.breadcrumb("mlx.load.weightsMapped", context: [
+                "modelID": model.id,
+                "durationMs": "\(duration)"
+            ])
+
+            // Dial the buffer-pool ceiling based on the actual headroom
+            // left after weights resident. Done BEFORE the prewarm so
+            // the prewarm allocates against the post-load tier and the
+            // pressure-scaling math tracks the right baseline.
+            self.recomputeCacheLimitForLoad(weightsBytes: model.sizeBytes)
 
             // Pre-warm: drive a single-token forward pass so the Metal
             // kernel cache + first KV-cache slab + sampler scratch all
@@ -613,6 +693,9 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
             }
             let ms = Int(Date().timeIntervalSince(prewarmStart) * 1000)
             self.log.info("MLX: prewarm complete in \(ms)ms (produced \(produced) token)")
+            await OOMTelemetryService.shared.breadcrumb("mlx.load.prewarmDone", context: [
+                "durationMs": "\(ms)"
+            ])
         } catch {
             // Don't promote a prewarm failure to a load failure — the
             // next real generate will surface a useful error of its
@@ -649,6 +732,10 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
             _lastGenerationError = nil
         }
         loadedModel = nil
+
+        // Release the load-time tight cache cap. A future load will
+        // recompute its own; until then the idle baseline is correct.
+        restoreIdleBaselineCacheLimit()
 
         // Structured unload log — surfaced in DeveloperDiagnostics.
         // We don't have a portable "bytes released" API on MLX-Swift, so
