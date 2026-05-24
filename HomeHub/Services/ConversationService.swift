@@ -749,8 +749,17 @@ final class ConversationService: ObservableObject {
 
         // The directive is intentionally short + imperative — small
         // models occasionally over-summarise long context-bearing
-        // instructions, but a two-word command lands every time.
-        send(userInput: "Pokračuj.", in: conversationID)
+        // instructions, but a one-word command lands every time.
+        // Match the user's resolved language so the model doesn't
+        // code-switch mid-conversation just because the button was
+        // hardcoded to one locale.
+        let directive: String
+        switch settings.current.language.resolved() {
+        case .cs:   directive = "Pokračuj."
+        case .en:   directive = "Continue."
+        case .auto: directive = "Continue."   // resolved() never returns .auto, but exhaustive
+        }
+        send(userInput: directive, in: conversationID)
     }
 
     func regenerate(in conversationID: UUID) {
@@ -1477,10 +1486,10 @@ final class ConversationService: ObservableObject {
                         // `RuntimeEvent.FinishReason` exactly.
                         assistantMessage.finishReason = {
                             switch reason {
-                            case .stop:      return "stop"
-                            case .length:    return "length"
-                            case .cancelled: return "cancelled"
-                            case .error:     return "error"
+                            case .stop:      return Message.FinishReasonKey.stop
+                            case .length:    return Message.FinishReasonKey.length
+                            case .cancelled: return Message.FinishReasonKey.cancelled
+                            case .error:     return Message.FinishReasonKey.error
                             }
                         }()
                         messagesByConversation[conversationID]?[assistantIndex] = assistantMessage

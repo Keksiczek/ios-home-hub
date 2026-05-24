@@ -38,7 +38,7 @@ struct Message: Identifiable, Codable, Equatable, Hashable {
     /// `true` when the runtime stopped because the max-tokens budget
     /// was reached — i.e. the reply is likely mid-thought. UI uses
     /// this to render the Continue button.
-    var wasTruncatedByLength: Bool { finishReason == "length" }
+    var wasTruncatedByLength: Bool { finishReason == FinishReasonKey.length }
 
     struct Attachment: Codable, Equatable, Hashable, Identifiable {
         let id: UUID
@@ -84,5 +84,16 @@ struct Message: Identifiable, Codable, Equatable, Hashable {
             tokenCount: nil,
             attachments: nil
         )
+    }
+
+    /// String constants that mirror `RuntimeEvent.FinishReason` cases.
+    /// Centralising them here keeps the stringly-typed `finishReason`
+    /// comparison sites in sync — a typo would otherwise silently
+    /// break `wasTruncatedByLength` without a compiler warning.
+    enum FinishReasonKey {
+        static let stop      = "stop"
+        static let length    = "length"
+        static let cancelled = "cancelled"
+        static let error     = "error"
     }
 }

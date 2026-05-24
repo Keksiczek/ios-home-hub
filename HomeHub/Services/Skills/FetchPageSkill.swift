@@ -28,6 +28,15 @@ import Foundation
 ///   entities. Not a full sanitizer — we never render this anywhere,
 ///   just feed it back to the LLM as plain text. The model sees the
 ///   words, not the markup.
+/// Errors returned by `FetchPageSkill.execute` as the model-visible
+/// result string. Sentinel-style — the model never sees the raw error,
+/// just the rendered "Could not fetch …" message.
+private enum FetchPageError {
+    static func blockedHost(_ host: String) -> String {
+        "Refused to fetch \(host): private / loopback / metadata addresses are not allowed."
+    }
+}
+
 struct FetchPageSkill: Skill {
     let name = "FetchPage"
     let description = """
@@ -72,6 +81,15 @@ struct FetchPageSkill: Skill {
         guard let url = Self.normaliseURL(trimmed) else {
             return "Error: FetchPage needs a full URL (https://...). Got: \"\(trimmed)\"."
         }
+        if let host = url.host, Self.isBlockedHost(host) {
+            // SSRF guard. The model can be prompt-injected via search
+            // result content to call FetchPage on a private IP; this
+            // refuses outright before the network call. A 192.168.x.x
+            // router admin page or AWS metadata IP gets the same
+            // structured refusal as `file://` would.
+            HHLog.tool.warning("FetchPage refused (blocked host): \(host, privacy: .public)")
+            return FetchPageError.blockedHost(host)
+        }
         HHLog.tool.info("FetchPage: \(url.absoluteString, privacy: .public)")
 
         var request = URLRequest(url: url, timeoutInterval: timeout)
@@ -84,9 +102,21 @@ struct FetchPageSkill: Skill {
         request.setValue("text/html, application/xhtml+xml", forHTTPHeaderField: "Accept")
         request.setValue("en-US,en;q=0.9", forHTTPHeaderField: "Accept-Language")
 
+        // Use a session with a redirect-guarding delegate so a public
+        // URL can't 302-bounce us into a private subnet. Sharing
+        // `URLSession.shared` doesn't expose the delegate hook for
+        // redirects, and a one-shot session with the right delegate
+        // is the lightest fix — the session lifetime is one fetch.
+        let session = URLSession(
+            configuration: .ephemeral,
+            delegate: RedirectGuardDelegate(),
+            delegateQueue: nil
+        )
+        defer { session.finishTasksAndInvalidate() }
+
         let html: String
         do {
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await session.data(for: request)
             if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
                 return "Could not fetch \(url.absoluteString): HTTP \(http.statusCode)."
             }
@@ -120,6 +150,74 @@ struct FetchPageSkill: Skill {
 
             \(body)
             """
+    }
+
+    // MARK: - URL handling
+
+    // MARK: - SSRF guard
+
+    /// Exact hostnames and host-string prefixes that map to private,
+    /// loopback, link-local, or cloud-metadata addresses. Used by
+    /// `isBlockedHost` to refuse the fetch before the network call
+    /// and (via `RedirectGuardDelegate`) to refuse a 30x bounce into
+    /// the same address space.
+    ///
+    /// Coverage:
+    /// - **Loopback**: `127.0.0.0/8`, `::1`, `0.0.0.0`.
+    /// - **RFC1918 private**: `10.0.0.0/8`, `192.168.0.0/16`,
+    ///   `172.16.0.0/12`.
+    /// - **Link-local**: `169.254.0.0/16` (IPv4), `fe80::/10` (IPv6).
+    /// - **Unique-local IPv6**: `fc00::/7`.
+    /// - **Cloud metadata**: `169.254.169.254` (AWS/GCP/Azure all use
+    ///   this), `metadata.google.internal` (GCP hostname).
+    /// - **Hostnames**: `localhost` and a couple of trivial aliases.
+    ///
+    /// Prefix matching is intentional — we don't parse the dotted-quad
+    /// because:
+    ///   (a) For the host string the model emits, the prefix check
+    ///       catches the realistic attack vectors with zero parser
+    ///       complexity.
+    ///   (b) An attacker who wants to evade this can encode the IP
+    ///       as a hex/octal literal (`0x7f000001` for 127.0.0.1) —
+    ///       but iOS's `URL` parser rejects most of those before we
+    ///       see the host string, and the ones that survive (decimal
+    ///       integer form for IPv4) are exotic enough that we accept
+    ///       the residual risk in exchange for the simpler code.
+    private static let blockedExactHosts: Set<String> = [
+        "localhost",
+        "ip6-localhost",
+        "ip6-loopback",
+        "0.0.0.0",
+        "127.0.0.1",
+        "::1",
+        "[::1]",
+        "169.254.169.254",
+        "metadata.google.internal",
+        "metadata"
+    ]
+    private static let blockedHostPrefixes: [String] = [
+        "127.",
+        "10.",
+        "192.168.",
+        "169.254.",
+        // RFC1918 172.16.0.0/12 — sixteen second-octet values.
+        "172.16.", "172.17.", "172.18.", "172.19.",
+        "172.20.", "172.21.", "172.22.", "172.23.",
+        "172.24.", "172.25.", "172.26.", "172.27.",
+        "172.28.", "172.29.", "172.30.", "172.31.",
+        // IPv6 loopback / link-local / unique-local. URL host strings
+        // strip the surrounding `[ ]` so we match on the bare prefix.
+        "fe80:", "fe80::",
+        "fc00:", "fd"
+    ]
+
+    /// Decides whether a host should be refused. Lowercases the input
+    /// once at the top so an `LOCALHOST` or `127.0.0.1` (canonicalised
+    /// either way) hits the same matcher.
+    static func isBlockedHost(_ host: String) -> Bool {
+        let lc = host.lowercased()
+        if blockedExactHosts.contains(lc) { return true }
+        return blockedHostPrefixes.contains(where: { lc.hasPrefix($0) })
     }
 
     // MARK: - URL handling
@@ -231,6 +329,40 @@ struct FetchPageSkill: Skill {
             }
         }
         return work
+    }
+
+    /// Re-checks a redirect target against the SSRF blocklist. Without
+    /// this, an attacker-controlled public URL could 302-bounce us
+    /// into `http://192.168.1.1/...` or `http://169.254.169.254/...`
+    /// and `URLSession.shared` would happily follow because the
+    /// initial host passed the pre-flight.
+    ///
+    /// Returning `nil` from the completion handler cancels the
+    /// redirect — the original task then fails with `NSURLErrorCancelled`
+    /// which `execute` catches and renders as a generic
+    /// "Could not fetch …" string. We don't try to differentiate
+    /// "cancelled because redirect blocked" vs "user cancelled" in the
+    /// model-visible output because the model has no recovery
+    /// strategy for either; the unified failure surface is fine.
+    private final class RedirectGuardDelegate: NSObject, URLSessionTaskDelegate {
+        func urlSession(
+            _ session: URLSession,
+            task: URLSessionTask,
+            willPerformHTTPRedirection response: HTTPURLResponse,
+            newRequest request: URLRequest,
+            completionHandler: @escaping @Sendable (URLRequest?) -> Void
+        ) {
+            guard let url = request.url, let host = url.host else {
+                completionHandler(nil)
+                return
+            }
+            if FetchPageSkill.isBlockedHost(host) {
+                HHLog.tool.warning("FetchPage redirect blocked: → \(host, privacy: .public)")
+                completionHandler(nil)
+                return
+            }
+            completionHandler(request)
+        }
     }
 
     /// Decodes the handful of named / numeric HTML entities that matter
