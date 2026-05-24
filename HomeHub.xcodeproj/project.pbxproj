@@ -80,6 +80,7 @@
 		5D2BD1C5646329993DD94ABC /* PromptAssemblyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2492104C44B30C7B88503EBC /* PromptAssemblyTests.swift */; };
 		5DC2B36601037F8FAB429E11 /* MessageComposerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD026A935096B65055B83C91 /* MessageComposerView.swift */; };
 		5EDFED45DB90D4206D584F88 /* MLXHardeningTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FAD68AC867F11BD32F9AA663 /* MLXHardeningTests.swift */; };
+		5EFC3EB6D3AF779DE8E3B06C /* FetchPageSkill.swift in Sources */ = {isa = PBXBuildFile; fileRef = 751058C1FA79E2B97A808BAB /* FetchPageSkill.swift */; };
 		6077F9DF4760A248847EDBF3 /* PreviewSamples.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE9CA1AD275CFA24EA76D8A9 /* PreviewSamples.swift */; };
 		609638B1149A947BA479A03B /* MemoryPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9457DB665B8A06643BD7D879 /* MemoryPolicyTests.swift */; };
 		610E9950BB305981626B2E2C /* SharedStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6FD0FEECC8971E164461D5F4 /* SharedStorage.swift */; };
@@ -198,6 +199,7 @@
 		DF8C2F81A5E589755F3F453F /* HomeKitSkill.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E0C0CBC0663CD6F3E7EB586 /* HomeKitSkill.swift */; };
 		E2350E86142A4C42F774B8F8 /* MemoryServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 385DF27F2323F418E3404652 /* MemoryServiceTests.swift */; };
 		E67163491D28858D49ABD3DA /* KnowledgeBaseStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22A7EE84FD139ED699ADC692 /* KnowledgeBaseStore.swift */; };
+		E7717608A4F814BABD7A9C19 /* CachingWebSearchEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 083604E05306960561B6BBDC /* CachingWebSearchEngine.swift */; };
 		EB89AA1C5E7F39701AD45530 /* ShareInboxBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A1DC51D3E727899DD33578C /* ShareInboxBridge.swift */; };
 		EBE5F95C09FB1C7E3B41137B /* DiagnosticReportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32CE708FEB7B3A7026559FDF /* DiagnosticReportTests.swift */; };
 		EBEF2EDAC15010BA018E0C2C /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3C1D9A149A12CC9AF610786 /* RootView.swift */; };
@@ -258,6 +260,7 @@
 
 /* Begin PBXFileReference section */
 		07661FCABCC9B44152EAEA17 /* OOMTelemetryService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OOMTelemetryService.swift; sourceTree = "<group>"; };
+		083604E05306960561B6BBDC /* CachingWebSearchEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CachingWebSearchEngine.swift; sourceTree = "<group>"; };
 		0849DBA3B58F500B866BAEF3 /* EmbeddingService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmbeddingService.swift; sourceTree = "<group>"; };
 		09312790940AEED7D967E37C /* ExtractionPromptBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExtractionPromptBuilder.swift; sourceTree = "<group>"; };
 		09DAA76051EEFF6D2E8215DC /* ExtractionPayload.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExtractionPayload.swift; sourceTree = "<group>"; };
@@ -353,6 +356,7 @@
 		737721E9AF705A3AB8B3011B /* SearchIndexingService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchIndexingService.swift; sourceTree = "<group>"; };
 		737FF123586BC755A3623CE5 /* BackgroundDownloadProgressing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundDownloadProgressing.swift; sourceTree = "<group>"; };
 		74807E5B70A51A98C0CEEEB1 /* GenerationLifecycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GenerationLifecycleTests.swift; sourceTree = "<group>"; };
+		751058C1FA79E2B97A808BAB /* FetchPageSkill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FetchPageSkill.swift; sourceTree = "<group>"; };
 		769B31D437F880BF85AF05C0 /* MLXRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MLXRuntime.swift; sourceTree = "<group>"; };
 		77913079CEDF0E03BBE121C5 /* SkillManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillManager.swift; sourceTree = "<group>"; };
 		779985FABD01F582CB76B2E2 /* AssistantProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssistantProfile.swift; sourceTree = "<group>"; };
@@ -629,9 +633,11 @@
 		7C63E9FF8C94FC9CEEF6B55A /* Skills */ = {
 			isa = PBXGroup;
 			children = (
+				083604E05306960561B6BBDC /* CachingWebSearchEngine.swift */,
 				287FC089939B42C75F581C3D /* CalculatorSkill.swift */,
 				8E1B5F776E9FFF970D22A8E2 /* CalendarSkill.swift */,
 				A17B7964C1E977D4C09A6D4B /* DeviceInfoSkill.swift */,
+				751058C1FA79E2B97A808BAB /* FetchPageSkill.swift */,
 				7E0C0CBC0663CD6F3E7EB586 /* HomeKitSkill.swift */,
 				A70404647546B88796F32FF4 /* RemindersSkill.swift */,
 				B06EF4D951679A3F21D6FBC8 /* Skill.swift */,
@@ -1049,6 +1055,7 @@
 				C8B8530776E744DF08F1F3F7 /* AssistantProfile.swift in Sources */,
 				7F82669422F6CC38CBB72E04 /* BackgroundDownloadCoordinator.swift in Sources */,
 				750D93A8F59F62C1483B835D /* BackgroundDownloadProgressing.swift in Sources */,
+				E7717608A4F814BABD7A9C19 /* CachingWebSearchEngine.swift in Sources */,
 				6307141667D726E7CFAD32B0 /* CalculatorSkill.swift in Sources */,
 				2DEC6889D04ED10AC5D60981 /* CalendarSkill.swift in Sources */,
 				BB4DABB9DB1988621A9AAD2B /* ChatDetailView.swift in Sources */,
@@ -1073,6 +1080,7 @@
 				7D53293B070C9C2EC64D0594 /* ExtractionPayload.swift in Sources */,
 				EE00CD35806F2E8BAE02C02F /* ExtractionPromptBuilder.swift in Sources */,
 				B2FBB8F5932E44AEFF1566D6 /* FakeMLXLoader.swift in Sources */,
+				5EFC3EB6D3AF779DE8E3B06C /* FetchPageSkill.swift in Sources */,
 				471BB2311B56FB1274D128C8 /* FileStore.swift in Sources */,
 				F82CC40539FCDB2D77D69F17 /* GGUFMetadata.swift in Sources */,
 				3676B62B7A241935EFEBD8C4 /* GGUFModelMetadata.swift in Sources */,

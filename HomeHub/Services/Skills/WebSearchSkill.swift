@@ -12,7 +12,18 @@ import Foundation
 /// ```
 struct WebSearchSkill: Skill {
     let name = "WebSearch"
-    let description = "Searches the web for news, weather, prices, or any fact that needs fresh data. Provide a short query like 'weather Prague' or 'EUR CZK rate today'. Returns the top 3–5 results."
+    let description = """
+        Searches the web for news, weather, prices, or any fact that needs fresh data. \
+        ALWAYS reformulate the user's question into a short keyword query — do not pass \
+        the question verbatim. Examples:
+          • User: "co je nového u Apple?" → query: "Apple news 2026"
+          • User: "kolik stoji EUR v CZK?" → query: "EUR CZK exchange rate today"
+          • User: "jaké je počasí v Praze?" → query: "weather Prague today"
+          • User: "kdo vyhrál Ligu mistrů?" → query: "Champions League winner 2025"
+        Keep queries to 2-6 keywords; drop filler words. Returns the top 3-5 results \
+        as title + snippet + URL. After getting results, you SHOULD call FetchPage on \
+        the most relevant URL when the snippet alone doesn't answer the question.
+        """
 
     private let engine: any WebSearchEngine
 

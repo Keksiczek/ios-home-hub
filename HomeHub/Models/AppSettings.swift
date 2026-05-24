@@ -150,15 +150,25 @@ struct AppSettings: Codable, Equatable {
     static let factorySampling = FactorySampling()
 
     /// Tools registered in `SkillManager` by default — i.e. the subset
-    /// that's ON at first launch. WebSearch is deliberately omitted
-    /// (privacy + network usage; opt-in only).
+    /// that's ON at first launch.
+    ///
+    /// WebSearch is included now (off in earlier versions): a chat
+    /// assistant that can't look anything up is half the product, and
+    /// the agentic loop's privacy rail explicitly forbids sending
+    /// personal data through the tool — only what the model
+    /// reformulates as a search query. Users who want strict local-only
+    /// can flip it off in Settings; the persisted `enabledTools` set
+    /// then wins on subsequent launches via the migration-safe
+    /// `decodeIfPresent` path in `init(from:)`.
+    ///
+    /// FetchPage piggy-backs on WebSearch — both are network tools, the
+    /// trust boundary is the same, so they share the default-on flag.
     ///
     /// This list is NOT the source of truth for what's visible in
-    /// Settings — that's `allKnownTools` below. Decoupling the two
-    /// lets the Settings UI show WebSearch (so the user can flip it
-    /// on) while still keeping it off until explicitly chosen.
+    /// Settings — that's `allKnownTools` below.
     static let defaultEnabledTools: Set<String> = [
-        "Calculator", "Calendar", "HomeKit", "Reminders", "DeviceInfo"
+        "Calculator", "Calendar", "HomeKit", "Reminders", "DeviceInfo",
+        "WebSearch", "FetchPage"
     ]
 
     /// Every tool the app knows how to run, regardless of whether
@@ -173,7 +183,8 @@ struct AppSettings: Codable, Equatable {
     /// "I can't search the web" because the skill was never
     /// registered in `SkillManager`.
     static let allKnownTools: Set<String> = [
-        "Calculator", "Calendar", "HomeKit", "Reminders", "DeviceInfo", "WebSearch"
+        "Calculator", "Calendar", "HomeKit", "Reminders", "DeviceInfo",
+        "WebSearch", "FetchPage"
     ]
 
     // MARK: - Codable (migration-safe)

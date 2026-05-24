@@ -637,13 +637,23 @@ final class AppContainer: ObservableObject {
     /// working with DDG exactly like before.
     private func makeWebSearchEngine() -> any WebSearchEngine {
         let raw = settingsService.current.searxngBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !raw.isEmpty, let url = URL(string: raw) else {
-            return DuckDuckGoLiteEngine()
-        }
-        return FallbackWebSearchEngine(
-            primary: SearXNGEngine(baseURL: url),
-            fallback: DuckDuckGoLiteEngine()
-        )
+        let underlying: any WebSearchEngine = {
+            guard !raw.isEmpty, let url = URL(string: raw) else {
+                return DuckDuckGoLiteEngine()
+            }
+            return FallbackWebSearchEngine(
+                primary: SearXNGEngine(baseURL: url),
+                fallback: DuckDuckGoLiteEngine()
+            )
+        }()
+        // Wrap the resolved engine in an LRU cache so repeated lookups
+        // inside the 15-min window are network-free. The cache
+        // forwards `displayName` so the model's observation still
+        // reads "via DuckDuckGo" — caching is transparent at the
+        // citation layer. Always-on (no settings flag): cache misses
+        // behave identically to the un-cached engine, so there's no
+        // user-visible regression to gate.
+        return CachingWebSearchEngine(upstream: underlying)
     }
 
     /// Registers `WebSearchSkill` with the shared `SkillManager` iff
@@ -658,11 +668,17 @@ final class AppContainer: ObservableObject {
     /// `setWebSearchEnabled(_:)` / `setSearxngBaseURL(_:)` whenever
     /// the user changes a field that affects the engine chain.
     private func registerWebSearchIfEnabled() async {
-        let enabled = settingsService.current.enabledTools
-            .map { $0.lowercased() }
-            .contains("websearch")
-        if enabled {
+        let lowered = settingsService.current.enabledTools.map { $0.lowercased() }
+        if lowered.contains("websearch") {
             await SkillManager.shared.register(WebSearchSkill(engine: makeWebSearchEngine()))
+        }
+        // FetchPage composes with WebSearch — same network trust
+        // boundary, same prompt rail. Registered conditionally on its
+        // own flag so a user who wants search results but no full-page
+        // fetches (bandwidth, privacy) can still flip it off
+        // independently in Settings.
+        if lowered.contains("fetchpage") {
+            await SkillManager.shared.register(FetchPageSkill())
         }
     }
 

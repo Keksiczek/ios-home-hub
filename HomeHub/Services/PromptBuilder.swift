@@ -309,9 +309,23 @@ enum PromptBuilder {
         }
 
         if lower.contains("websearch") {
-            rules.append("- For current events, prices, news, or any fact that " +
-                         "requires fresh data, you MAY call the WebSearch tool. " +
+            // Strong "MUST" wording for the search rail: small models
+            // default to fabricating when a tool is merely permitted.
+            // Training data is full of "MAY call X" prompts where
+            // the model never does — flipping to imperative-with-
+            // examples reliably nudges Q4 checkpoints into actually
+            // calling the tool for time-sensitive questions.
+            rules.append("- For current events, prices, news, weather, sports scores, " +
+                         "or ANY fact that depends on the current date (anything published " +
+                         "after early 2024), you MUST call the WebSearch tool. " +
+                         "Reformulate the user's question into 2-6 keywords before searching " +
+                         "(e.g. 'kolik stoji EUR?' → 'EUR CZK rate today'). " +
                          "Never invent facts you could only know by looking them up.")
+            if lower.contains("fetchpage") {
+                rules.append("- After WebSearch, if the result snippets are too short to " +
+                             "fully answer the question, call FetchPage on the most relevant " +
+                             "URL to read the page content before responding.")
+            }
         } else {
             rules.append("- You have no web access. Do NOT pretend to look " +
                          "anything up on the internet. If a question requires " +
