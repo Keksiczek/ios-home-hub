@@ -31,6 +31,13 @@ struct DeveloperDiagnosticsView: View {
     @State private var lastThroughput: Double? = nil
     @State private var lastDurationMs: Int? = nil
     @State private var diagnosticsCopied = false
+    /// Snapshot of `OOMTelemetryService.recentBreadcrumbs(...)` rendered
+    /// in `oomBreadcrumbsSection`. Loaded on `.onAppear` and refreshed
+    /// when the user taps the section's reload button; we don't observe
+    /// the underlying file because it changes from outside SwiftUI's
+    /// graph (MetricKit background queue + load-pipeline async writers)
+    /// and a Combine bridge would add weight for a diagnostics-only view.
+    @State private var breadcrumbs: [OOMTelemetryService.Breadcrumb] = []
 
     var body: some View {
         List {
@@ -40,6 +47,7 @@ struct DeveloperDiagnosticsView: View {
             catalogSection
             activeModelSection
             deviceEventsSection
+            oomBreadcrumbsSection
             generationPerformanceSection
             tokenBudgetSection
             chatMemorySection
@@ -52,6 +60,7 @@ struct DeveloperDiagnosticsView: View {
         .navigationBarTitleDisplayMode(.inline)
         .task { await scanForStubs() }
         .task { await subscribeTelemetry() }
+        .task { reloadBreadcrumbs() }
     }
 
     // MARK: - Runtime
@@ -319,6 +328,93 @@ struct DeveloperDiagnosticsView: View {
             Text(
                 "Memory warnings trigger automatic model unload per the runtime unload policy. " +
                 "The model reloads when the app returns to foreground."
+            )
+        }
+    }
+
+    // MARK: - OOM breadcrumb log
+
+    private var oomBreadcrumbsSection: some View {
+        Section {
+            if breadcrumbs.isEmpty {
+                Text("Žádné události — zatím nikdo nezapsal breadcrumb. Po prvním loadu modelu se sem promítnou `mlx.load.*` landmarky.")
+                    .foregroundStyle(.secondary)
+                    .font(.caption)
+            } else {
+                let summary = aggregateBreadcrumbs(breadcrumbs)
+                LabeledContent("Záznamů zobrazeno", value: "\(breadcrumbs.count)")
+                LabeledContent("Refused (OOM / mmap)", value: "\(summary.refusals)")
+                LabeledContent("MetricKit payloady", value: "\(summary.metrickit)")
+                if let last = breadcrumbs.first {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Last landmark")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text(formatBreadcrumb(last))
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                }
+
+                DisclosureGroup {
+                    // Show up to 50 newest entries inside the disclosure
+                    // so the section header stays short. The breadcrumb
+                    // file caps at 200 entries on disk; the in-memory
+                    // snapshot is bounded by the `recentBreadcrumbs`
+                    // limit (50) at load time.
+                    ForEach(Array(breadcrumbs.enumerated()), id: \.offset) { _, crumb in
+                        Text(formatBreadcrumb(crumb))
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(crumb.kind.hasPrefix("mlx.load.refused") ? .orange : .secondary)
+                            .textSelection(.enabled)
+                    }
+                } label: {
+                    Text("Posledních \(breadcrumbs.count) událostí")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            HStack(spacing: 12) {
+                Button {
+                    reloadBreadcrumbs()
+                } label: {
+                    Label("Reload", systemImage: "arrow.clockwise")
+                }
+
+                Spacer()
+
+                // Share the raw JSON file so the user can attach it to
+                // a bug report. ShareLink takes the URL directly —
+                // iOS renders the right share sheet (Mail, AirDrop, …).
+                // The file may not exist before the first breadcrumb
+                // is written; guard so the button doesn't crash on a
+                // fresh install.
+                if FileManager.default.fileExists(atPath: OOMTelemetryService.shared.breadcrumbsFileURL.path) {
+                    ShareLink(
+                        item: OOMTelemetryService.shared.breadcrumbsFileURL,
+                        preview: SharePreview("oom-breadcrumbs.json")
+                    ) {
+                        Label("Share", systemImage: "square.and.arrow.up")
+                    }
+                }
+            }
+            .font(.caption)
+
+            Button("Smazat log", role: .destructive) {
+                OOMTelemetryService.shared.clear()
+                reloadBreadcrumbs()
+            }
+            .font(.caption)
+        } header: {
+            Text("OOM breadcrumb log")
+        } footer: {
+            Text(
+                "Strukturovaný log paměťových landmarků: `mlx.load.start` → `weightsMapped` → `prewarmDone`, " +
+                "plus refusal events (per-shard / OOM gate) a `metrickit.*` payloady od OS (chodí ~jednou za 24 h). " +
+                "Po jetsamu nech aplikaci restartovat a podívej se sem — poslední záznam před killem ukáže, " +
+                "kde to spadlo. Share posílá samotný JSON soubor, žádný obsah konverzací."
             )
         }
     }
@@ -749,6 +845,54 @@ struct DeveloperDiagnosticsView: View {
         if ev.belowHardFloor   { flags.append("floor") }
         let flagStr = flags.isEmpty ? "" : " [\(flags.joined(separator: ","))]"
         return "\(time) — \(tier) · avail=\(avail) · weights=\(weights)\(flagStr)"
+    }
+
+    // MARK: - Breadcrumb helpers
+
+    /// Refresh the in-memory snapshot from the on-disk breadcrumb log.
+    /// Cheap: the file caps at 200 entries and `recentBreadcrumbs(...)`
+    /// only reads + reverses, no parsing of MetricKit payload sidecars.
+    private func reloadBreadcrumbs() {
+        breadcrumbs = OOMTelemetryService.shared.recentBreadcrumbs(limit: 50)
+    }
+
+    /// Counts by kind for the header summary. Refusals are the most
+    /// actionable category — if `refusals > 0` the user is hitting
+    /// the per-shard or OOM gate and should switch model.
+    private func aggregateBreadcrumbs(
+        _ crumbs: [OOMTelemetryService.Breadcrumb]
+    ) -> (refusals: Int, metrickit: Int) {
+        var refusals = 0
+        var metrickit = 0
+        for crumb in crumbs {
+            if crumb.kind.hasPrefix("mlx.load.refused") { refusals += 1 }
+            if crumb.kind.hasPrefix("metrickit.")        { metrickit += 1 }
+        }
+        return (refusals, metrickit)
+    }
+
+    /// Compact one-line render. Trims the ISO timestamp to HH:mm:ss so
+    /// it fits comfortably in a List row, prepends the available-RAM
+    /// stamp (the single most useful field when reading post-jetsam),
+    /// then the kind tag, then any context kv pairs.
+    private func formatBreadcrumb(_ crumb: OOMTelemetryService.Breadcrumb) -> String {
+        // ISO8601: "2026-05-24T13:46:51.123+02:00" → take just the time.
+        let time: String = {
+            if let tRange = crumb.timestamp.range(of: "T"),
+               crumb.timestamp.distance(from: tRange.upperBound, to: crumb.timestamp.endIndex) >= 8 {
+                let from = tRange.upperBound
+                let to = crumb.timestamp.index(from, offsetBy: 8)
+                return String(crumb.timestamp[from..<to])
+            }
+            return crumb.timestamp
+        }()
+        let ctx: String = crumb.context
+            .sorted(by: { $0.key < $1.key })
+            .map { "\($0.key)=\($0.value)" }
+            .joined(separator: " ")
+        let suffix = ctx.isEmpty ? "" : " · \(ctx)"
+        let msg = crumb.message.isEmpty ? "" : " — \(crumb.message)"
+        return "\(time) avail=\(crumb.availableMemoryMB)MB · \(crumb.kind)\(msg)\(suffix)"
     }
 
     // MARK: - Async tasks
