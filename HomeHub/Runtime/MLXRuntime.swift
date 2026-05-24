@@ -368,6 +368,35 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
             )
         }
 
+        // Per-shard mmap ceiling check. Without the
+        // `extended-virtual-addressing` kernel entitlement (paid Apple
+        // Developer Program + provisioning profile) the iOS sandbox
+        // caps a single contiguous mmap at ~2 GB, regardless of how
+        // much physical RAM the device has. MLX-Swift maps each
+        // `*.safetensors` shard as one contiguous region, so a model
+        // that ships its weights as a single 4-5 GB file (e.g.
+        // `mlx-community/gemma-3n-E4B-it-4bit`) cannot be loaded on a
+        // free-tier build — it crashes deep inside MLX's mmap call,
+        // *after* the RuntimeManager feasibility gate has already
+        // said "risky, proceed". Refusing here turns the crash into a
+        // clear, user-actionable error.
+        //
+        // Sharded models (Mistral 7B's 2× 2 GB shards, etc.) pass this
+        // gate even when their total exceeds 2 GB — MLX mmaps each
+        // shard independently.
+        if !DeviceMemoryProvider.kernelEntitlementsEnabled,
+           preflight.largestShardBytes > 0 {
+            let mmapCeiling: Int64 = 2_100_000_000  // ~2 GB sandbox limit (conservative)
+            if preflight.largestShardBytes > mmapCeiling {
+                let mbShard = preflight.largestShardBytes / 1_048_576
+                let mbCeiling = mmapCeiling / 1_048_576
+                self.log.error("MLX: Pre-load mmap check failed — largest shard \(mbShard) MB exceeds \(mbCeiling) MB sandbox ceiling (no extended-virtual-addressing entitlement)")
+                throw RuntimeError.initializationFailed(
+                    "Model \"\(model.displayName)\" má jediný weight soubor \(mbShard) MB, ale tato verze HomeHubu (bez placeného Apple Developer účtu) zvládne nejvýše ~\(mbCeiling) MB v jednom kuse. Vyber menší variantu modelu (např. Gemma 3n E2B), nebo pro tento konkrétní model použij build s entitlementem extended-virtual-addressing — viz KERNEL_ENTITLEMENTS.md."
+                )
+            }
+        }
+
         // Pre-load memory check. This is a LAST-RESORT guard against the
         // hopeless case, NOT the primary feasibility gate — `RuntimeManager`
         // already runs `evaluateFeasibility` and the user explicitly opts
@@ -481,6 +510,24 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
             self.loadedModel = model
             await telemetry.emit(.modelLoaded(handle: ModelHandle(from: model), durationMs: duration))
             self.log.info("MLX: Model '\(model.displayName, privacy: .public)' loaded in \(duration)ms")
+
+            // Pre-warm: drive a single-token forward pass so the Metal
+            // kernel cache + first KV-cache slab + sampler scratch all
+            // commit *now*, while the load is still the only memory
+            // event in flight. Without this, the first user-visible
+            // prompt pays for prefill + first-time Metal compile +
+            // initial heap commit in one wave, which on large models
+            // (Gemma 3n, Mistral 7B) can cross the jetsam threshold
+            // mid-decode and kill the app on the user's first message.
+            //
+            // Best-effort: any error here is logged and swallowed —
+            // a model that can't pre-warm a single token will fail
+            // the real generate too, with a better error message.
+            // Skips the prefix-reuse `ChatSession` so the next real
+            // turn starts from a clean slate and observes a cache
+            // miss (correct: pre-warm primed Metal, not the user's
+            // conversation).
+            await prewarm()
         } catch is CancellationError {
             // Defensive cleanup. RuntimeManager.unload() already cleared
             // these before the load began, but the loader can also be
@@ -504,6 +551,79 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
             self.log.error("MLX: Failed to load model '\(repoId, privacy: .public)': \(descriptiveError, privacy: .public)")
 
             throw RuntimeError.initializationFailed("Failed to load MLX model: \(descriptiveError)")
+        }
+    }
+
+    /// Post-load Metal warm-up. Runs a 1-token forward pass through a
+    /// throwaway `ChatSession` so the Metal kernel cache compiles, the
+    /// first KV-cache slab + sampler scratch allocate, and the buffer
+    /// pool reaches its steady-state footprint *before* the user's
+    /// first prompt arrives. Without this, the first real generate
+    /// stacks prefill + first-time Metal compile + initial heap commit
+    /// into one wave, which on a tight memory budget (Gemma 3n / Mistral
+    /// 7B on iPhone) can cross the jetsam threshold mid-decode.
+    ///
+    /// Best-effort and isolated:
+    ///  * Errors are logged and swallowed. The next real generate will
+    ///    surface its own (more informative) error if the model is
+    ///    genuinely unusable.
+    ///  * `activeSession` is explicitly cleared on exit so the user's
+    ///    first real turn observes a clean cache miss and rebuilds —
+    ///    pre-warm primes Metal, not the user's conversation prefix.
+    ///  * Skipped when a generation is already in flight (the prewarm
+    ///    happens at the end of `loadWithProgress`, which can't race
+    ///    a generate since the load gate forbids concurrent generate;
+    ///    this is just belt-and-braces).
+    private func prewarm() async {
+        guard let nativeContainer = self.container as? ModelContainer else {
+            // Non-native containers (test fakes) don't benefit from a
+            // Metal warm-up. Skip silently.
+            return
+        }
+        let alreadyBusy = sessionLock.withLock { isGenerating }
+        guard !alreadyBusy else {
+            self.log.info("MLX: prewarm skipped — runtime already busy")
+            return
+        }
+        let prewarmStart = Date()
+        do {
+            // Single-token decode is enough to cause the framework to
+            // allocate its steady-state Metal heaps. `temperature 0`
+            // makes sampling deterministic so the result is stable in
+            // logs across runs.
+            let session = ChatSession(nativeContainer)
+            session.generateParameters = GenerateParameters(
+                maxTokens: 1,
+                temperature: 0,
+                topP: 1,
+                topK: 0,
+                minP: 0,
+                repetitionPenalty: nil,
+                repetitionContextSize: 0
+            )
+            var produced = 0
+            for try await _ in session.streamResponse(
+                to: "hi",
+                role: .user,
+                images: [],
+                videos: []
+            ) {
+                produced += 1
+                if produced >= 1 { break }
+            }
+            let ms = Int(Date().timeIntervalSince(prewarmStart) * 1000)
+            self.log.info("MLX: prewarm complete in \(ms)ms (produced \(produced) token)")
+        } catch {
+            // Don't promote a prewarm failure to a load failure — the
+            // next real generate will surface a useful error of its
+            // own if the model is genuinely broken.
+            self.log.info("MLX: prewarm skipped — \(error.localizedDescription, privacy: .public)")
+        }
+        // Always clear the throwaway session so the user's first real
+        // turn rebuilds a fresh ChatSession against their actual
+        // conversation history. Pre-warm primed Metal, not chat state.
+        sessionLock.withLock {
+            self.activeSession = nil
         }
     }
 
@@ -1162,13 +1282,36 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
     }
 
     func handleBackground() async {
-        // Policy: MLX keeps weights resident across background transitions.
-        // Re-warming MLX after a background→foreground takes 10–60 s on
-        // iPhone (Metal pipeline compile + tokenizer reload), which is
-        // worse for the user than the OS occasionally re-claiming the
-        // suspended app. Memory-pressure / thermal-critical paths *do*
-        // unload via `handleMemoryPressure` / `RuntimeManager`.
-        self.log.info("MLX runtime: backgrounded — keeping weights resident (policy)")
+        // Default policy: keep weights resident across background
+        // transitions. Re-warming MLX after a background→foreground
+        // takes 10–60 s on iPhone (Metal pipeline compile + tokenizer
+        // reload), which for small / medium models is worse for the
+        // user than the OS occasionally re-claiming the suspended app.
+        //
+        // Exception for large models: if the resident weight footprint
+        // is more than ~60 % of the per-process memory budget that was
+        // available at load time, holding them through a background
+        // session almost guarantees that *any* other app the user
+        // opens jetsams us. Eagerly unload so the next foreground turn
+        // pays a deterministic re-warm cost instead of the device's
+        // mood. The threshold is a heuristic — tuned to keep models up
+        // to ~Gemma 2 2B / SmolLM 1.7B resident while letting Gemma 3n
+        // E4B / Mistral 7B drop out. Memory-pressure / thermal-critical
+        // paths still unload via `handleMemoryPressure` regardless.
+        let weights = loadedModel?.sizeBytes ?? 0
+        let available = Int64(os_proc_available_memory())
+        let isHeavy: Bool = {
+            guard weights > 0, available > 0 else { return false }
+            return weights > Int64(Double(available) * 0.6)
+        }()
+        if isHeavy {
+            self.log.notice(
+                "MLX runtime: backgrounded with heavy model (\(weights / 1_048_576, privacy: .public) MB > 60% of \(available / 1_048_576, privacy: .public) MB) — eager unload to avoid jetsam on return"
+            )
+            await unload()
+        } else {
+            self.log.info("MLX runtime: backgrounded — keeping weights resident (policy)")
+        }
     }
 }
 

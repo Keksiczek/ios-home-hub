@@ -238,24 +238,34 @@ extension ModelCapabilityProfile {
     /// Gemma 3n — MatFormer architecture, 8B params but ~4B active during inference.
     /// Revolutionary efficiency: larger model quality with small model VRAM footprint.
     ///
-    /// **Sampling rationale** (tuned for stability + speed on iPhone Q4):
-    /// - `temperature 0.35` — lower than base Gemma (0.5) because per-layer
-    ///   skipping amplifies low-prob token drift. Field reproductions show
-    ///   cross-language tokens (Russian / English bleed into Czech) start
-    ///   surfacing above ~0.45 on Q4 quants.
-    /// - `topP 0.9 / topK 32 / minP 0.08` — nucleus + top-k + min-p stacked
-    ///   so every layer enforces a tighter floor on candidate tokens. min-p
-    ///   0.08 (up from default 0.05) is the single biggest stability lever
-    ///   for Gemma 3n: it drops the long tail of foreign-language tokens
-    ///   whose probability is barely above the noise floor.
-    /// - `repetitionPenalty 1.25` window 192 — Gemma's strong repetition
-    ///   bias compounds with MatFormer's per-layer-skipping. Window 192
-    ///   covers enough history for a 1.5–2 paragraph reply.
+    /// **Sampling rationale** (re-tuned 2026-05 toward Google's published
+    /// defaults). Earlier revisions clamped `temperature` to 0.35-0.40 to
+    /// suppress a foreign-language drift seen on Q4 MLX quants — Czech
+    /// replies bleeding Russian / Spanish tokens. That drift was the
+    /// dominant defect at the time and the tight stack was correct for
+    /// that build. Two things changed:
     ///
-    /// **History budget 1600** — tightened from 1800. Empirically, Gemma 3n
-    /// quality degrades on prompts > ~1700 effective tokens (counting chat-
-    /// template overhead) even though its trained context is 32k+. Trading
-    /// budget for stability.
+    ///   1. The drift root cause was traced to a sampler bug in
+    ///      mlx-swift-lm that ignored `repeatPenalty` / `minP` /
+    ///      `topK`; we now pass the full stack through
+    ///      (`MLXRuntime.generate`). Repetition pressure + min-p alone
+    ///      do most of the work the temperature clamp used to do.
+    ///   2. With `temperature 0.40` the model produced flat, repetitive
+    ///      answers — the field complaint shifted from "drifts into
+    ///      other languages" to "boring / says the same thing twice".
+    ///
+    /// New baseline: `temperature 0.7` (midpoint between the old clamp
+    /// and Google's `1.0` model-card default), `topK 64` (matches
+    /// model card), `minP 0.08` and `repeatPenalty 1.25 / window 192`
+    /// retained — those are the levers that suppress the residual drift
+    /// without flattening the distribution. A user-visible toggle in
+    /// Settings → Sampling lets users restore the historical tight
+    /// values if their device / quant exhibits the old drift.
+    ///
+    /// **History budget 1600** — kept. Empirically, Gemma 3n quality
+    /// degrades on prompts > ~1700 effective tokens (counting chat-
+    /// template overhead) even though its trained context is 32k+.
+    /// Trading budget for stability.
     static let gemma3n = ModelCapabilityProfile(
         family: "gemma",
         supportsFlashAttention: true,
@@ -265,9 +275,9 @@ extension ModelCapabilityProfile {
         messageTokenOverhead: 6,
         supportsStructuredToolCalling: false,
         prefersDeferredMemoryExtraction: false,
-        recommendedTemperature: 0.40,
+        recommendedTemperature: 0.7,
         recommendedTopP: 0.9,
-        recommendedTopK: 32,
+        recommendedTopK: 64,
         recommendedMinP: 0.08,
         recommendedRepeatPenalty: 1.25,
         recommendedRepeatPenaltyLastN: 192,
