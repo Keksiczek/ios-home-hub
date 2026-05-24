@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import MLX
 import MLXLLM
 import MLXLMCommon
@@ -106,21 +107,31 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
         /// tokenised against a different vocab.
         let modelID: String
         let conversationID: UUID
-        /// Stable portion of the system prompt — persona, profile, tools,
-        /// language policy. Everything that doesn't churn turn-by-turn.
-        /// The cache reuse check compares this only; the volatile half
-        /// (date/time, conversation recall, semantic facts) is injected
-        /// into the current user turn instead, so the cached prefix
-        /// stays valid across turns where only volatile context changed.
+        /// SHA-256 of the stable portion of the system prompt — persona,
+        /// profile, tools, language policy. Everything that doesn't
+        /// churn turn-by-turn. The cache reuse check compares this only;
+        /// the volatile half (date/time, recall, semantic facts) is
+        /// injected into the current user turn instead, so the cached
+        /// prefix stays valid across turns where only volatile context
+        /// changed.
         ///
-        /// Before this split, `existing.systemPrompt != prompt.systemPrompt`
-        /// compared the concatenated whole — and because the volatile
-        /// block carries the current minute/second, the cache was
-        /// discarded on practically every turn. End result: full
-        /// re-prefill of system + history on every send, which on a
-        /// 1500-token system prompt costs 200-500 ms before the first
-        /// token streams.
-        let stableSystemPrompt: String
+        /// Stored as a 32-byte hash rather than the raw string to:
+        ///   1. Skip cache invalidation for cosmetic-only diffs
+        ///      (trailing whitespace, repeated blank lines) that
+        ///      tokenise identically — see `Self.stableSystemHash(...)`.
+        ///   2. Avoid carrying multi-KB strings on every cached
+        ///      session — system prompts can be 1500-2500 tokens
+        ///      (~4-10 KB in UTF-8) and a couple of those resident
+        ///      across a long-running app adds up.
+        ///
+        /// Before this and the stable/volatile split,
+        /// `existing.systemPrompt != prompt.systemPrompt` compared
+        /// the concatenated whole — and because the volatile block
+        /// carries the current minute/second, the cache was discarded
+        /// on practically every turn. End result: full re-prefill of
+        /// system + history on every send, which on a 1500-token
+        /// system prompt costs 200-500 ms before the first token streams.
+        let stableSystemHash: SHA256Digest
         /// Canonical history snapshot: messages *excluding* the in-flight
         /// user turn. Used as both the seed history for `ChatSession` AND
         /// the comparison key for "is the cached prefix still valid?".
@@ -131,6 +142,58 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
         let session: ChatSession
     }
     private var activeSession: ActiveSession?
+
+    /// SHA-256 over a *normalised* version of the stable system prompt.
+    /// Normalisation collapses cosmetic noise that tokenises identically:
+    ///
+    ///   * Trailing whitespace on every line (the prompt builder
+    ///     concatenates fragments and sometimes lands a trailing space
+    ///     before the newline).
+    ///   * Runs of 3+ consecutive newlines collapsed to two
+    ///     (template authoring often produces them from chained
+    ///     "if X: emit block" generators).
+    ///   * Leading + trailing whitespace on the whole prompt.
+    ///
+    /// Anything beyond those is kept verbatim — we don't lowercase,
+    /// don't strip punctuation, don't reorder. The goal is "two
+    /// prompts that would tokenise to the same id sequence hash to the
+    /// same digest", not aggressive deduplication.
+    fileprivate static func stableSystemHash(_ raw: String) -> SHA256Digest {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Strip per-line trailing whitespace + collapse blank-line runs.
+        // Done with a single pass over the lines to avoid building
+        // intermediate copies of the whole string for each transform.
+        let lines = trimmed.split(separator: "\n", omittingEmptySubsequences: false)
+        var out: [String] = []
+        out.reserveCapacity(lines.count)
+        var blankRun = 0
+        for line in lines {
+            // Trailing-whitespace strip: walk from the end while the
+            // last character is a space or tab. Operates on the
+            // Character view so a multi-scalar grapheme stays whole.
+            var end = line.endIndex
+            while end > line.startIndex {
+                let prev = line.index(before: end)
+                let ch = line[prev]
+                if ch == " " || ch == "\t" {
+                    end = prev
+                } else {
+                    break
+                }
+            }
+            let stripped = String(line[line.startIndex..<end])
+            if stripped.isEmpty {
+                blankRun += 1
+                // Keep up to one blank between paragraphs.
+                if blankRun <= 1 { out.append("") }
+            } else {
+                blankRun = 0
+                out.append(stripped)
+            }
+        }
+        let normalised = out.joined(separator: "\n")
+        return SHA256.hash(data: Data(normalised.utf8))
+    }
 
     private let loader: any MLXLoader
 
@@ -782,6 +845,18 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
         self.activeGenerationID = conversationID
         self.sessionLock.unlock()
 
+        let loadedID = self.loadedModel?.id ?? "(none)"
+        // Generate-start breadcrumb. Written from the call-site
+        // synchronously (before the worker task spawns) so even a
+        // crash inside Task setup leaves a trail.
+        Task { @MainActor in
+            OOMTelemetryService.shared.breadcrumb("mlx.generate.start", context: [
+                "modelID": loadedID,
+                "conversationID": conversationID.uuidString,
+                "maxTokens": "\(parameters.maxTokens)"
+            ])
+        }
+
         // [weak self] breaks the retain cycle: self.activeTask → Task → self.
         // The cycle is temporary (resolves when the task finishes), but without
         // weak capture it keeps the runtime alive indefinitely on cancellation.
@@ -859,6 +934,10 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                     let canonicalHistory = MLXChatInput.history(from: prompt)
 
                     let currentModelID = self.loadedModel?.id ?? "(none)"
+                    // Hash the incoming stable prompt once outside the
+                    // lock — SHA-256 over a 4-10 KB string is ~10 µs and
+                    // the lock should hold only the fast equality check.
+                    let incomingStableHash = Self.stableSystemHash(prompt.stableSystemPrompt)
                     let session: ChatSession = self.sessionLock.withLock {
                         let currentActive = self.activeSession
 
@@ -876,13 +955,17 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                                 discardReason = "different modelID (\(existing.modelID) → \(currentModelID))"
                             } else if existing.conversationID != conversationID {
                                 discardReason = "different conversationID"
-                            } else if existing.stableSystemPrompt != prompt.stableSystemPrompt {
-                                // Stable-only comparison: volatile churn
-                                // (time, recall, facts) lives in the
-                                // current user turn instead of the
-                                // ChatSession instructions, so it doesn't
-                                // invalidate the cached prefix.
-                                discardReason = "different stable systemPrompt"
+                            } else if existing.stableSystemHash != incomingStableHash {
+                                // Stable-only comparison via hash:
+                                // volatile churn (time, recall, facts)
+                                // lives in the current user turn instead
+                                // of the ChatSession instructions, so it
+                                // doesn't invalidate the cached prefix.
+                                // The hash is over the *normalised* form
+                                // so cosmetic-only diffs (trailing
+                                // whitespace, doubled blank lines) don't
+                                // force a flush either.
+                                discardReason = "different stable systemPrompt (hash mismatch)"
                             } else if !MLXChatInput.cachedPrefixMatches(
                                 cached: existing.messages,
                                 incoming: canonicalHistory
@@ -931,7 +1014,7 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                             self.activeSession = ActiveSession(
                                 modelID: currentModelID,
                                 conversationID: conversationID,
-                                stableSystemPrompt: prompt.stableSystemPrompt,
+                                stableSystemHash: incomingStableHash,
                                 messages: canonicalHistory,
                                 session: newSession
                             )
@@ -1008,7 +1091,23 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                     for try await piece in responseStream {
                         if Task.isCancelled { break }
                         watchdog.recordToken()
-                        if firstTokenAt == nil { firstTokenAt = Date() }
+                        if firstTokenAt == nil {
+                            firstTokenAt = Date()
+                            // First-token landmark: the gap between
+                            // mlx.generate.start and this is the
+                            // user-visible "is it working?" wait. If
+                            // a jetsam lands between the two, this
+                            // breadcrumb is missing from the log —
+                            // a clear post-mortem signal that prefill
+                            // got killed before producing anything.
+                            let ttftMs = Int(Date().timeIntervalSince(start) * 1000)
+                            Task { @MainActor in
+                                OOMTelemetryService.shared.breadcrumb("mlx.generate.firstToken", context: [
+                                    "conversationID": conversationID.uuidString,
+                                    "ttftMs": "\(ttftMs)"
+                                ])
+                            }
+                        }
 
                         // Per-token autoreleasepool drains the ObjC temporaries
                         // (MLXArray wrappers, intermediate NSString views) that
@@ -1243,6 +1342,19 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                 self.log.info(
                     "MLX generation: backend=mlx modelID=\(modelID, privacy: .public) tokens=\(tokensGenerated, privacy: .public) durationMs=\(durationMs, privacy: .public) tps=\(String(format: "%.1f", tps), privacy: .public) safeMode=\(safeMode, privacy: .public) reason=\(String(describing: finishReason), privacy: .public)"
                 )
+                Task { @MainActor in
+                    OOMTelemetryService.shared.breadcrumb(
+                        finishReason == .cancelled ? "mlx.generate.cancelled" : "mlx.generate.complete",
+                        context: [
+                            "modelID": modelID,
+                            "conversationID": conversationID.uuidString,
+                            "tokens": "\(tokensGenerated)",
+                            "durationMs": "\(durationMs)",
+                            "tps": String(format: "%.1f", tps),
+                            "reason": "\(finishReason)"
+                        ]
+                    )
+                }
 
                 if honourPendingTrim {
                     self.log.info("MLX: pendingSessionTrim honoured — ChatSession dropped after generation finish")
@@ -1272,6 +1384,14 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                     }
                 }
                 self.log.error("MLX generation: backend=mlx modelID=\(modelID, privacy: .public) failed kind=\(String(describing: failure.kind), privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+                Task { @MainActor in
+                    OOMTelemetryService.shared.breadcrumb("mlx.generate.failed", context: [
+                        "modelID": modelID,
+                        "conversationID": conversationID.uuidString,
+                        "kind": "\(failure.kind)",
+                        "error": error.localizedDescription
+                    ])
+                }
                 continuation.finish(throwing: error)
             }
         }

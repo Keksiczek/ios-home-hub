@@ -75,6 +75,39 @@ struct ModelInfoSheet: View {
                     row("Kontext",          "\(model.contextLength) tokenů")
                 }
 
+                // ── Entitlement gating ───────────────────────────────────────
+                // Surfaced before the memory oracle section so users see
+                // the "this build cannot load this model" verdict before
+                // they read the (more nuanced) "fits / risky / won't fit"
+                // memory headroom estimate. The verdict is structural,
+                // not headroom-dependent.
+                if model.requiresLargeMmapAddressing,
+                   !DeviceMemoryProvider.kernelEntitlementsEnabled {
+                    Section {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Label("Tento build modelu nenačte", systemImage: "exclamationmark.triangle.fill")
+                                .foregroundStyle(HHTheme.warning)
+                                .font(.subheadline.bold())
+                            Text(
+                                "Model má jeden weight soubor větší než ~2 GB. " +
+                                "Bez entitlementu `extended-virtual-addressing` (placený Apple Developer účet nebo TrollStore na iOS ≤ 17.0) " +
+                                "iOS sandbox neumožní jeho contiguous mmap a load skončí chybou ještě před prvním prefillem."
+                            )
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            Text(
+                                "Vyber menší variantu modelu (např. Gemma 3n E2B) " +
+                                "nebo build s odpovídajícím entitlementem — viz KERNEL_ENTITLEMENTS.md."
+                            )
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        }
+                        .padding(.vertical, 4)
+                    } header: {
+                        Text("Entitlement")
+                    }
+                }
+
                 // ── Memory estimate + oracle verdict ────────────────────────
                 memoryEstimateSection
 

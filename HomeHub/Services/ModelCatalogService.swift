@@ -563,7 +563,12 @@ enum ModelCatalog {
             // model can be fetched. Marked so the catalog UI can render the
             // "Vyžaduje přihlášení" badge and the downloader can fail fast
             // with a useful message when no token is stored.
-            requiresAuth: true
+            requiresAuth: true,
+            // ~4.5 GB shipped as a single safetensors shard. Needs the
+            // `extended-virtual-addressing` entitlement to mmap on iOS
+            // — without it the runtime per-shard pre-flight refuses
+            // before the load even starts.
+            requiresLargeMmapAddressing: true
         ),
 
         LocalModel(

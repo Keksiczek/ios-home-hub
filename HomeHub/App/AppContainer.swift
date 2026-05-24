@@ -883,6 +883,21 @@ final class AppContainer: ObservableObject {
         // implementation. `@Published` triggers SwiftUI updates; we're
         // already on the main actor so this is cheap.
         Self.appendBoundedPressure(snapshot, to: &pressureHistory)
+        // Mirror the event into the OOM breadcrumb log so a post-jetsam
+        // tail of the log shows pressure events interleaved with load /
+        // generate landmarks. MetricKit's diagnostic delivery is ~24 h
+        // behind reality; pressure events are real-time and the most
+        // useful early-warning signal for "the next jetsam is coming".
+        OOMTelemetryService.shared.breadcrumb(
+            snapshot.escalatedToHard ? "pressure.hard" : (snapshot.wasGenerating ? "pressure.deferred" : "pressure.soft"),
+            context: [
+                "availableMB": snapshot.availableBytes.map { "\($0 / 1_048_576)" } ?? "?",
+                "weightsMB":   "\(snapshot.weightsBytes / 1_048_576)",
+                "warningCount": "\(memoryWarningCount)",
+                "inDebounce":  "\(withinDebounceWindow)",
+                "belowFloor":  "\(belowHardFloor)"
+            ]
+        )
 
         // Soft tier: always trim cheap caches. Embedding model + runtime
         // session scratch combined usually frees 80–250 MB on the first

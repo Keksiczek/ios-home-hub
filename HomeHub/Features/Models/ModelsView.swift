@@ -729,6 +729,9 @@ private struct ModelBrowserRow: View {
                         if model.requiresAuth {
                             authRequiredBadge
                         }
+                        if shouldShowEntitlementBadge {
+                            entitlementRequiredBadge
+                        }
                         if model.isUserAdded {
                             Text("Custom")
                                 .font(.system(size: 10, weight: .medium))
@@ -896,6 +899,35 @@ private struct ModelBrowserRow: View {
         .background(HHTheme.textSecondary.opacity(0.14), in: Capsule())
         .foregroundStyle(HHTheme.textSecondary)
         .accessibilityLabel("Vyžaduje Hugging Face token v Nastavení")
+    }
+
+    /// `true` when this build lacks the `extended-virtual-addressing`
+    /// entitlement AND the model is flagged as needing it. The badge is
+    /// suppressed on entitled builds because the limitation doesn't
+    /// apply there — that ships, on paid-developer / TrollStore builds,
+    /// without scaring users away from a model that will actually run.
+    private var shouldShowEntitlementBadge: Bool {
+        model.requiresLargeMmapAddressing
+            && !DeviceMemoryProvider.kernelEntitlementsEnabled
+    }
+
+    /// Warning pill for models whose single safetensors shard exceeds
+    /// the ~2 GB sandbox contiguous-mmap ceiling. Renders in the
+    /// orange/warning palette (not red — the model isn't broken,
+    /// the *build* can't load it) and clarifies the gating without
+    /// requiring the user to actually attempt a download first.
+    private var entitlementRequiredBadge: some View {
+        HStack(spacing: 3) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 9, weight: .semibold))
+            Text("Vyžaduje placený účet")
+                .font(.system(size: 10, weight: .semibold))
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 2)
+        .background(HHTheme.warning.opacity(0.18), in: Capsule())
+        .foregroundStyle(HHTheme.warning)
+        .accessibilityLabel("Model vyžaduje extended-virtual-addressing entitlement. Bez placeného Apple Developer účtu (nebo TrollStore) jej tato verze HomeHubu nenačte.")
     }
 
     private var badgeFg: Color {
