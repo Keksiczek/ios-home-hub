@@ -95,11 +95,11 @@ def load_package_swift_dependencies(text: str) -> list[tuple[str, str]]:
     out: list[tuple[str, str]] = []
     for m in re.finditer(
         r'\.package\(\s*url:\s*"([^"]+)"\s*,\s*'
-        r'(?:from:\s*"([^"]+)"|branch:\s*"([^"]+)"|exact:\s*"([^"]+)")',
+        r'(?:from:\s*"([^"]+)"|branch:\s*"([^"]+)"|exact:\s*"([^"]+)"|revision:\s*"([^"]+)")',
         text,
     ):
         url = m.group(1)
-        ver = m.group(2) or m.group(3) or m.group(4) or ""
+        ver = m.group(2) or m.group(3) or m.group(4) or m.group(5) or ""
         out.append((url, ver))
     return out
 
