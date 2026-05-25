@@ -37,6 +37,71 @@ struct ToolObservation: Equatable {
         body.lowercased().hasPrefix("[tool error")
     }
 
+    /// `true` when the observation is a structurally-empty result —
+    /// "No results for …" emitted by `WebSearchEngine.renderObservation`,
+    /// the parallel "Refused to fetch …" / "Could not fetch …" lines
+    /// from `FetchPageSkill`, etc. Distinct from `isError` because
+    /// these are *expected* operational outcomes (bad query, paywall,
+    /// down upstream) that the chip should surface in a calmer
+    /// neutral palette rather than full warning red.
+    var isEmptyResult: Bool {
+        let lc = body.lowercased()
+        return lc.hasPrefix("no results for")
+            || lc.hasPrefix("could not fetch")
+            || lc.hasPrefix("refused to fetch")
+    }
+
+    /// Inferred originating tool, used to pick the chip's icon + label
+    /// without plumbing the tool name through the observation envelope.
+    /// Falls back to a generic "Tool" label when no pattern matches.
+    ///
+    /// Detection patterns mirror the prefixes emitted by:
+    ///   * `WebSearchEngine.renderObservation` ("Web results for …" /
+    ///     "No results for …")
+    ///   * `FetchPageSkill.execute` ("FetchPage https://… :" / "Could
+    ///     not fetch …" / "Refused to fetch …")
+    /// Anything else (Calculator, Calendar, Reminders, HomeKit,
+    /// DeviceInfo) hits the default branch — those skills emit free-
+    /// form text and a per-skill prefix would be a bigger refactor
+    /// than this UI polish justifies.
+    var inferredToolName: String {
+        let lc = body.lowercased()
+        if lc.hasPrefix("web results for") || lc.hasPrefix("no results for") {
+            return "WebSearch"
+        }
+        if lc.hasPrefix("fetchpage ") || lc.hasPrefix("could not fetch")
+           || lc.hasPrefix("refused to fetch") {
+            return "FetchPage"
+        }
+        return "Tool"
+    }
+
+    /// Hero image URL surfaced by `FetchPageSkill` via the
+    /// `Image: https://...` line in its output. Returned only when the
+    /// observation actually contains that line — most tools (WebSearch,
+    /// Calculator, …) never emit one, so the chip's thumbnail layer
+    /// stays opt-in.
+    ///
+    /// Conservative parsing: anchor to a line start (`^Image: `), then
+    /// match a single http(s) URL up to the line break. Markdown link
+    /// syntax and bare hosts are NOT recognised — we control the
+    /// emitter (`FetchPageSkill`), so the parser only needs to handle
+    /// the exact shape it produces.
+    var heroImageURL: URL? {
+        let pattern = #"(?m)^Image:\s*(https?://\S+)\s*$"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let ns = body as NSString
+        guard let match = regex.firstMatch(
+            in: body,
+            range: NSRange(location: 0, length: ns.length)
+        ), match.numberOfRanges >= 2 else { return nil }
+        var raw = ns.substring(with: match.range(at: 1))
+        while let last = raw.last, ".,);!?\"]'>".contains(last) {
+            raw.removeLast()
+        }
+        return URL(string: raw)
+    }
+
     /// URLs (and their titles when available) scraped out of the
     /// observation body. Used by the chip to render tap-able citations
     /// underneath search results, so the user can verify what the
@@ -149,15 +214,37 @@ struct ToolResultChip: View {
     @Environment(\.openURL) private var openURL
 
     var body: some View {
-        HStack(alignment: .top, spacing: HHTheme.spaceM) {
-            Image(systemName: observation.isError ? "exclamationmark.triangle.fill" : "wrench.adjustable.fill")
-                .foregroundStyle(observation.isError ? HHTheme.danger : HHTheme.accent)
+        // Picks the per-tool icon + label. Error / empty-result
+        // observations override the icon below; the style's
+        // `completedLabel` still wins for the chip headline so the
+        // user sees "Web search" / "Načtená stránka" instead of a
+        // bare "Tool result".
+        let style = ToolPresenter.style(for: observation.inferredToolName)
+        let icon: String
+        let iconColor: Color
+        if observation.isError {
+            icon = "exclamationmark.triangle.fill"
+            iconColor = HHTheme.danger
+        } else if observation.isEmptyResult {
+            icon = "questionmark.circle"
+            iconColor = HHTheme.textSecondary
+        } else {
+            icon = style.systemImage
+            iconColor = HHTheme.accent
+        }
+        return HStack(alignment: .top, spacing: HHTheme.spaceM) {
+            Image(systemName: icon)
+                .foregroundStyle(iconColor)
                 .padding(.top, 2)
 
             VStack(alignment: .leading, spacing: 4) {
-                Text(observation.isError ? "Tool error" : "Tool result")
+                Text(headlineText(style: style))
                     .font(HHTheme.caption.weight(.semibold))
                     .foregroundStyle(HHTheme.textSecondary)
+
+                if let imageURL = observation.heroImageURL {
+                    heroThumbnail(imageURL)
+                }
 
                 if expanded {
                     Text(observation.body)
@@ -197,6 +284,58 @@ struct ToolResultChip: View {
             RoundedRectangle(cornerRadius: HHTheme.cornerLarge, style: .continuous)
                 .stroke(observation.isError ? HHTheme.danger.opacity(0.3) : HHTheme.stroke, lineWidth: 1)
         )
+    }
+
+    /// Headline shown above the body text. Carries both the tool
+    /// identity (so the user sees "Web search" / "Načtená stránka"
+    /// instead of a generic "Tool result") and an outcome qualifier
+    /// for the two structured empty / error cases.
+    private func headlineText(style: ToolPresenter.Style) -> String {
+        if observation.isError {
+            return "Tool error"
+        }
+        if observation.isEmptyResult {
+            return "\(style.completedLabel) — bez výsledku"
+        }
+        return style.completedLabel
+    }
+
+    /// Renders the `og:image` thumbnail surfaced by FetchPage. Uses
+    /// `AsyncImage` with a placeholder + failure fall-through so a slow
+    /// CDN doesn't block the chip layout and a broken image just
+    /// degrades to "no thumbnail" rather than a visible error icon.
+    ///
+    /// Sized to fit the chip's column: full width, 140pt tall, fill
+    /// aspect (cropping rather than letterboxing — hero images are
+    /// almost always wider than the chip and look better cropped than
+    /// pillarboxed). Rounded corners match the parent surface so the
+    /// thumbnail reads as part of the chip rather than a floating tile.
+    @ViewBuilder
+    private func heroThumbnail(_ url: URL) -> some View {
+        AsyncImage(url: url, transaction: Transaction(animation: .easeOut(duration: 0.2))) { phase in
+            switch phase {
+            case .success(let image):
+                image
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 140)
+                    .clipped()
+                    .clipShape(RoundedRectangle(cornerRadius: HHTheme.cornerSmall, style: .continuous))
+            case .empty:
+                RoundedRectangle(cornerRadius: HHTheme.cornerSmall, style: .continuous)
+                    .fill(HHTheme.surface)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 140)
+                    .overlay(ProgressView())
+            case .failure:
+                // Silent fail — the chip is still useful without an image.
+                EmptyView()
+            @unknown default:
+                EmptyView()
+            }
+        }
+        .padding(.vertical, 2)
     }
 
     /// Renders citations as a single tappable column. When the

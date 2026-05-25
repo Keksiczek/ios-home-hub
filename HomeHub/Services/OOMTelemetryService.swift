@@ -33,7 +33,7 @@ final class OOMTelemetryService: NSObject {
 
     private let log = Logger(subsystem: "HomeHub", category: "OOMTelemetry")
     private let logURL: URL
-    private let maxEntries = 200
+    private let maxEntries: Int
     private let isoFormatter: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -53,6 +53,23 @@ final class OOMTelemetryService: NSObject {
 
     override private init() {
         self.logURL = Self.defaultLogURL()
+        self.maxEntries = 200
+        super.init()
+    }
+
+    /// Test seam — lets unit tests drive the storage layer against a
+    /// temp file with a smaller cap so eviction can be exercised
+    /// without writing 201 entries. Not used in production; the live
+    /// app always goes through `shared`.
+    ///
+    /// Production wiring depends on `shared` being a hot singleton
+    /// retained for the process lifetime (MetricKit only delivers
+    /// payloads to retained subscribers). Instances constructed via
+    /// this initialiser intentionally do NOT subscribe to MetricKit —
+    /// they're storage-layer fixtures.
+    init(logURL: URL, maxEntries: Int = 200) {
+        self.logURL = logURL
+        self.maxEntries = maxEntries
         super.init()
     }
 

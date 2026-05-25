@@ -166,13 +166,30 @@ struct MessageBubbleView: View {
                 // exported transcript still hints "this turn called a
                 // tool" without surfacing the JSON.
                 if let call = detectedToolCall, message.role == .assistant {
+                    // Per-tool icon + label via `ToolPresenter`. The
+                    // running label is imperative present continuous
+                    // ("Hledám na webu…") while the model is mid-call;
+                    // it flips to past-tense ("Web search") once the
+                    // turn lands, so the persisted bubble reads
+                    // naturally in exports and reopened conversations.
+                    let style = ToolPresenter.style(for: call.name)
                     HStack(spacing: 6) {
-                        Image(systemName: "wrench.and.screwdriver.fill")
+                        Image(systemName: style.systemImage)
                             .imageScale(.small)
                             .foregroundStyle(HHTheme.accent)
+                            // Subtle pulse while the call is in flight
+                            // — the existing TypingIndicator dots
+                            // disappear behind the chip, so the user
+                            // needs *some* motion to read this as
+                            // "still working" rather than "stuck".
+                            .symbolEffect(
+                                .pulse,
+                                options: .repeating,
+                                isActive: message.status == .streaming
+                            )
                         Text(message.status == .streaming
-                             ? "Calling \(call.name)…"
-                             : "Called \(call.name)")
+                             ? style.runningLabel
+                             : style.completedLabel)
                             .font(HHTheme.caption.weight(.semibold))
                             .foregroundStyle(HHTheme.textSecondary)
                     }

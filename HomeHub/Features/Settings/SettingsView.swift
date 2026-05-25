@@ -441,6 +441,8 @@ struct SettingsView: View {
                 .submitLabel(.done)
                 .onSubmit { Task { await commitSearxngURL() } }
 
+                publicInstancePicker
+
                 if let msg = searxngStatusMessage {
                     Text(msg)
                         .font(HHTheme.caption)
@@ -486,6 +488,65 @@ struct SettingsView: View {
             searxngBaseURLDraft = settings.current.searxngBaseURL
         }
     }
+
+    /// Drop-down picker that pre-fills the URL field with one of a few
+    /// curated public SearXNG instances. The point isn't to be
+    /// exhaustive — `searx.space` lists hundreds — it's to spare the
+    /// user from having to leave the app, find one, and type the URL
+    /// by hand on the first run. Saving still requires a separate tap
+    /// of "Uložit" so the picker just acts as a paste helper.
+    ///
+    /// Selected instances are public, JSON-API enabled, and were live
+    /// at the time this list was curated. Public SearXNG instances
+    /// are operated by volunteers and DO go offline; the inline footer
+    /// already documents the DDG fallback, so a dead pick degrades
+    /// gracefully rather than blocking search entirely.
+    private var publicInstancePicker: some View {
+        Menu {
+            ForEach(Self.publicSearxngInstances, id: \.url) { instance in
+                Button {
+                    searxngBaseURLDraft = instance.url
+                } label: {
+                    VStack(alignment: .leading) {
+                        Text(instance.label)
+                        Text(instance.url)
+                            .font(HHTheme.caption)
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "list.bullet.rectangle")
+                Text("Vybrat veřejnou instanci…")
+                    .font(HHTheme.caption)
+            }
+            .foregroundStyle(HHTheme.accent)
+        }
+    }
+
+    /// Curated set of public SearXNG instances. Hard-coded rather than
+    /// fetched at runtime because:
+    ///   * No network dependency on startup / first settings open.
+    ///   * The full `searx.space` JSON is ~150 KB and includes 500+
+    ///     instances of wildly varying quality — surfacing a long list
+    ///     is worse UX than a short curated one.
+    ///   * Updating the list is a code review concern (we want a human
+    ///     to vet new entries for HTTPS + JSON-API + reasonable
+    ///     uptime), not a silent runtime change.
+    /// Entries should be reviewed quarterly; replace any that have
+    /// degraded uptime per `searx.space`.
+    private struct PublicSearxngInstance {
+        let label: String
+        let url: String
+    }
+    private static let publicSearxngInstances: [PublicSearxngInstance] = [
+        PublicSearxngInstance(label: "searx.be (Belgium)",         url: "https://searx.be"),
+        PublicSearxngInstance(label: "search.brave4u.com (DE)",    url: "https://search.brave4u.com"),
+        PublicSearxngInstance(label: "priv.au (Austria)",          url: "https://priv.au"),
+        PublicSearxngInstance(label: "search.disroot.org",         url: "https://search.disroot.org"),
+        PublicSearxngInstance(label: "searx.tiekoetter.com (DE)",  url: "https://searx.tiekoetter.com"),
+        PublicSearxngInstance(label: "paulgo.io (DE)",             url: "https://paulgo.io")
+    ]
 
     /// Persists the SearXNG URL via `AppContainer.setSearxngBaseURL`
     /// and shows a brief inline status message. The setter already

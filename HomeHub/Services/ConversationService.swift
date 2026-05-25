@@ -1304,6 +1304,18 @@ final class ConversationService: ObservableObject {
         // (`isFinalAllowedLoop == true`) once it hits 2.
         var consecutiveEmptyObservations = 0
         var forceSynthesisNextLoop = false
+        // Same-call duplicate detector. Models occasionally call the
+        // same tool with the same input twice in a row — usually
+        // because the previous observation didn't help and the model
+        // didn't think to reformulate. Treating a same-as-previous
+        // call as a soft signal to force synthesis on the next loop
+        // catches the case where the answer is "we already have this
+        // information, write the response" without waiting for the
+        // empty-observation streak (which only fires when the result
+        // is also empty). Stored as the `(skill, normalised input)`
+        // tuple of the most recent call so case-only / whitespace-
+        // only differences don't bypass the check.
+        var previousToolCallKey: String? = nil
 
         // Session-duration budget for the agentic loop. The outer
         // `watchdog` task (line ~945) already enforces a hard cancel at
@@ -1563,6 +1575,23 @@ final class ConversationService: ObservableObject {
                 if let actionCommand = await SkillManager.shared.parseAction(from: assistantMessage.content) {
                     HHLog.tool.info("loop \(currentLoop) → \(actionCommand.skillName, privacy: .public)")
 
+                    // Same-tool-same-input check BEFORE we run the
+                    // skill. The skill itself runs once more so the
+                    // model gets a fresh observation (cheap in the
+                    // common case — WebSearch hits the LRU cache, the
+                    // others are local), but we mark the next loop
+                    // as synthesis so the model has to wrap up
+                    // instead of re-trying a third time.
+                    let callKey = "\(actionCommand.skillName.lowercased())|" +
+                        actionCommand.input
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                            .lowercased()
+                    if previousToolCallKey == callKey {
+                        HHLog.tool.notice("loop \(currentLoop) → forcing synthesis next: duplicate tool call \(actionCommand.skillName, privacy: .public)")
+                        forceSynthesisNextLoop = true
+                    }
+                    previousToolCallKey = callKey
+
                     let originalContent = assistantMessage.content
                     assistantMessage.content = originalContent + "\n\n*(\(toolRunningLabel(actionCommand.skillName)))*"
                     messagesByConversation[conversationID]?[assistantIndex] = assistantMessage
@@ -1800,7 +1829,26 @@ final class ConversationService: ObservableObject {
 
             var summary = await self.summarizer.summarize(messages: olderSlice)
             guard let initial = summary, !initial.isEmpty else {
-                HHLog.chat.notice("auto-summary: produced empty output for \(conversationID, privacy: .public) — leaving prior summary intact")
+                // LLM-backed summarisation failed (model unloaded mid-task,
+                // generation error, empty output). Fall back to the
+                // extractive `LightweightSummarizer` so the conversation
+                // still gets *some* condensation rather than reverting to
+                // raw history at full budget cost. Quality is markedly
+                // lower — extractive bullets vs. abstractive paragraph —
+                // but worlds better than nothing, and the next successful
+                // auto-summary pass will replace it.
+                if let extractive = LightweightSummarizer.summarize(messages: olderSlice),
+                   !extractive.isEmpty {
+                    HHLog.chat.notice("auto-summary: LLM path failed — installing extractive fallback for \(conversationID, privacy: .public)")
+                    self.summaryByConversation[conversationID] = ConversationSummary(
+                        conversationID: conversationID,
+                        summary: extractive,
+                        coversMessageIDs: olderIDs,
+                        generatedAt: .now
+                    )
+                } else {
+                    HHLog.chat.notice("auto-summary: produced empty output for \(conversationID, privacy: .public) — leaving prior summary intact")
+                }
                 return
             }
 

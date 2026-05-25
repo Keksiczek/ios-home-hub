@@ -326,6 +326,25 @@ enum PromptBuilder {
                              "fully answer the question, call FetchPage on the most relevant " +
                              "URL to read the page content before responding.")
             }
+            // Multi-turn refinement guidance. Small models often bail
+            // after a single empty WebSearch ("I couldn't find that")
+            // or take the first hit at face value even when it's
+            // tangential. This rule gives them a concrete recovery
+            // strategy for both failure modes. The per-turn budget
+            // cap (`SkillManager` rejects >N tool calls in one turn)
+            // is the safety net that stops a model from looping
+            // forever — this prompt just makes the productive
+            // refinement attempts actually happen.
+            rules.append("- If the first WebSearch returns no results or the snippets don't " +
+                         "answer the question, retry ONCE with different keywords (broader, " +
+                         "in English, or with the year if a date matters). Do NOT repeat the " +
+                         "same query. After two unsuccessful searches, tell the user you " +
+                         "couldn't find a reliable source rather than guessing." +
+                         (lower.contains("fetchpage")
+                          ? " If FetchPage on the first hit comes back empty or off-topic, " +
+                            "try the next most relevant URL from the SAME search results " +
+                            "instead of searching again."
+                          : ""))
         } else {
             rules.append("- You have no web access. Do NOT pretend to look " +
                          "anything up on the internet. If a question requires " +

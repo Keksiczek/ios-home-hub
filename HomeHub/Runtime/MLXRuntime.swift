@@ -326,6 +326,21 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
     /// can both fall back to a consistent number.
     private let idleBaselineCacheLimitBytes: Int
 
+    /// Centralised setter for `MLX.Memory.cacheLimit`. On iOS Simulator the
+    /// underlying MLX framework does not have a Metal device to bind to —
+    /// touching `cacheLimit` triggers MLX's lazy device init, which feeds
+    /// a nullptr device name to `std::string` and aborts the process via
+    /// a libc++ assertion. The setter is a no-op on simulator so the rest
+    /// of the app (UI, services, unit tests hosted by the app) can boot
+    /// cleanly; model inference is unsupported on simulator anyway.
+    private static func setMLXCacheLimit(_ bytes: Int, log: Logger) {
+        #if targetEnvironment(simulator)
+        log.notice("MLX: skipping cacheLimit=\(bytes / 1_048_576, privacy: .public)MB on iOS Simulator (no Metal device)")
+        #else
+        MLX.Memory.cacheLimit = bytes
+        #endif
+    }
+
     init(loader: any MLXLoader = DefaultMLXLoader()) {
         self.loader = loader
         // Configure MLX GPU memory cache limit using the *minimum* of two budgets:
@@ -341,7 +356,7 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
         let cacheLimitBytes = min(memoryBudget, hardwareBudget)
         self.idleBaselineCacheLimitBytes = Int(cacheLimitBytes)
         self.baselineCacheLimitBytes = Int(cacheLimitBytes)
-        MLX.Memory.cacheLimit = self.baselineCacheLimitBytes
+        Self.setMLXCacheLimit(self.baselineCacheLimitBytes, log: log)
 
         if HardwareCapabilities.shared.safeAttentionMode {
             // Safe-mode is purely advisory for MLX-Swift today — the framework
@@ -382,7 +397,7 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
         let headroomQuarter = (available - weights) / 4
         let target = min(maxPool, max(minPool, headroomQuarter))
         baselineCacheLimitBytes = Int(target)
-        MLX.Memory.cacheLimit = baselineCacheLimitBytes
+        Self.setMLXCacheLimit(baselineCacheLimitBytes, log: log)
         // Reset the pressure-tier tracking so the next L1 / L2 event
         // shrinks from the *new* baseline, not the idle one.
         currentCacheTier = .normal
@@ -397,7 +412,7 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
     private func restoreIdleBaselineCacheLimit() {
         guard idleBaselineCacheLimitBytes > 0 else { return }
         baselineCacheLimitBytes = idleBaselineCacheLimitBytes
-        MLX.Memory.cacheLimit = idleBaselineCacheLimitBytes
+        Self.setMLXCacheLimit(idleBaselineCacheLimitBytes, log: log)
         currentCacheTier = .normal
     }
 
@@ -415,7 +430,7 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
         guard baselineCacheLimitBytes > 0 else { return }
         guard tier != currentCacheTier else { return }
         let target = Int(Double(baselineCacheLimitBytes) * tier.multiplier)
-        MLX.Memory.cacheLimit = target
+        Self.setMLXCacheLimit(target, log: log)
         currentCacheTier = tier
         log.info("MLX: GPU cache limit -> \(target / 1024 / 1024, privacy: .public) MB (tier=\(String(describing: tier), privacy: .public))")
     }
