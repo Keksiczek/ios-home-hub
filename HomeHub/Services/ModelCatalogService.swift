@@ -464,6 +464,32 @@ enum ModelCatalog {
             format: .mlx
         ),
 
+        // Gemma 3n E2B — MatFormer's iPhone-friendly variant. Same
+        // architecture as E4B (Per-Layer Embeddings, selective layer
+        // activation) but with the smaller 2B-active routing slice. On
+        // disk ~2.8 GB vs. E4B's 4.5 GB, so it fits inside the ~3.5 GB
+        // sandbox budget on iPhone 14/15 *without* needing the
+        // extended-virtual-addressing entitlement that E4B requires for
+        // contiguous mmap. Reach for this entry first if a user wants
+        // Gemma 3n on iPhone — E4B stays in the iPad-only section.
+        LocalModel(
+            id: "mlx-gemma-3n-e2b-it",
+            displayName: "Gemma 3n E2B (MLX) - MatFormer",
+            family: "Gemma3n",
+            parameterCount: "5B (2B active)",
+            quantization: "4-bit",
+            sizeBytes: 2_900_000_000,           // HF: ~2.8 GB
+            contextLength: 4096,                // MatFormer trained context; tier still clamps via adjustContextLength
+            downloadURL: URL(static: "https://huggingface.co/mlx-community/gemma-3n-E2B-it-4bit"),
+            sha256: nil,
+            installState: .notInstalled,
+            recommendedFor: [.iPhone, .iPadMSeries],
+            license: "Gemma Terms of Use",
+            backend: .mlx,
+            format: .mlx,
+            requiresAuth: true
+        ),
+
         // MARK: Ultra-small models (fast testing / low-RAM devices)
 
         LocalModel(
@@ -502,6 +528,16 @@ enum ModelCatalog {
 
         // MARK: iPad M-series only (>3 GB — exceeds iPhone RAM)
 
+        // Gemma 3n E4B — 4 B-active MatFormer slice, ~4.5 GB on disk as a
+        // single safetensors shard. On stock iOS without the
+        // `extended-virtual-addressing` entitlement (paid Apple Developer
+        // Program + provisioning profile) the sandbox caps contiguous
+        // mmap at ~2 GB, so this model jetsams during weight map-in even
+        // when raw `os_proc_available_memory()` suggests it fits. iPad
+        // M-series builds with entitlements run it cleanly. iPhone users
+        // wanting MatFormer should reach for the E2B entry above. The
+        // `recommendedFor: [.iPadMSeries]` here keeps the catalog from
+        // pushing this entry into the iPhone recommendation slot.
         LocalModel(
             id: "mlx-gemma-3n-e4b-it",
             displayName: "Gemma 3n E4B (MLX) - MatFormer",
@@ -517,7 +553,7 @@ enum ModelCatalog {
             downloadURL: URL(static: "https://huggingface.co/mlx-community/gemma-3n-E4B-it-4bit"),
             sha256: nil,
             installState: .notInstalled,
-            recommendedFor: [.iPhone, .iPadMSeries],
+            recommendedFor: [.iPadMSeries],
             license: "Gemma Terms of Use",
             backend: .mlx,
             format: .mlx,
@@ -527,7 +563,12 @@ enum ModelCatalog {
             // model can be fetched. Marked so the catalog UI can render the
             // "Vyžaduje přihlášení" badge and the downloader can fail fast
             // with a useful message when no token is stored.
-            requiresAuth: true
+            requiresAuth: true,
+            // ~4.5 GB shipped as a single safetensors shard. Needs the
+            // `extended-virtual-addressing` entitlement to mmap on iOS
+            // — without it the runtime per-shard pre-flight refuses
+            // before the load even starts.
+            requiresLargeMmapAddressing: true
         ),
 
         LocalModel(

@@ -44,7 +44,24 @@ extension WebSearchEngine {
     /// model to learn.
     func renderObservation(query: String, results: [SearchResult]) -> String {
         guard !results.isEmpty else {
-            return "No results for \"\(query)\"."
+            // The empty-result observation has to do two jobs:
+            //
+            //   1. Be greppable by the `ToolObservation.isEmptyResult`
+            //      detector — keep the "No results for ..." prefix so
+            //      the UI can render a calmer "bez výsledku" chip
+            //      instead of treating this as a generic tool result.
+            //   2. Steer the model toward a useful recovery — small
+            //      checkpoints often answer "I couldn't find that" and
+            //      stop, even though a reformulation would land. The
+            //      explicit guidance line ("Try again with different
+            //      keywords …") nudges them to retry instead of
+            //      bailing.
+            return """
+                No results for "\(query)" (via \(displayName)).
+                Try again with different keywords (broader terms, English instead of \
+                Czech, or remove special characters) — or tell the user you couldn't \
+                find anything on the web for this question.
+                """
         }
         var lines: [String] = ["Web results for \"\(query)\" (via \(displayName)):"]
         for (i, hit) in results.prefix(5).enumerated() {

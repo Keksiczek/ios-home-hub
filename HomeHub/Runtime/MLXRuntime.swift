@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import MLX
 import MLXLLM
 import MLXLMCommon
@@ -106,21 +107,31 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
         /// tokenised against a different vocab.
         let modelID: String
         let conversationID: UUID
-        /// Stable portion of the system prompt — persona, profile, tools,
-        /// language policy. Everything that doesn't churn turn-by-turn.
-        /// The cache reuse check compares this only; the volatile half
-        /// (date/time, conversation recall, semantic facts) is injected
-        /// into the current user turn instead, so the cached prefix
-        /// stays valid across turns where only volatile context changed.
+        /// SHA-256 of the stable portion of the system prompt — persona,
+        /// profile, tools, language policy. Everything that doesn't
+        /// churn turn-by-turn. The cache reuse check compares this only;
+        /// the volatile half (date/time, recall, semantic facts) is
+        /// injected into the current user turn instead, so the cached
+        /// prefix stays valid across turns where only volatile context
+        /// changed.
         ///
-        /// Before this split, `existing.systemPrompt != prompt.systemPrompt`
-        /// compared the concatenated whole — and because the volatile
-        /// block carries the current minute/second, the cache was
-        /// discarded on practically every turn. End result: full
-        /// re-prefill of system + history on every send, which on a
-        /// 1500-token system prompt costs 200-500 ms before the first
-        /// token streams.
-        let stableSystemPrompt: String
+        /// Stored as a 32-byte hash rather than the raw string to:
+        ///   1. Skip cache invalidation for cosmetic-only diffs
+        ///      (trailing whitespace, repeated blank lines) that
+        ///      tokenise identically — see `Self.stableSystemHash(...)`.
+        ///   2. Avoid carrying multi-KB strings on every cached
+        ///      session — system prompts can be 1500-2500 tokens
+        ///      (~4-10 KB in UTF-8) and a couple of those resident
+        ///      across a long-running app adds up.
+        ///
+        /// Before this and the stable/volatile split,
+        /// `existing.systemPrompt != prompt.systemPrompt` compared
+        /// the concatenated whole — and because the volatile block
+        /// carries the current minute/second, the cache was discarded
+        /// on practically every turn. End result: full re-prefill of
+        /// system + history on every send, which on a 1500-token
+        /// system prompt costs 200-500 ms before the first token streams.
+        let stableSystemHash: SHA256Digest
         /// Canonical history snapshot: messages *excluding* the in-flight
         /// user turn. Used as both the seed history for `ChatSession` AND
         /// the comparison key for "is the cached prefix still valid?".
@@ -131,6 +142,58 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
         let session: ChatSession
     }
     private var activeSession: ActiveSession?
+
+    /// SHA-256 over a *normalised* version of the stable system prompt.
+    /// Normalisation collapses cosmetic noise that tokenises identically:
+    ///
+    ///   * Trailing whitespace on every line (the prompt builder
+    ///     concatenates fragments and sometimes lands a trailing space
+    ///     before the newline).
+    ///   * Runs of 3+ consecutive newlines collapsed to two
+    ///     (template authoring often produces them from chained
+    ///     "if X: emit block" generators).
+    ///   * Leading + trailing whitespace on the whole prompt.
+    ///
+    /// Anything beyond those is kept verbatim — we don't lowercase,
+    /// don't strip punctuation, don't reorder. The goal is "two
+    /// prompts that would tokenise to the same id sequence hash to the
+    /// same digest", not aggressive deduplication.
+    fileprivate static func stableSystemHash(_ raw: String) -> SHA256Digest {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Strip per-line trailing whitespace + collapse blank-line runs.
+        // Done with a single pass over the lines to avoid building
+        // intermediate copies of the whole string for each transform.
+        let lines = trimmed.split(separator: "\n", omittingEmptySubsequences: false)
+        var out: [String] = []
+        out.reserveCapacity(lines.count)
+        var blankRun = 0
+        for line in lines {
+            // Trailing-whitespace strip: walk from the end while the
+            // last character is a space or tab. Operates on the
+            // Character view so a multi-scalar grapheme stays whole.
+            var end = line.endIndex
+            while end > line.startIndex {
+                let prev = line.index(before: end)
+                let ch = line[prev]
+                if ch == " " || ch == "\t" {
+                    end = prev
+                } else {
+                    break
+                }
+            }
+            let stripped = String(line[line.startIndex..<end])
+            if stripped.isEmpty {
+                blankRun += 1
+                // Keep up to one blank between paragraphs.
+                if blankRun <= 1 { out.append("") }
+            } else {
+                blankRun = 0
+                out.append(stripped)
+            }
+        }
+        let normalised = out.joined(separator: "\n")
+        return SHA256.hash(data: Data(normalised.utf8))
+    }
 
     private let loader: any MLXLoader
 
@@ -255,6 +318,29 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
     /// hammered every 5 s during sustained pressure.
     private var currentCacheTier: CachePressureTier = .normal
 
+    /// Idle-time baseline for the MLX GPU buffer pool — i.e. the
+    /// ceiling when no model is loaded, or when the loaded model is
+    /// small enough that headroom isn't the constraint. Computed once
+    /// from the device-memory profile × hardware safe ceiling and
+    /// kept around so `unload()` and `recomputeCacheLimitForLoad`
+    /// can both fall back to a consistent number.
+    private let idleBaselineCacheLimitBytes: Int
+
+    /// Centralised setter for `MLX.Memory.cacheLimit`. On iOS Simulator the
+    /// underlying MLX framework does not have a Metal device to bind to —
+    /// touching `cacheLimit` triggers MLX's lazy device init, which feeds
+    /// a nullptr device name to `std::string` and aborts the process via
+    /// a libc++ assertion. The setter is a no-op on simulator so the rest
+    /// of the app (UI, services, unit tests hosted by the app) can boot
+    /// cleanly; model inference is unsupported on simulator anyway.
+    private static func setMLXCacheLimit(_ bytes: Int, log: Logger) {
+        #if targetEnvironment(simulator)
+        log.notice("MLX: skipping cacheLimit=\(bytes / 1_048_576, privacy: .public)MB on iOS Simulator (no Metal device)")
+        #else
+        MLX.Memory.cacheLimit = bytes
+        #endif
+    }
+
     init(loader: any MLXLoader = DefaultMLXLoader()) {
         self.loader = loader
         // Configure MLX GPU memory cache limit using the *minimum* of two budgets:
@@ -268,8 +354,9 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
         let memoryBudget   = DeviceMemoryProvider.shared.profile.mlxGPUCacheLimitBytes
         let hardwareBudget = HardwareCapabilities.shared.safeGPUCacheLimitBytes
         let cacheLimitBytes = min(memoryBudget, hardwareBudget)
+        self.idleBaselineCacheLimitBytes = Int(cacheLimitBytes)
         self.baselineCacheLimitBytes = Int(cacheLimitBytes)
-        MLX.Memory.cacheLimit = self.baselineCacheLimitBytes
+        Self.setMLXCacheLimit(self.baselineCacheLimitBytes, log: log)
 
         if HardwareCapabilities.shared.safeAttentionMode {
             // Safe-mode is purely advisory for MLX-Swift today — the framework
@@ -280,6 +367,53 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                 "MLX: safe-attention mode active for SoC \(HardwareCapabilities.shared.soc.label, privacy: .public) — GPU cache clamped to \(Int(cacheLimitBytes / 1024 / 1024), privacy: .public) MB"
             )
         }
+    }
+
+    /// Dial the buffer-pool ceiling down at load time when the model
+    /// is large relative to the per-process memory budget. The default
+    /// idle baseline (typically 200 MB on the moderate tier) is the
+    /// "small model" value — it leaves Metal enough scratch to keep
+    /// prefill responsive. When weights eat most of the budget the
+    /// same 200 MB is the *first* thing jetsam reclaims during
+    /// prefill's dirty-page spike. Reserving a quarter of the
+    /// post-weights headroom for the pool (floored at 64 MB, capped
+    /// at the idle baseline) trades a small prefill slowdown on big
+    /// models for survivability of the first turn.
+    ///
+    /// Pure read-mostly: protected only against `baselineCacheLimitBytes`
+    /// being touched from the pressure-tier helpers, which run on the
+    /// same `@MainActor`-rooted call chain that `loadWithProgress`
+    /// uses, so no extra lock is needed.
+    private func recomputeCacheLimitForLoad(weightsBytes: Int64) {
+        guard idleBaselineCacheLimitBytes > 0 else { return }
+        let available = Int64(os_proc_available_memory())
+        let weights = max(0, weightsBytes)
+        // Floor / ceiling on the dynamic value.
+        let minPool: Int64 = 64 * 1024 * 1024
+        let maxPool = Int64(idleBaselineCacheLimitBytes)
+        // Headroom-over-weights quarter. Negative numbers (weights >
+        // available) collapse to `minPool` via the max() — same outcome
+        // as the existing pre-load gate's "attempt anyway" path.
+        let headroomQuarter = (available - weights) / 4
+        let target = min(maxPool, max(minPool, headroomQuarter))
+        baselineCacheLimitBytes = Int(target)
+        Self.setMLXCacheLimit(baselineCacheLimitBytes, log: log)
+        // Reset the pressure-tier tracking so the next L1 / L2 event
+        // shrinks from the *new* baseline, not the idle one.
+        currentCacheTier = .normal
+        let mb = baselineCacheLimitBytes / 1_048_576
+        let idle = idleBaselineCacheLimitBytes / 1_048_576
+        log.info("MLX: cache limit at load \(mb, privacy: .public) MB (idle baseline \(idle, privacy: .public) MB; weights \(weights / 1_048_576, privacy: .public) MB, available \(available / 1_048_576, privacy: .public) MB)")
+    }
+
+    /// Restore the buffer-pool ceiling to the idle baseline. Called
+    /// from `unload()` so a subsequent fresh load starts from a known
+    /// state rather than inheriting the previous model's tight cap.
+    private func restoreIdleBaselineCacheLimit() {
+        guard idleBaselineCacheLimitBytes > 0 else { return }
+        baselineCacheLimitBytes = idleBaselineCacheLimitBytes
+        Self.setMLXCacheLimit(idleBaselineCacheLimitBytes, log: log)
+        currentCacheTier = .normal
     }
 
     /// Adjust the MLX GPU buffer-pool ceiling based on current pressure
@@ -296,7 +430,7 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
         guard baselineCacheLimitBytes > 0 else { return }
         guard tier != currentCacheTier else { return }
         let target = Int(Double(baselineCacheLimitBytes) * tier.multiplier)
-        MLX.Memory.cacheLimit = target
+        Self.setMLXCacheLimit(target, log: log)
         currentCacheTier = tier
         log.info("MLX: GPU cache limit -> \(target / 1024 / 1024, privacy: .public) MB (tier=\(String(describing: tier), privacy: .public))")
     }
@@ -340,6 +474,10 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
         }
 
         self.log.info("MLX: Preparing to load model '\(model.displayName, privacy: .public)'")
+        await OOMTelemetryService.shared.breadcrumb("mlx.load.start", context: [
+            "modelID": model.id,
+            "weightsMB": "\(model.sizeBytes / 1_048_576)"
+        ])
 
         guard let repoId = model.repoId else {
             throw RuntimeError.incompatibleModel(
@@ -366,6 +504,40 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                 modelName: model.displayName,
                 detail: reason
             )
+        }
+
+        // Per-shard mmap ceiling check. Without the
+        // `extended-virtual-addressing` kernel entitlement (paid Apple
+        // Developer Program + provisioning profile) the iOS sandbox
+        // caps a single contiguous mmap at ~2 GB, regardless of how
+        // much physical RAM the device has. MLX-Swift maps each
+        // `*.safetensors` shard as one contiguous region, so a model
+        // that ships its weights as a single 4-5 GB file (e.g.
+        // `mlx-community/gemma-3n-E4B-it-4bit`) cannot be loaded on a
+        // free-tier build — it crashes deep inside MLX's mmap call,
+        // *after* the RuntimeManager feasibility gate has already
+        // said "risky, proceed". Refusing here turns the crash into a
+        // clear, user-actionable error.
+        //
+        // Sharded models (Mistral 7B's 2× 2 GB shards, etc.) pass this
+        // gate even when their total exceeds 2 GB — MLX mmaps each
+        // shard independently.
+        if !DeviceMemoryProvider.kernelEntitlementsEnabled,
+           preflight.largestShardBytes > 0 {
+            let mmapCeiling: Int64 = 2_100_000_000  // ~2 GB sandbox limit (conservative)
+            if preflight.largestShardBytes > mmapCeiling {
+                let mbShard = preflight.largestShardBytes / 1_048_576
+                let mbCeiling = mmapCeiling / 1_048_576
+                self.log.error("MLX: Pre-load mmap check failed — largest shard \(mbShard) MB exceeds \(mbCeiling) MB sandbox ceiling (no extended-virtual-addressing entitlement)")
+                await OOMTelemetryService.shared.breadcrumb("mlx.load.refused.mmapCeiling", context: [
+                    "modelID": model.id,
+                    "largestShardMB": "\(mbShard)",
+                    "ceilingMB": "\(mbCeiling)"
+                ])
+                throw RuntimeError.initializationFailed(
+                    "Model \"\(model.displayName)\" má jediný weight soubor \(mbShard) MB, ale tato verze HomeHubu (bez placeného Apple Developer účtu) zvládne nejvýše ~\(mbCeiling) MB v jednom kuse. Vyber menší variantu modelu (např. Gemma 3n E2B), nebo pro tento konkrétní model použij build s entitlementem extended-virtual-addressing — viz KERNEL_ENTITLEMENTS.md."
+                )
+            }
         }
 
         // Pre-load memory check. This is a LAST-RESORT guard against the
@@ -397,6 +569,11 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
             let mbAvailable = available / 1_048_576
             if available > 0, raw > available * 2 {
                 self.log.error("MLX: Pre-load memory check failed — weights ~\(mbRaw) MB exceed 2× available \(mbAvailable) MB; refusing")
+                await OOMTelemetryService.shared.breadcrumb("mlx.load.refused.oom", context: [
+                    "modelID": model.id,
+                    "weightsMB": "\(mbRaw)",
+                    "availableMB": "\(mbAvailable)"
+                ])
                 throw RuntimeError.outOfMemory
             }
             if available > 0, raw > available {
@@ -481,6 +658,34 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
             self.loadedModel = model
             await telemetry.emit(.modelLoaded(handle: ModelHandle(from: model), durationMs: duration))
             self.log.info("MLX: Model '\(model.displayName, privacy: .public)' loaded in \(duration)ms")
+            await OOMTelemetryService.shared.breadcrumb("mlx.load.weightsMapped", context: [
+                "modelID": model.id,
+                "durationMs": "\(duration)"
+            ])
+
+            // Dial the buffer-pool ceiling based on the actual headroom
+            // left after weights resident. Done BEFORE the prewarm so
+            // the prewarm allocates against the post-load tier and the
+            // pressure-scaling math tracks the right baseline.
+            self.recomputeCacheLimitForLoad(weightsBytes: model.sizeBytes)
+
+            // Pre-warm: drive a single-token forward pass so the Metal
+            // kernel cache + first KV-cache slab + sampler scratch all
+            // commit *now*, while the load is still the only memory
+            // event in flight. Without this, the first user-visible
+            // prompt pays for prefill + first-time Metal compile +
+            // initial heap commit in one wave, which on large models
+            // (Gemma 3n, Mistral 7B) can cross the jetsam threshold
+            // mid-decode and kill the app on the user's first message.
+            //
+            // Best-effort: any error here is logged and swallowed —
+            // a model that can't pre-warm a single token will fail
+            // the real generate too, with a better error message.
+            // Skips the prefix-reuse `ChatSession` so the next real
+            // turn starts from a clean slate and observes a cache
+            // miss (correct: pre-warm primed Metal, not the user's
+            // conversation).
+            await prewarm()
         } catch is CancellationError {
             // Defensive cleanup. RuntimeManager.unload() already cleared
             // these before the load began, but the loader can also be
@@ -507,6 +712,82 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
         }
     }
 
+    /// Post-load Metal warm-up. Runs a 1-token forward pass through a
+    /// throwaway `ChatSession` so the Metal kernel cache compiles, the
+    /// first KV-cache slab + sampler scratch allocate, and the buffer
+    /// pool reaches its steady-state footprint *before* the user's
+    /// first prompt arrives. Without this, the first real generate
+    /// stacks prefill + first-time Metal compile + initial heap commit
+    /// into one wave, which on a tight memory budget (Gemma 3n / Mistral
+    /// 7B on iPhone) can cross the jetsam threshold mid-decode.
+    ///
+    /// Best-effort and isolated:
+    ///  * Errors are logged and swallowed. The next real generate will
+    ///    surface its own (more informative) error if the model is
+    ///    genuinely unusable.
+    ///  * `activeSession` is explicitly cleared on exit so the user's
+    ///    first real turn observes a clean cache miss and rebuilds —
+    ///    pre-warm primes Metal, not the user's conversation prefix.
+    ///  * Skipped when a generation is already in flight (the prewarm
+    ///    happens at the end of `loadWithProgress`, which can't race
+    ///    a generate since the load gate forbids concurrent generate;
+    ///    this is just belt-and-braces).
+    private func prewarm() async {
+        guard let nativeContainer = self.container as? ModelContainer else {
+            // Non-native containers (test fakes) don't benefit from a
+            // Metal warm-up. Skip silently.
+            return
+        }
+        let alreadyBusy = sessionLock.withLock { isGenerating }
+        guard !alreadyBusy else {
+            self.log.info("MLX: prewarm skipped — runtime already busy")
+            return
+        }
+        let prewarmStart = Date()
+        do {
+            // Single-token decode is enough to cause the framework to
+            // allocate its steady-state Metal heaps. `temperature 0`
+            // makes sampling deterministic so the result is stable in
+            // logs across runs.
+            let session = ChatSession(nativeContainer)
+            session.generateParameters = GenerateParameters(
+                maxTokens: 1,
+                temperature: 0,
+                topP: 1,
+                topK: 0,
+                minP: 0,
+                repetitionPenalty: nil,
+                repetitionContextSize: 0
+            )
+            var produced = 0
+            for try await _ in session.streamResponse(
+                to: "hi",
+                role: .user,
+                images: [],
+                videos: []
+            ) {
+                produced += 1
+                if produced >= 1 { break }
+            }
+            let ms = Int(Date().timeIntervalSince(prewarmStart) * 1000)
+            self.log.info("MLX: prewarm complete in \(ms)ms (produced \(produced) token)")
+            await OOMTelemetryService.shared.breadcrumb("mlx.load.prewarmDone", context: [
+                "durationMs": "\(ms)"
+            ])
+        } catch {
+            // Don't promote a prewarm failure to a load failure — the
+            // next real generate will surface a useful error of its
+            // own if the model is genuinely broken.
+            self.log.info("MLX: prewarm skipped — \(error.localizedDescription, privacy: .public)")
+        }
+        // Always clear the throwaway session so the user's first real
+        // turn rebuilds a fresh ChatSession against their actual
+        // conversation history. Pre-warm primed Metal, not chat state.
+        sessionLock.withLock {
+            self.activeSession = nil
+        }
+    }
+
     func unload() async {
         // Snapshot what we're releasing for the structured log line.
         let droppedModelID = loadedModel?.id ?? "(none)"
@@ -529,6 +810,10 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
             _lastGenerationError = nil
         }
         loadedModel = nil
+
+        // Release the load-time tight cache cap. A future load will
+        // recompute its own; until then the idle baseline is correct.
+        restoreIdleBaselineCacheLimit()
 
         // Structured unload log — surfaced in DeveloperDiagnostics.
         // We don't have a portable "bytes released" API on MLX-Swift, so
@@ -574,6 +859,18 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
         self.isGenerating = true
         self.activeGenerationID = conversationID
         self.sessionLock.unlock()
+
+        let loadedID = self.loadedModel?.id ?? "(none)"
+        // Generate-start breadcrumb. Written from the call-site
+        // synchronously (before the worker task spawns) so even a
+        // crash inside Task setup leaves a trail.
+        Task { @MainActor in
+            OOMTelemetryService.shared.breadcrumb("mlx.generate.start", context: [
+                "modelID": loadedID,
+                "conversationID": conversationID.uuidString,
+                "maxTokens": "\(parameters.maxTokens)"
+            ])
+        }
 
         // [weak self] breaks the retain cycle: self.activeTask → Task → self.
         // The cycle is temporary (resolves when the task finishes), but without
@@ -652,6 +949,10 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                     let canonicalHistory = MLXChatInput.history(from: prompt)
 
                     let currentModelID = self.loadedModel?.id ?? "(none)"
+                    // Hash the incoming stable prompt once outside the
+                    // lock — SHA-256 over a 4-10 KB string is ~10 µs and
+                    // the lock should hold only the fast equality check.
+                    let incomingStableHash = Self.stableSystemHash(prompt.stableSystemPrompt)
                     let session: ChatSession = self.sessionLock.withLock {
                         let currentActive = self.activeSession
 
@@ -669,13 +970,17 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                                 discardReason = "different modelID (\(existing.modelID) → \(currentModelID))"
                             } else if existing.conversationID != conversationID {
                                 discardReason = "different conversationID"
-                            } else if existing.stableSystemPrompt != prompt.stableSystemPrompt {
-                                // Stable-only comparison: volatile churn
-                                // (time, recall, facts) lives in the
-                                // current user turn instead of the
-                                // ChatSession instructions, so it doesn't
-                                // invalidate the cached prefix.
-                                discardReason = "different stable systemPrompt"
+                            } else if existing.stableSystemHash != incomingStableHash {
+                                // Stable-only comparison via hash:
+                                // volatile churn (time, recall, facts)
+                                // lives in the current user turn instead
+                                // of the ChatSession instructions, so it
+                                // doesn't invalidate the cached prefix.
+                                // The hash is over the *normalised* form
+                                // so cosmetic-only diffs (trailing
+                                // whitespace, doubled blank lines) don't
+                                // force a flush either.
+                                discardReason = "different stable systemPrompt (hash mismatch)"
                             } else if !MLXChatInput.cachedPrefixMatches(
                                 cached: existing.messages,
                                 incoming: canonicalHistory
@@ -724,7 +1029,7 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                             self.activeSession = ActiveSession(
                                 modelID: currentModelID,
                                 conversationID: conversationID,
-                                stableSystemPrompt: prompt.stableSystemPrompt,
+                                stableSystemHash: incomingStableHash,
                                 messages: canonicalHistory,
                                 session: newSession
                             )
@@ -801,7 +1106,23 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                     for try await piece in responseStream {
                         if Task.isCancelled { break }
                         watchdog.recordToken()
-                        if firstTokenAt == nil { firstTokenAt = Date() }
+                        if firstTokenAt == nil {
+                            firstTokenAt = Date()
+                            // First-token landmark: the gap between
+                            // mlx.generate.start and this is the
+                            // user-visible "is it working?" wait. If
+                            // a jetsam lands between the two, this
+                            // breadcrumb is missing from the log —
+                            // a clear post-mortem signal that prefill
+                            // got killed before producing anything.
+                            let ttftMs = Int(Date().timeIntervalSince(start) * 1000)
+                            Task { @MainActor in
+                                OOMTelemetryService.shared.breadcrumb("mlx.generate.firstToken", context: [
+                                    "conversationID": conversationID.uuidString,
+                                    "ttftMs": "\(ttftMs)"
+                                ])
+                            }
+                        }
 
                         // Per-token autoreleasepool drains the ObjC temporaries
                         // (MLXArray wrappers, intermediate NSString views) that
@@ -1036,6 +1357,19 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                 self.log.info(
                     "MLX generation: backend=mlx modelID=\(modelID, privacy: .public) tokens=\(tokensGenerated, privacy: .public) durationMs=\(durationMs, privacy: .public) tps=\(String(format: "%.1f", tps), privacy: .public) safeMode=\(safeMode, privacy: .public) reason=\(String(describing: finishReason), privacy: .public)"
                 )
+                Task { @MainActor in
+                    OOMTelemetryService.shared.breadcrumb(
+                        finishReason == .cancelled ? "mlx.generate.cancelled" : "mlx.generate.complete",
+                        context: [
+                            "modelID": modelID,
+                            "conversationID": conversationID.uuidString,
+                            "tokens": "\(tokensGenerated)",
+                            "durationMs": "\(durationMs)",
+                            "tps": String(format: "%.1f", tps),
+                            "reason": "\(finishReason)"
+                        ]
+                    )
+                }
 
                 if honourPendingTrim {
                     self.log.info("MLX: pendingSessionTrim honoured — ChatSession dropped after generation finish")
@@ -1065,6 +1399,14 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                     }
                 }
                 self.log.error("MLX generation: backend=mlx modelID=\(modelID, privacy: .public) failed kind=\(String(describing: failure.kind), privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+                Task { @MainActor in
+                    OOMTelemetryService.shared.breadcrumb("mlx.generate.failed", context: [
+                        "modelID": modelID,
+                        "conversationID": conversationID.uuidString,
+                        "kind": "\(failure.kind)",
+                        "error": error.localizedDescription
+                    ])
+                }
                 continuation.finish(throwing: error)
             }
         }
@@ -1162,13 +1504,36 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
     }
 
     func handleBackground() async {
-        // Policy: MLX keeps weights resident across background transitions.
-        // Re-warming MLX after a background→foreground takes 10–60 s on
-        // iPhone (Metal pipeline compile + tokenizer reload), which is
-        // worse for the user than the OS occasionally re-claiming the
-        // suspended app. Memory-pressure / thermal-critical paths *do*
-        // unload via `handleMemoryPressure` / `RuntimeManager`.
-        self.log.info("MLX runtime: backgrounded — keeping weights resident (policy)")
+        // Default policy: keep weights resident across background
+        // transitions. Re-warming MLX after a background→foreground
+        // takes 10–60 s on iPhone (Metal pipeline compile + tokenizer
+        // reload), which for small / medium models is worse for the
+        // user than the OS occasionally re-claiming the suspended app.
+        //
+        // Exception for large models: if the resident weight footprint
+        // is more than ~60 % of the per-process memory budget that was
+        // available at load time, holding them through a background
+        // session almost guarantees that *any* other app the user
+        // opens jetsams us. Eagerly unload so the next foreground turn
+        // pays a deterministic re-warm cost instead of the device's
+        // mood. The threshold is a heuristic — tuned to keep models up
+        // to ~Gemma 2 2B / SmolLM 1.7B resident while letting Gemma 3n
+        // E4B / Mistral 7B drop out. Memory-pressure / thermal-critical
+        // paths still unload via `handleMemoryPressure` regardless.
+        let weights = loadedModel?.sizeBytes ?? 0
+        let available = Int64(os_proc_available_memory())
+        let isHeavy: Bool = {
+            guard weights > 0, available > 0 else { return false }
+            return weights > Int64(Double(available) * 0.6)
+        }()
+        if isHeavy {
+            self.log.notice(
+                "MLX runtime: backgrounded with heavy model (\(weights / 1_048_576, privacy: .public) MB > 60% of \(available / 1_048_576, privacy: .public) MB) — eager unload to avoid jetsam on return"
+            )
+            await unload()
+        } else {
+            self.log.info("MLX runtime: backgrounded — keeping weights resident (policy)")
+        }
     }
 }
 

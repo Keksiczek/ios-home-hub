@@ -46,6 +46,22 @@ struct LocalModel: Identifiable, Codable, Equatable, Hashable {
     /// fetch when no HF token is configured (showing a clearer error
     /// than `401 Unauthorized`).
     var requiresAuth: Bool
+    /// `true` for models whose weights ship as a single safetensors
+    /// shard larger than the ~2 GB iOS sandbox contiguous-mmap ceiling.
+    /// Without the `com.apple.developer.kernel.extended-virtual-addressing`
+    /// entitlement (paid Apple Developer Program + provisioning profile,
+    /// or TrollStore on iOS ≤ 17.0) the load will fail inside MLX's
+    /// mmap call no matter how much physical RAM the device has.
+    ///
+    /// Set in the curated catalog only — user-added MLX models default
+    /// to `false` and let the runtime's per-shard pre-flight catch the
+    /// case (it inspects the on-disk shard layout, which is the
+    /// authoritative answer once the model is downloaded).
+    ///
+    /// Surfaced by `ModelsView` / `ModelInfoSheet` as a "vyžaduje
+    /// paid Apple Developer účet" badge so the user sees the
+    /// limitation *before* spending bandwidth on the download.
+    var requiresLargeMmapAddressing: Bool
     var downloads: Int?
     var likes: Int?
 
@@ -79,6 +95,7 @@ struct LocalModel: Identifiable, Codable, Equatable, Hashable {
         case sizeBytes, contextLength, downloadURL, sha256
         case installState, recommendedFor, license, isUserAdded
         case backend, format, installedRepoSHA, requiresAuth
+        case requiresLargeMmapAddressing
         case downloads, likes
     }
 
@@ -100,6 +117,7 @@ struct LocalModel: Identifiable, Codable, Equatable, Hashable {
         isUserAdded: Bool = false,
         installedRepoSHA: String? = nil,
         requiresAuth: Bool = false,
+        requiresLargeMmapAddressing: Bool = false,
         downloads: Int? = nil,
         likes: Int? = nil
     ) {
@@ -120,6 +138,7 @@ struct LocalModel: Identifiable, Codable, Equatable, Hashable {
         self.isUserAdded = isUserAdded
         self.installedRepoSHA = installedRepoSHA
         self.requiresAuth = requiresAuth
+        self.requiresLargeMmapAddressing = requiresLargeMmapAddressing
         self.downloads = downloads
         self.likes = likes
     }
@@ -143,6 +162,7 @@ struct LocalModel: Identifiable, Codable, Equatable, Hashable {
         isUserAdded   = try c.decodeIfPresent(Bool.self, forKey: .isUserAdded) ?? false
         installedRepoSHA = try c.decodeIfPresent(String.self, forKey: .installedRepoSHA)
         requiresAuth  = try c.decodeIfPresent(Bool.self, forKey: .requiresAuth) ?? false
+        requiresLargeMmapAddressing = try c.decodeIfPresent(Bool.self, forKey: .requiresLargeMmapAddressing) ?? false
         downloads     = try c.decodeIfPresent(Int.self, forKey: .downloads)
         likes         = try c.decodeIfPresent(Int.self, forKey: .likes)
     }

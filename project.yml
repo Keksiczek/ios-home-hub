@@ -105,13 +105,22 @@ packages:
     url: https://github.com/argmaxinc/WhisperKit
     from: 0.11.0
 
-configFiles:
-  Debug: LocalOverride.xcconfig
-  Release: LocalOverride.xcconfig
-
 settings:
   base:
-    DEVELOPMENT_TEAM: 8Y755TXDN8
+    # DEVELOPMENT_TEAM is intentionally NOT set here.
+    #
+    # We used to wire LocalOverride.xcconfig into project.yml via
+    # `configFiles:`, but xcodegen emits non-deterministic `TEMP_<uuid>`
+    # PBXFileReferences and a working-directory-named PBXGroup for any
+    # configFile that lives outside the source tree. That made the
+    # committed pbxproj drift on every regeneration — fatal for the
+    # build-ios drift guard, which fails the moment `xcodegen generate`
+    # produces any diff against HEAD.
+    #
+    # Developer signing now lives in xcuserdata (gitignored) — open the
+    # project in Xcode, pick your team under Signing & Capabilities, and
+    # Xcode stores the selection per-user. CI builds for the iOS
+    # simulator and never signs, so it doesn't need a team at all.
     CODE_SIGN_STYLE: Automatic
     SWIFT_VERSION: "6.0"
     GENERATE_INFOPLIST_FILE: YES
@@ -130,6 +139,19 @@ targets:
       properties:
         com.apple.security.application-groups:
           - group.cz.keksiczek.homehub.shared
+        # iCloud Documents sync — backs AppSettings.iCloudSyncEnabled.
+        # Container must be provisioned on the team's App ID; on free
+        # Apple-ID teams the runtime falls back to local Application
+        # Support silently. See KERNEL_ENTITLEMENTS.md for the paid
+        # kernel entitlements (memory-limit, extended-virtual-addressing)
+        # that are intentionally NOT declared here — they require a
+        # paid Developer Program account and break free-tier builds.
+        com.apple.developer.icloud-container-identifiers:
+          - iCloud.cz.keksiczek.homehub
+        com.apple.developer.icloud-services:
+          - CloudDocuments
+        com.apple.developer.ubiquity-container-identifiers:
+          - iCloud.cz.keksiczek.homehub
     sources:
       - path: HomeHub
         # `*.md` documentation files are sprinkled across feature
@@ -180,9 +202,6 @@ targets:
       # PlugIns folder at build time. Without this, the extension
       # builds but iOS never registers it with the share sheet.
       - target: HomeHubShareExtension
-    configFiles:
-      Debug: LocalOverride.xcconfig
-      Release: LocalOverride.xcconfig
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: cz.keksiczek.homehub

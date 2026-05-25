@@ -35,6 +35,15 @@ struct MLXCacheInspection: Sendable, Equatable {
     /// Sum of weight-shard sizes; useful for telemetry / "weights are
     /// suspiciously small" sanity checks.
     var totalWeightsBytes: Int64
+    /// Size of the largest single `*.safetensors` shard. Drives the
+    /// per-shard mmap ceiling check in `MLXRuntime.loadWithProgress` —
+    /// without the `extended-virtual-addressing` entitlement the iOS
+    /// sandbox caps contiguous mmap at roughly 2 GB, so a single 4-5 GB
+    /// shard (e.g. Gemma 3n E4B-4bit shipped as one file) cannot be
+    /// loaded on a free-tier build no matter how much physical RAM the
+    /// device reports. Total-weights size doesn't catch this case
+    /// because chunked downloads commonly sum to the same number.
+    var largestShardBytes: Int64
     /// Human-readable list of what's missing. Empty when `state == .ready`.
     var missingItems: [String]
     /// Detected model family from `config.json` (`"Llama"`, `"Gemma3"`,
@@ -143,6 +152,7 @@ actor LocalModelService {
                 hasWeights: false,
                 hasTokenizer: false,
                 totalWeightsBytes: 0,
+                largestShardBytes: 0,
                 missingItems: ["model directory"],
                 detectedFamily: nil
             )
@@ -193,11 +203,13 @@ actor LocalModelService {
             || contents.contains { $0.hasSuffix(".model") && ($0.contains("tokenizer") || $0.contains("spiece")) }
 
         var totalWeightsSize: Int64 = 0
+        var largestShardSize: Int64 = 0
         for file in safetensorsFiles {
             let path = cacheDir.appendingPathComponent(file).path
             if let attrs = try? fileManager.attributesOfItem(atPath: path),
                let size = (attrs[.size] as? NSNumber)?.int64Value {
                 totalWeightsSize += size
+                if size > largestShardSize { largestShardSize = size }
             }
         }
 
@@ -235,6 +247,7 @@ actor LocalModelService {
             hasWeights: hasWeights,
             hasTokenizer: hasTokenizer,
             totalWeightsBytes: totalWeightsSize,
+            largestShardBytes: largestShardSize,
             missingItems: missing,
             detectedFamily: detectedFamily
         )

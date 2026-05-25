@@ -23,19 +23,18 @@ HomeHub brings the power of local LLMs to your pocket. No cloud, no accounts, no
 
 ### Quick Setup
 
-1. **Clone & Configure**:
+1. **Clone & Generate Project**:
    ```bash
    git clone https://github.com/Keksiczek/ios-home-hub
    cd ios-home-hub
-   cp LocalOverride.xcconfig.template LocalOverride.xcconfig
-   # Edit LocalOverride.xcconfig with your Team ID
-   ```
-
-2. **Generate Project**:
-   ```bash
    make setup
    open HomeHub.xcodeproj
    ```
+
+2. **Configure Signing** (device builds only — skip for simulator):
+   In Xcode → HomeHub target → *Signing & Capabilities*, pick your Team.
+   The selection is stored in `xcuserdata/` (gitignored) so it never
+   leaks into commits. The Simulator scheme builds without a team.
 
 3. **Build & Run**:
    Select your device and press **Cmd+R**.
@@ -190,23 +189,27 @@ If you do opt in, place `llama.xcframework` as a **sibling of the repo root**:
 Build it once (see [Integrating the real llama.cpp runtime](#integrating-the-real-llamacpp-runtime))
 and it stays in place across branches and clones.
 
-### First-time setup: copy signing template
+### First-time setup: signing for device builds
 
-Before building on a real device, create your local signing override:
+`project.yml` deliberately does not set a `DEVELOPMENT_TEAM`. Wiring an
+xcconfig into `configFiles:` makes XcodeGen emit non-deterministic
+`TEMP_<uuid>` references and a working-directory-named PBXGroup, which
+permanently breaks the committed pbxproj's drift guard.
 
-```bash
-cp LocalOverride.xcconfig.template LocalOverride.xcconfig
-# Open LocalOverride.xcconfig and replace YOUR_TEAM_ID with your
-# 10-character Apple Developer Team ID.
-# Find it at: https://developer.apple.com/account → Membership
-```
+Instead, pick your team in Xcode after opening the project:
 
-`LocalOverride.xcconfig` is listed in `.gitignore` so your personal Team ID
-is never committed. The template (`LocalOverride.xcconfig.template`) **is**
-committed and serves as the on-ramp for every contributor.
+1. Open `HomeHub.xcodeproj`.
+2. Select the **HomeHub** target → **Signing & Capabilities**.
+3. Choose your team under *Team*.
 
-> **Simulator builds** work without a Team ID. Only device builds need
-> a valid `DEVELOPMENT_TEAM`.
+Xcode persists this choice in `xcuserdata/` (gitignored), so it stays
+across rebuilds and `make generate` but never gets committed.
+
+> **Simulator builds** work without a Team. Only device builds need one.
+> The `LocalOverride.xcconfig.template` file is kept around as a manual
+> escape hatch (e.g. for headless CLI builds via `xcodebuild -xcconfig
+> LocalOverride.xcconfig …`) — it is no longer auto-wired into the
+> project.
 
 ### Option A: XcodeGen (recommended — fully reproducible)
 

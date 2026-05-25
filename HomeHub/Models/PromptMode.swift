@@ -190,13 +190,31 @@ enum PromptMode: String, Sendable, Hashable, CaseIterable {
             )
         }
         let f = AppSettings.factorySampling
+        // User opt-in: when `gemma3nTightSamplingOverride` is on AND the
+        // resolved profile is the Gemma 3n one, the per-family
+        // "recommended" picks are replaced by the historical tight
+        // stack — only for sliders the user hasn't manually moved.
+        // Mirrors the auto-pick semantics for every other family:
+        // touched sliders win, untouched sliders take the family
+        // override. Lets a user pin the pre-2026-05 sampling without
+        // resetting their other tweaks.
+        let isGemma3n = profile.family == ModelCapabilityProfile.gemma3n.family
+            && profile.recommendedRepeatPenaltyLastN == ModelCapabilityProfile.gemma3n.recommendedRepeatPenaltyLastN
+        let useTight = settings.gemma3nTightSamplingOverride && isGemma3n
+        let tight = ModelCapabilityProfile.gemma3nTightSampling
+        let pickTemp        = useTight ? tight.temperature        : profile.recommendedTemperature
+        let pickTopP        = useTight ? tight.topP               : profile.recommendedTopP
+        let pickTopK        = useTight ? tight.topK               : profile.recommendedTopK
+        let pickMinP        = useTight ? tight.minP               : profile.recommendedMinP
+        let pickRepPenalty  = useTight ? tight.repeatPenalty      : profile.recommendedRepeatPenalty
+        let pickRepWindow   = useTight ? tight.repeatPenaltyLastN : profile.recommendedRepeatPenaltyLastN
         return ResolvedSampling(
-            temperature:        settings.temperature        == f.temperature        ? profile.recommendedTemperature        : settings.temperature,
-            topP:               settings.topP               == f.topP               ? profile.recommendedTopP               : settings.topP,
-            topK:               settings.topK               == f.topK               ? profile.recommendedTopK               : settings.topK,
-            minP:               settings.minP               == f.minP               ? profile.recommendedMinP               : settings.minP,
-            repeatPenalty:      settings.repeatPenalty      == f.repeatPenalty      ? profile.recommendedRepeatPenalty      : settings.repeatPenalty,
-            repeatPenaltyLastN: settings.repeatPenaltyLastN == f.repeatPenaltyLastN ? profile.recommendedRepeatPenaltyLastN : settings.repeatPenaltyLastN
+            temperature:        settings.temperature        == f.temperature        ? pickTemp       : settings.temperature,
+            topP:               settings.topP               == f.topP               ? pickTopP       : settings.topP,
+            topK:               settings.topK               == f.topK               ? pickTopK       : settings.topK,
+            minP:               settings.minP               == f.minP               ? pickMinP       : settings.minP,
+            repeatPenalty:      settings.repeatPenalty      == f.repeatPenalty      ? pickRepPenalty : settings.repeatPenalty,
+            repeatPenaltyLastN: settings.repeatPenaltyLastN == f.repeatPenaltyLastN ? pickRepWindow  : settings.repeatPenaltyLastN
         )
     }
 }

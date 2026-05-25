@@ -309,9 +309,42 @@ enum PromptBuilder {
         }
 
         if lower.contains("websearch") {
-            rules.append("- For current events, prices, news, or any fact that " +
-                         "requires fresh data, you MAY call the WebSearch tool. " +
+            // Strong "MUST" wording for the search rail: small models
+            // default to fabricating when a tool is merely permitted.
+            // Training data is full of "MAY call X" prompts where
+            // the model never does — flipping to imperative-with-
+            // examples reliably nudges Q4 checkpoints into actually
+            // calling the tool for time-sensitive questions.
+            rules.append("- For current events, prices, news, weather, sports scores, " +
+                         "or ANY fact that depends on the current date (anything published " +
+                         "after early 2024), you MUST call the WebSearch tool. " +
+                         "Reformulate the user's question into 2-6 keywords before searching " +
+                         "(e.g. 'kolik stoji EUR?' → 'EUR CZK rate today'). " +
                          "Never invent facts you could only know by looking them up.")
+            if lower.contains("fetchpage") {
+                rules.append("- After WebSearch, if the result snippets are too short to " +
+                             "fully answer the question, call FetchPage on the most relevant " +
+                             "URL to read the page content before responding.")
+            }
+            // Multi-turn refinement guidance. Small models often bail
+            // after a single empty WebSearch ("I couldn't find that")
+            // or take the first hit at face value even when it's
+            // tangential. This rule gives them a concrete recovery
+            // strategy for both failure modes. The per-turn budget
+            // cap (`SkillManager` rejects >N tool calls in one turn)
+            // is the safety net that stops a model from looping
+            // forever — this prompt just makes the productive
+            // refinement attempts actually happen.
+            rules.append("- If the first WebSearch returns no results or the snippets don't " +
+                         "answer the question, retry ONCE with different keywords (broader, " +
+                         "in English, or with the year if a date matters). Do NOT repeat the " +
+                         "same query. After two unsuccessful searches, tell the user you " +
+                         "couldn't find a reliable source rather than guessing." +
+                         (lower.contains("fetchpage")
+                          ? " If FetchPage on the first hit comes back empty or off-topic, " +
+                            "try the next most relevant URL from the SAME search results " +
+                            "instead of searching again."
+                          : ""))
         } else {
             rules.append("- You have no web access. Do NOT pretend to look " +
                          "anything up on the internet. If a question requires " +

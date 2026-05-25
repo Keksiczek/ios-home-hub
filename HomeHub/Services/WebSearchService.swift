@@ -280,7 +280,7 @@ enum WebSearchService {
             let snippet = i < snippets.count && snippets[i].count >= 2 ? snippets[i][1] : ""
             let resolvedURL = resolveDDGRedirect(rawURL)
             let cleanTitle = stripHTML(rawTitle)
-            let cleanSnippet = stripHTML(snippet)
+            let cleanSnippet = stripChrome(from: stripHTML(snippet))
             guard !cleanTitle.isEmpty else { continue }
             out.append(Hit(title: cleanTitle, url: resolvedURL, snippet: cleanSnippet))
             if out.count >= limit { break }
@@ -326,6 +326,46 @@ enum WebSearchService {
         s = s.replacingOccurrences(of: "&#39;",  with: "'")
         s = s.replacingOccurrences(of: "&nbsp;", with: " ")
         return s.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Drops DuckDuckGo Lite UI-chrome lines that occasionally leak into
+    /// `result-snippet` cells. The scraper inherited a handful of
+    /// these strings because DDG renders interstitial helpers
+    /// (language switcher, "show more engines" promo, locale nag)
+    /// inside the result table on certain locales / cookie states,
+    /// and the regex-based parser can't tell them apart from real
+    /// snippets at the HTML layer.
+    ///
+    /// The list is exact-prefix only — partial substring matching
+    /// would risk false-positives on legitimate snippets that happen
+    /// to contain "Looking for" mid-sentence. Each entry was observed
+    /// in real DDG output during dogfooding; new ones get added here
+    /// rather than to a broader sanitizer.
+    ///
+    /// Returns "" when the snippet is *entirely* chrome — callers
+    /// render an empty snippet as a hit with only the URL line, which
+    /// is fine; the LLM still has the title + URL to work with.
+    static func stripChrome(from snippet: String) -> String {
+        let trimmed = snippet.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        // Lower-case once for the comparison; we keep the original
+        // casing on the returned string when it survives.
+        let lc = trimmed.lowercased()
+        let chromePrefixes: [String] = [
+            "show more search engines",
+            "looking for results in english",
+            "looking for more results",
+            "we could not find any results for",
+            "did you mean",
+            "click here for the html version",
+            "your search did not match any documents",
+            "a list of search results"
+        ]
+        for chrome in chromePrefixes where lc.hasPrefix(chrome) {
+            // Whole-snippet chrome — drop entirely.
+            return ""
+        }
+        return trimmed
     }
 
     /// Returns each match's capture groups as a `[String]` (group 0 first).

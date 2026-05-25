@@ -17,6 +17,12 @@ struct MessageBubbleView: View {
     /// streaming placeholder where bookmarking partial content
     /// doesn't make sense).
     var onToggleBookmark: (() -> Void)? = nil
+    /// Called when the user taps "Pokračovat" on a length-truncated
+    /// assistant reply. `nil` hides the button — the parent view sets
+    /// it only on the most recent assistant message whose
+    /// `finishReason == "length"`, so this affordance is targeted at
+    /// the one bubble where continuation is meaningful.
+    var onContinue: (() -> Void)? = nil
     /// `true` for the currently-streaming assistant bubble while the
     /// runtime is still in the prefill phase (no tokens yet). When
     /// `true`, the typing indicator is replaced by a "Čte kontext…"
@@ -160,13 +166,30 @@ struct MessageBubbleView: View {
                 // exported transcript still hints "this turn called a
                 // tool" without surfacing the JSON.
                 if let call = detectedToolCall, message.role == .assistant {
+                    // Per-tool icon + label via `ToolPresenter`. The
+                    // running label is imperative present continuous
+                    // ("Hledám na webu…") while the model is mid-call;
+                    // it flips to past-tense ("Web search") once the
+                    // turn lands, so the persisted bubble reads
+                    // naturally in exports and reopened conversations.
+                    let style = ToolPresenter.style(for: call.name)
                     HStack(spacing: 6) {
-                        Image(systemName: "wrench.and.screwdriver.fill")
+                        Image(systemName: style.systemImage)
                             .imageScale(.small)
                             .foregroundStyle(HHTheme.accent)
+                            // Subtle pulse while the call is in flight
+                            // — the existing TypingIndicator dots
+                            // disappear behind the chip, so the user
+                            // needs *some* motion to read this as
+                            // "still working" rather than "stuck".
+                            .symbolEffect(
+                                .pulse,
+                                options: .repeating,
+                                isActive: message.status == .streaming
+                            )
                         Text(message.status == .streaming
-                             ? "Calling \(call.name)…"
-                             : "Called \(call.name)")
+                             ? style.runningLabel
+                             : style.completedLabel)
                             .font(HHTheme.caption.weight(.semibold))
                             .foregroundStyle(HHTheme.textSecondary)
                     }
@@ -179,6 +202,15 @@ struct MessageBubbleView: View {
                     statusLine(label: "Failed", icon: "exclamationmark.triangle.fill", color: HHTheme.warning)
                 } else if message.status == .cancelled {
                     statusLine(label: "Stopped", icon: "stop.circle.fill", color: HHTheme.textSecondary)
+                }
+
+                // Length-truncated reply → inline "Pokračovat" affordance.
+                // Rendered inside the bubble (not as a status line) so it
+                // reads as a continuation of the response rather than an
+                // error recovery — the previous content is still useful,
+                // we're just offering to extend it.
+                if let onContinue, message.wasTruncatedByLength {
+                    continueButton(onContinue)
                 }
             }
             .padding(.horizontal, HHTheme.spaceL)
@@ -250,6 +282,33 @@ struct MessageBubbleView: View {
         case .cancelled: return "Pokračovat"
         default:         return "Regenerovat"
         }
+    }
+
+    // MARK: - Length-truncation continuation
+
+    /// Compact bordered button rendered inside the bubble for replies
+    /// the runtime cut off at the max-tokens budget. The accompanying
+    /// caption sets the expectation — without it the button reads as
+    /// a generic "regenerate" and users wouldn't know whether the
+    /// previous content survives. (It does — `ConversationService`
+    /// keeps the truncated reply and sends a fresh "Pokračuj." turn.)
+    @ViewBuilder
+    private func continueButton(_ action: @escaping () -> Void) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Odpověď byla zkrácena, protože dosáhla limitu tokenů.")
+                .font(HHTheme.caption)
+                .foregroundStyle(HHTheme.textSecondary)
+            Button {
+                action()
+            } label: {
+                Label("Pokračovat", systemImage: "arrow.forward.circle.fill")
+                    .font(HHTheme.caption.weight(.semibold))
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .tint(HHTheme.accent)
+        }
+        .padding(.top, 4)
     }
 
     // MARK: - Status line

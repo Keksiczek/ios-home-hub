@@ -725,6 +725,43 @@ final class ConversationService: ObservableObject {
     /// all funnel through the same path so the chat UI can offer
     /// "Try again" on a failed bubble without a separate code path.
     /// No-op if a stream is already active in this conversation.
+    /// Asks the model to continue from where it stopped — used when
+    /// the previous assistant reply was cut off because it hit the
+    /// max-tokens budget (`finishReason == "length"`).
+    ///
+    /// Implementation: sends an automatic "Pokračuj" user turn. The
+    /// model sees the previous assistant message in the conversation
+    /// history, then a directive to keep going, and produces a new
+    /// assistant bubble that picks up the thread. Simpler than trying
+    /// to inject the partial as a prefix at the runtime level — that
+    /// would need cooperation from every backend (MLX, llama.cpp) and
+    /// the chat-template formatter for every model family.
+    ///
+    /// No-op when:
+    ///   * the conversation is already streaming (avoids interleaving)
+    ///   * the last assistant message wasn't truncated by length
+    ///     (avoid useless continuation prompts on natural stops)
+    func continueLastAssistantResponse(in conversationID: UUID) {
+        guard activeStreams[conversationID] == nil else { return }
+        let list = messagesByConversation[conversationID] ?? []
+        guard let lastAssistant = list.last(where: { $0.role == .assistant }),
+              lastAssistant.wasTruncatedByLength else { return }
+
+        // The directive is intentionally short + imperative — small
+        // models occasionally over-summarise long context-bearing
+        // instructions, but a one-word command lands every time.
+        // Match the user's resolved language so the model doesn't
+        // code-switch mid-conversation just because the button was
+        // hardcoded to one locale.
+        let directive: String
+        switch settings.current.language.resolved() {
+        case .cs:   directive = "Pokračuj."
+        case .en:   directive = "Continue."
+        case .auto: directive = "Continue."   // resolved() never returns .auto, but exhaustive
+        }
+        send(userInput: directive, in: conversationID)
+    }
+
     func regenerate(in conversationID: UUID) {
         guard activeStreams[conversationID] == nil else { return }
         var list = messagesByConversation[conversationID] ?? []
@@ -1267,6 +1304,18 @@ final class ConversationService: ObservableObject {
         // (`isFinalAllowedLoop == true`) once it hits 2.
         var consecutiveEmptyObservations = 0
         var forceSynthesisNextLoop = false
+        // Same-call duplicate detector. Models occasionally call the
+        // same tool with the same input twice in a row — usually
+        // because the previous observation didn't help and the model
+        // didn't think to reformulate. Treating a same-as-previous
+        // call as a soft signal to force synthesis on the next loop
+        // catches the case where the answer is "we already have this
+        // information, write the response" without waiting for the
+        // empty-observation streak (which only fires when the result
+        // is also empty). Stored as the `(skill, normalised input)`
+        // tuple of the most recent call so case-only / whitespace-
+        // only differences don't bypass the check.
+        var previousToolCallKey: String? = nil
 
         // Session-duration budget for the agentic loop. The outer
         // `watchdog` task (line ~945) already enforces a hard cancel at
@@ -1442,6 +1491,19 @@ final class ConversationService: ObservableObject {
                         }
                     case .finished(let reason, _):
                         assistantMessage.status = (reason == .cancelled) ? .cancelled : .complete
+                        // Persist the finish reason as a raw string so
+                        // the chat layer can surface "Pokračovat" on
+                        // `.length` cuts without importing the runtime
+                        // enum. The string keys mirror
+                        // `RuntimeEvent.FinishReason` exactly.
+                        assistantMessage.finishReason = {
+                            switch reason {
+                            case .stop:      return Message.FinishReasonKey.stop
+                            case .length:    return Message.FinishReasonKey.length
+                            case .cancelled: return Message.FinishReasonKey.cancelled
+                            case .error:     return Message.FinishReasonKey.error
+                            }
+                        }()
                         messagesByConversation[conversationID]?[assistantIndex] = assistantMessage
                         try? await store.save(message: assistantMessage)
 
@@ -1512,6 +1574,23 @@ final class ConversationService: ObservableObject {
             if assistantMessage.status == .complete && !isFinalAllowedLoop {
                 if let actionCommand = await SkillManager.shared.parseAction(from: assistantMessage.content) {
                     HHLog.tool.info("loop \(currentLoop) → \(actionCommand.skillName, privacy: .public)")
+
+                    // Same-tool-same-input check BEFORE we run the
+                    // skill. The skill itself runs once more so the
+                    // model gets a fresh observation (cheap in the
+                    // common case — WebSearch hits the LRU cache, the
+                    // others are local), but we mark the next loop
+                    // as synthesis so the model has to wrap up
+                    // instead of re-trying a third time.
+                    let callKey = "\(actionCommand.skillName.lowercased())|" +
+                        actionCommand.input
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                            .lowercased()
+                    if previousToolCallKey == callKey {
+                        HHLog.tool.notice("loop \(currentLoop) → forcing synthesis next: duplicate tool call \(actionCommand.skillName, privacy: .public)")
+                        forceSynthesisNextLoop = true
+                    }
+                    previousToolCallKey = callKey
 
                     let originalContent = assistantMessage.content
                     assistantMessage.content = originalContent + "\n\n*(\(toolRunningLabel(actionCommand.skillName)))*"
@@ -1750,7 +1829,26 @@ final class ConversationService: ObservableObject {
 
             var summary = await self.summarizer.summarize(messages: olderSlice)
             guard let initial = summary, !initial.isEmpty else {
-                HHLog.chat.notice("auto-summary: produced empty output for \(conversationID, privacy: .public) — leaving prior summary intact")
+                // LLM-backed summarisation failed (model unloaded mid-task,
+                // generation error, empty output). Fall back to the
+                // extractive `LightweightSummarizer` so the conversation
+                // still gets *some* condensation rather than reverting to
+                // raw history at full budget cost. Quality is markedly
+                // lower — extractive bullets vs. abstractive paragraph —
+                // but worlds better than nothing, and the next successful
+                // auto-summary pass will replace it.
+                if let extractive = LightweightSummarizer.summarize(messages: olderSlice),
+                   !extractive.isEmpty {
+                    HHLog.chat.notice("auto-summary: LLM path failed — installing extractive fallback for \(conversationID, privacy: .public)")
+                    self.summaryByConversation[conversationID] = ConversationSummary(
+                        conversationID: conversationID,
+                        summary: extractive,
+                        coversMessageIDs: olderIDs,
+                        generatedAt: .now
+                    )
+                } else {
+                    HHLog.chat.notice("auto-summary: produced empty output for \(conversationID, privacy: .public) — leaving prior summary intact")
+                }
                 return
             }
 

@@ -250,9 +250,12 @@ fi
 echo "--- Checking AppIcon asset set integrity ---"
 ICON_JSON="$REPO_ROOT/HomeHub/Assets.xcassets/AppIcon.appiconset/Contents.json"
 if [ -f "$ICON_JSON" ]; then
-  ICON_REF=$(grep -oE '"filename"\s*:\s*"[^"]+"' "$ICON_JSON" | head -1 || true)
+  # Use POSIX bracket classes so macOS (BSD) sed/grep parse this correctly —
+  # `\s` is a GNU extension and on BSD silently matches the literal sequence,
+  # leaving FNAME equal to the entire ICON_REF and flagging every build.
+  ICON_REF=$(grep -oE '"filename"[[:space:]]*:[[:space:]]*"[^"]+"' "$ICON_JSON" | head -1 || true)
   if [ -n "$ICON_REF" ]; then
-    FNAME=$(echo "$ICON_REF" | sed -E 's/.*"filename"\s*:\s*"([^"]+)".*/\1/')
+    FNAME=$(echo "$ICON_REF" | sed -E 's/.*"filename"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')
     if [ -f "$REPO_ROOT/HomeHub/Assets.xcassets/AppIcon.appiconset/$FNAME" ]; then
       green "AppIcon references $FNAME and the file exists"
     else
@@ -264,16 +267,20 @@ if [ -f "$ICON_JSON" ]; then
   fi
 fi
 
-# ── 16. LocalOverride.xcconfig exists (developer signing) ────────────────────
-# LocalOverride.xcconfig is gitignored; without it Xcode uses an empty
-# DEVELOPMENT_TEAM and code-signing fails on a real device.  This is a
-# WARNING (not a hard failure) so CI — which signs via a provisioning profile
-# injected by the CI environment — is not blocked.
-echo "--- Checking LocalOverride.xcconfig (developer signing) ---"
-if [ -f "$REPO_ROOT/LocalOverride.xcconfig" ]; then
-  green "LocalOverride.xcconfig present"
+# ── 16. project.yml no longer wires LocalOverride.xcconfig via configFiles ───
+# Historically project.yml referenced LocalOverride.xcconfig from `configFiles:`,
+# but xcodegen emits non-deterministic TEMP_<uuid> references for it, which
+# broke the committed pbxproj's drift guard on every regeneration. Guard
+# against a regression here so a future "fix" doesn't silently re-introduce
+# the drift.
+echo "--- Checking project.yml does not wire LocalOverride.xcconfig ---"
+# Only flag uncommented YAML — comments mentioning the file are documentation.
+if grep -vE '^\s*#' "$REPO_ROOT/project.yml" | grep -q "LocalOverride.xcconfig"; then
+  red "project.yml wires LocalOverride.xcconfig as a live value — that path triggers non-deterministic pbxproj drift via XcodeGen TEMP_ UUIDs."
+  echo "    Move signing config to Xcode UI (xcuserdata) or pass -xcconfig at xcodebuild invocation time instead."
+  FAIL=1
 else
-  warn "LocalOverride.xcconfig missing — copy from LocalOverride.xcconfig.template and fill in your DEVELOPMENT_TEAM"
+  green "project.yml does not wire LocalOverride.xcconfig as a configFile"
 fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────

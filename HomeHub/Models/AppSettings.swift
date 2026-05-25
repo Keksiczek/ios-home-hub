@@ -84,6 +84,17 @@ struct AppSettings: Codable, Equatable {
     /// in the build (the bridge silently keeps using local storage).
     var iCloudSyncEnabled: Bool
 
+    /// Restore the pre-2026-05 Gemma 3n sampling defaults
+    /// (`temperature 0.40 / topK 32 / minP 0.08 / repeat 1.25 / window 192`)
+    /// for the `gemma3n` family only. Affects the same auto-pick path
+    /// used by `PromptMode.resolvedSampling` — sliders the user has
+    /// already manually moved keep their custom values, untouched
+    /// sliders get the tight numbers instead of the new looser
+    /// defaults. Off by default. Provided as a safety hatch in case
+    /// the new `temperature 0.7` baseline re-surfaces foreign-language
+    /// drift on a specific quant or device.
+    var gemma3nTightSamplingOverride: Bool
+
     static let `default` = AppSettings(
         memoryEnabled: true,
         autoExtractMemory: true,
@@ -109,7 +120,8 @@ struct AppSettings: Codable, Equatable {
         generationTimeoutSeconds: 120,
         performanceProfile: .balanced,
         searxngBaseURL: "",
-        iCloudSyncEnabled: false
+        iCloudSyncEnabled: false,
+        gemma3nTightSamplingOverride: false
     )
 
     /// Sampling-knob factory defaults. Field-by-field equality against
@@ -138,15 +150,25 @@ struct AppSettings: Codable, Equatable {
     static let factorySampling = FactorySampling()
 
     /// Tools registered in `SkillManager` by default — i.e. the subset
-    /// that's ON at first launch. WebSearch is deliberately omitted
-    /// (privacy + network usage; opt-in only).
+    /// that's ON at first launch.
+    ///
+    /// WebSearch is included now (off in earlier versions): a chat
+    /// assistant that can't look anything up is half the product, and
+    /// the agentic loop's privacy rail explicitly forbids sending
+    /// personal data through the tool — only what the model
+    /// reformulates as a search query. Users who want strict local-only
+    /// can flip it off in Settings; the persisted `enabledTools` set
+    /// then wins on subsequent launches via the migration-safe
+    /// `decodeIfPresent` path in `init(from:)`.
+    ///
+    /// FetchPage piggy-backs on WebSearch — both are network tools, the
+    /// trust boundary is the same, so they share the default-on flag.
     ///
     /// This list is NOT the source of truth for what's visible in
-    /// Settings — that's `allKnownTools` below. Decoupling the two
-    /// lets the Settings UI show WebSearch (so the user can flip it
-    /// on) while still keeping it off until explicitly chosen.
+    /// Settings — that's `allKnownTools` below.
     static let defaultEnabledTools: Set<String> = [
-        "Calculator", "Calendar", "HomeKit", "Reminders", "DeviceInfo"
+        "Calculator", "Calendar", "HomeKit", "Reminders", "DeviceInfo",
+        "WebSearch", "FetchPage"
     ]
 
     /// Every tool the app knows how to run, regardless of whether
@@ -161,7 +183,8 @@ struct AppSettings: Codable, Equatable {
     /// "I can't search the web" because the skill was never
     /// registered in `SkillManager`.
     static let allKnownTools: Set<String> = [
-        "Calculator", "Calendar", "HomeKit", "Reminders", "DeviceInfo", "WebSearch"
+        "Calculator", "Calendar", "HomeKit", "Reminders", "DeviceInfo",
+        "WebSearch", "FetchPage"
     ]
 
     // MARK: - Codable (migration-safe)
@@ -183,6 +206,7 @@ struct AppSettings: Codable, Equatable {
         case performanceProfile
         case searxngBaseURL
         case iCloudSyncEnabled
+        case gemma3nTightSamplingOverride
         // Retained only for migration from the previous schema.
         case responseStyle
     }
@@ -212,7 +236,8 @@ struct AppSettings: Codable, Equatable {
         generationTimeoutSeconds: Int = 120,
         performanceProfile: PerformanceProfile = .balanced,
         searxngBaseURL: String = "",
-        iCloudSyncEnabled: Bool = false
+        iCloudSyncEnabled: Bool = false,
+        gemma3nTightSamplingOverride: Bool = false
     ) {
         self.memoryEnabled = memoryEnabled
         self.autoExtractMemory = autoExtractMemory
@@ -239,6 +264,7 @@ struct AppSettings: Codable, Equatable {
         self.performanceProfile = performanceProfile
         self.searxngBaseURL = searxngBaseURL
         self.iCloudSyncEnabled = iCloudSyncEnabled
+        self.gemma3nTightSamplingOverride = gemma3nTightSamplingOverride
     }
 
     init(from decoder: Decoder) throws {
@@ -293,6 +319,7 @@ struct AppSettings: Codable, Equatable {
         self.performanceProfile = try c.decodeIfPresent(PerformanceProfile.self, forKey: .performanceProfile) ?? fallback.performanceProfile
         self.searxngBaseURL = try c.decodeIfPresent(String.self, forKey: .searxngBaseURL) ?? fallback.searxngBaseURL
         self.iCloudSyncEnabled = try c.decodeIfPresent(Bool.self, forKey: .iCloudSyncEnabled) ?? fallback.iCloudSyncEnabled
+        self.gemma3nTightSamplingOverride = try c.decodeIfPresent(Bool.self, forKey: .gemma3nTightSamplingOverride) ?? fallback.gemma3nTightSamplingOverride
 
         // Migration path for installs that persisted the previous
         // `responseStyle: "leanCI" | "casual"` field. Map leanCI→concise
@@ -337,6 +364,7 @@ struct AppSettings: Codable, Equatable {
         try c.encode(performanceProfile, forKey: .performanceProfile)
         try c.encode(searxngBaseURL, forKey: .searxngBaseURL)
         try c.encode(iCloudSyncEnabled, forKey: .iCloudSyncEnabled)
+        try c.encode(gemma3nTightSamplingOverride, forKey: .gemma3nTightSamplingOverride)
     }
 
 }
