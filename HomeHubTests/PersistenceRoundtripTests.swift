@@ -267,6 +267,44 @@ final class PersistenceRoundtripTests: XCTestCase {
         XCTAssertEqual(loaded[0].attachments?.first?.extractedText, "OCR'd body text from the image")
     }
 
+    func testAttachmentDecode_FromLegacyJSON_WithoutImageDataKey() throws {
+        // Pre-VLM attachments persisted only filename + extractedText.
+        // The new optional imageData / imageMimeType keys must decode
+        // back as nil so a user upgrading the app reads their old
+        // SwiftData rows without a migration.
+        let legacyJSON = """
+        {
+            "id": "33333333-3333-3333-3333-333333333333",
+            "filename": "screenshot.png",
+            "extractedText": "OCR text"
+        }
+        """.data(using: .utf8)!
+        let decoded = try JSONDecoder().decode(Message.Attachment.self, from: legacyJSON)
+        XCTAssertEqual(decoded.filename, "screenshot.png")
+        XCTAssertEqual(decoded.extractedText, "OCR text")
+        XCTAssertNil(decoded.imageData)
+        XCTAssertNil(decoded.imageMimeType)
+    }
+
+    func testAttachmentRoundTrip_PreservesImageData() throws {
+        // Forward-compat: a new attachment with image bytes must
+        // survive encode → decode unchanged. The VLM pathway depends
+        // on this so a chat reopened tomorrow still sees the pixels.
+        let bytes = Data([0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10]) // JPEG header
+        let original = Message.Attachment(
+            id: UUID(),
+            filename: "photo.jpg",
+            extractedText: "",
+            imageData: bytes,
+            imageMimeType: "image/jpeg"
+        )
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(Message.Attachment.self, from: data)
+        XCTAssertEqual(decoded.imageData, bytes)
+        XCTAssertEqual(decoded.imageMimeType, "image/jpeg")
+        XCTAssertEqual(decoded, original)
+    }
+
     func testMessageDecode_FromLegacyJSON_WithoutAttachmentsKey() throws {
         // Synthetic pre-attachments JSON shape — simulates a row
         // written by an older app version. Decoder must default the

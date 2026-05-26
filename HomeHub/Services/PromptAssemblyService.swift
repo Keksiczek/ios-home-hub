@@ -83,7 +83,18 @@ final class PromptAssemblyService {
             }
         }
 
-        runtimeMessages.append(RuntimeMessage(role: .user, content: package.userInput))
+        // Only forward image bytes when the active model family
+        // can actually consume them. Pure-text families would just
+        // accept the Data and discard it — copying ~500 KB per
+        // attachment for nothing.
+        let imagesForTurn: [Data]? = (profile.supportsVision && !package.userImages.isEmpty)
+            ? package.userImages
+            : nil
+        runtimeMessages.append(RuntimeMessage(
+            role: .user,
+            content: package.userInput,
+            images: imagesForTurn
+        ))
 
         let historyTokens = trimResult.kept.reduce(0) {
             $0 + budgeter.tokensForMessage(content: $1.content)

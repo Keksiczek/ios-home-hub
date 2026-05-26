@@ -38,6 +38,16 @@ struct PromptContextPackage {
     var conversationRecall: [String] = []
     /// Text extracted from attached documents in the current turn.
     var fileExcerpts: [String] = []
+    /// Raw image bytes from photo attachments on the current user turn.
+    /// Populated by `ConversationService` from `Message.Attachment.imageData`
+    /// when the active model's `ModelCapabilityProfile.supportsVision` is
+    /// `true`. Empty otherwise — text-only models would gain nothing from
+    /// the bytes and the prompt-assembly path skips the copy.
+    ///
+    /// `PromptAssemblyService` attaches these to the final user
+    /// `RuntimeMessage` so the runtime (once the MLX-VLM path is wired)
+    /// can hand them straight to `VLMModelFactory`.
+    var userImages: [Data] = []
     /// Instructions derived from active skills to be injected into the system prompt.
     var skillInstructions: String? = nil
     /// Names of tools (skills) actually available for this turn — the

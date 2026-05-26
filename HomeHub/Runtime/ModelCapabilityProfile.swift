@@ -98,6 +98,24 @@ struct ModelCapabilityProfile: Sendable, Equatable {
     /// at the call-site level regardless of model family.
     let prefersDeferredMemoryExtraction: Bool
 
+    /// Whether this model family includes vision-capable variants that
+    /// accept image inputs alongside text. Set on the *family* profile —
+    /// the catalog still picks which specific repo to download. When
+    /// `true`, the chat composer keeps the original image bytes in the
+    /// attachment and the runtime forwards them to the model; when
+    /// `false` (default) we only ship the OCR'd text as today.
+    ///
+    /// Concrete vision-capable families (as of 2026-05):
+    /// - `gemma-3n` (vision variant)
+    /// - `qwen-vl` / `qwen2-vl`
+    /// - `smolvlm`
+    /// - `llava`
+    ///
+    /// Pure-text families (`llama`, `phi`, `mistral`, etc.) stay `false`.
+    /// The MLX execution path that actually feeds images to the model
+    /// will arrive in a follow-up — this flag wires the gate.
+    let supportsVision: Bool
+
     // MARK: - Sampling defaults
     //
     // Family-specific recommended sampling parameters. Applied at model
@@ -140,6 +158,47 @@ struct ModelCapabilityProfile: Sendable, Equatable {
     // demonstrably correlates with the mode collapse / language
     // bleed we saw in the field.
     let isWeakInstructionFollower: Bool
+
+    /// Explicit init so existing static profiles (`.llama`, `.qwen`, …)
+    /// don't need a memberwise-init churn every time we add a new
+    /// capability flag. `supportsVision` defaults to `false` because
+    /// every currently-shipped family is text-only; vision-capable
+    /// variants will opt in by name in their own static profile.
+    init(
+        family: String,
+        supportsFlashAttention: Bool,
+        nUBatch: Int,
+        safeHistoryTokenBudget: Int,
+        generationReserveTokens: Int,
+        messageTokenOverhead: Int,
+        supportsStructuredToolCalling: Bool,
+        prefersDeferredMemoryExtraction: Bool,
+        recommendedTemperature: Double,
+        recommendedTopP: Double,
+        recommendedTopK: Int,
+        recommendedMinP: Double,
+        recommendedRepeatPenalty: Double,
+        recommendedRepeatPenaltyLastN: Int,
+        isWeakInstructionFollower: Bool,
+        supportsVision: Bool = false
+    ) {
+        self.family = family
+        self.supportsFlashAttention = supportsFlashAttention
+        self.nUBatch = nUBatch
+        self.safeHistoryTokenBudget = safeHistoryTokenBudget
+        self.generationReserveTokens = generationReserveTokens
+        self.messageTokenOverhead = messageTokenOverhead
+        self.supportsStructuredToolCalling = supportsStructuredToolCalling
+        self.prefersDeferredMemoryExtraction = prefersDeferredMemoryExtraction
+        self.recommendedTemperature = recommendedTemperature
+        self.recommendedTopP = recommendedTopP
+        self.recommendedTopK = recommendedTopK
+        self.recommendedMinP = recommendedMinP
+        self.recommendedRepeatPenalty = recommendedRepeatPenalty
+        self.recommendedRepeatPenaltyLastN = recommendedRepeatPenaltyLastN
+        self.isWeakInstructionFollower = isWeakInstructionFollower
+        self.supportsVision = supportsVision
+    }
 }
 
 // MARK: - Built-in profiles
@@ -365,6 +424,60 @@ extension ModelCapabilityProfile {
         isWeakInstructionFollower: true
     )
 
+    /// SmolVLM — HuggingFace's small Vision-Language Model
+    /// (256M / 500M / 2B variants). Multimodal: accepts images +
+    /// text. Image input is mandatory for the vision path to fire;
+    /// when no image is attached the chat falls back to a normal
+    /// text run. The runtime currently still forwards text-only —
+    /// `supportsVision: true` is the flag the future MLX-VLM
+    /// path checks before populating image tensors.
+    ///
+    /// Sampling mirrors SmolLM2 (same base architecture) but with
+    /// a slightly looser temperature because the vision-conditioned
+    /// distribution is naturally more peaked.
+    static let smolVLM = ModelCapabilityProfile(
+        family: "smolvlm",
+        supportsFlashAttention: true,
+        nUBatch: 64,
+        safeHistoryTokenBudget: 1000,
+        generationReserveTokens: 768,
+        messageTokenOverhead: 5,
+        supportsStructuredToolCalling: false,
+        prefersDeferredMemoryExtraction: false,
+        recommendedTemperature: 0.5,
+        recommendedTopP: 0.9,
+        recommendedTopK: 40,
+        recommendedMinP: 0.08,
+        recommendedRepeatPenalty: 1.2,
+        recommendedRepeatPenaltyLastN: 128,
+        isWeakInstructionFollower: true,
+        supportsVision: true
+    )
+
+    /// Qwen2-VL family — Alibaba's vision-language variant of
+    /// Qwen2. Available in 2B and 7B sizes. The 2B fits on
+    /// iPhone 15 Pro+, the 7B is iPad-only at Q4. Sampling is
+    /// inherited from Qwen but `supportsVision` is the gate
+    /// that activates the image-tensor pathway.
+    static let qwenVL = ModelCapabilityProfile(
+        family: "qwen-vl",
+        supportsFlashAttention: true,
+        nUBatch: 64,
+        safeHistoryTokenBudget: 1400,
+        generationReserveTokens: 1024,
+        messageTokenOverhead: 5,
+        supportsStructuredToolCalling: false,
+        prefersDeferredMemoryExtraction: false,
+        recommendedTemperature: 0.7,
+        recommendedTopP: 0.8,
+        recommendedTopK: 20,
+        recommendedMinP: 0.0,
+        recommendedRepeatPenalty: 1.05,
+        recommendedRepeatPenaltyLastN: 64,
+        isWeakInstructionFollower: false,
+        supportsVision: true
+    )
+
     /// Fallback for unknown or user-supplied families.
     ///
     /// Most conservative settings: no flash attention, smallest history
@@ -477,7 +590,8 @@ extension ModelCapabilityProfile {
             recommendedMinP: minP,
             recommendedRepeatPenalty: repeatPenalty,
             recommendedRepeatPenaltyLastN: repeatLastN,
-            isWeakInstructionFollower: promotedWeak
+            isWeakInstructionFollower: promotedWeak,
+            supportsVision: baseProfile.supportsVision
         )
     }
 
@@ -508,6 +622,11 @@ extension ModelCapabilityProfile {
     /// Used internally by resolve() before dynamic adjustment.
     private static func baseProfile(for family: String) -> ModelCapabilityProfile {
         let f = family.lowercased()
+        // Vision-capable families first — they share substrings
+        // with their text-only siblings ("qwen-vl" contains "qwen",
+        // "smolvlm" contains "smollm"-ish) so order matters.
+        if f.contains("qwen-vl") || f.contains("qwen2-vl") { return .qwenVL }
+        if f.contains("smolvlm") { return .smolVLM }
         if f.contains("llama")   { return .llama }
         if f.contains("qwen")    { return .qwen }
         if f.contains("mistral") { return .mistral }

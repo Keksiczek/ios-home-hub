@@ -43,7 +43,20 @@ enum ImageVisionService {
         return try await extractText(from: cgImage)
     }
     #endif
-    
+
+    /// CGImage entry point used by the PDF OCR fallback in
+    /// `DocumentReaderService`. Rendered PDF pages are already in
+    /// CGImage form so going through `UIImage` would be a no-op
+    /// wrapper allocation per page; exposing this directly avoids
+    /// it and keeps the OCR pipeline cgImage-native end-to-end.
+    ///
+    /// Throws `VisionError.extractionFailed` if the page contains
+    /// no recognisable text — the document-level fallback handles
+    /// that by skipping the page rather than failing the whole job.
+    static func extractText(fromCGImage cgImage: CGImage) async throws -> String {
+        try await extractText(from: cgImage)
+    }
+
     private static func extractText(from cgImage: CGImage) async throws -> String {
         return try await withCheckedThrowingContinuation { continuation in
             let request = VNRecognizeTextRequest { request, error in

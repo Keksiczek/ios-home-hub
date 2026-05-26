@@ -1,7 +1,17 @@
 import Foundation
+import CoreImage
 import CryptoKit
 import MLX
 import MLXLLM
+// MLXVLM is imported purely for its side-effect: the framework's
+// `TrampolineModelFactory` (referenced dynamically via
+// NSClassFromString in MLXLMCommon's ModelFactoryRegistry) only
+// becomes loadable once the binary actually links MLXVLM. With it
+// imported, `loadModelContainer(...)` auto-routes vision models to
+// VLMModelFactory and text-only models to LLMModelFactory based on
+// the model's `config.json` `model_type` — no per-model branching
+// needed here.
+import MLXVLM
 import MLXLMCommon
 import Tokenizers
 import Hub
@@ -899,6 +909,37 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                     return
                 }
 
+                // Vision capability gap warning. Fires only when the
+                // turn carries image bytes BUT the loaded model has no
+                // vision capability — in that case the chat layer
+                // (`PromptAssemblyService`) shouldn't have forwarded
+                // images at all, so this guards against the chat-layer
+                // and runtime drifting out of sync (e.g. profile said
+                // "vision" but the actual model on disk turned out to
+                // be a text-only fine-tune).
+                //
+                // For the happy path (vision model + image bytes) the
+                // images flow straight into `UserInput.images` below.
+                // No warning needed; the `MLXVLM` trampoline takes
+                // over inside `loadModelContainer(...)`.
+                let hasImageInPrompt = prompt.messages.contains { ($0.images?.isEmpty == false) }
+                let loadedSupportsVision: Bool = {
+                    guard let active = self.loadedModel else { return false }
+                    return ModelCapabilityProfile.resolve(
+                        family: active.family,
+                        parameterCount: active.parameterCount,
+                        contextLength: active.contextLength
+                    ).supportsVision
+                }()
+                if hasImageInPrompt && !loadedSupportsVision {
+                    self.log.warning("MLX: prompt carries image bytes but loaded model has no vision capability — images dropped for \(conversationID, privacy: .public)")
+                    continuation.yield(.warning(RuntimeWarning(
+                        kind: .visionPathNotWired,
+                        message: "Aktivní model nemá vision kapability. Obrázek se nepoužije, odpověď vychází jen z textu / OCR.",
+                        secondsSilent: 0
+                    )))
+                }
+
                 // Bug fix: previous code dropped topK / minP /
                 // repeatPenalty with a warning ("not supported by
                 // current GenerateParameters"). The current
@@ -1208,9 +1249,36 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                     )
                     watchdog.start()
                     defer { watchdog.stop() }
-                    let fallbackResult: (Int, String, Bool) = try await container.perform { [watchdog] context in
+                    // Collect raw image bytes from prompt messages.
+                    // We carry only `Data` across the @Sendable
+                    // closure boundary — `UserInput.Image` is not
+                    // Sendable (its `.ciImage(CIImage)` case wraps a
+                    // reference type from CoreImage), so the actual
+                    // `CIImage(data:)` decode happens INSIDE the
+                    // `container.perform` closure where we already
+                    // own the isolation domain.
+                    //
+                    // Trade-off: a malformed JPEG/PNG is only
+                    // detected after the model container has been
+                    // entered. That's fine — image decode is cheap
+                    // and we're about to do orders of magnitude more
+                    // work in `processor.prepare`. The previous
+                    // pre-flight version saved no meaningful latency
+                    // and broke Sendable.
+                    let capturedImageData: [Data] = prompt.messages.flatMap { msg -> [Data] in
+                        msg.images ?? []
+                    }
+                    let fallbackResult: (Int, String, Bool) = try await container.perform { [watchdog, capturedLog = self.log] context in
+                        let images: [UserInput.Image] = capturedImageData.compactMap { data -> UserInput.Image? in
+                            guard let ci = CIImage(data: data) else {
+                                capturedLog.warning("MLX: dropping unparseable image attachment (\(data.count) bytes) — neither JPEG nor PNG decoded successfully")
+                                return nil
+                            }
+                            return .ciImage(ci)
+                        }
                         let userInput = UserInput(
-                            messages: capturedMsgs.map { $0.mapValues { $0 as any Sendable } }
+                            messages: capturedMsgs.map { $0.mapValues { $0 as any Sendable } },
+                            images: images
                         )
                         let input = try await context.processor.prepare(input: userInput)
 
