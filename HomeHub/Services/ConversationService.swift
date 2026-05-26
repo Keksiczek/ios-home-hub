@@ -71,6 +71,12 @@ final class ConversationService: ObservableObject {
     private let userMemory: UserMemoryStore?
     private let summarizer: SummarizationService
     private let embeddingService: EmbeddingService
+    /// Image-generation backend. Injected at construction so tests can
+    /// swap in the deterministic `StubImageGenerationRuntime` while
+    /// production wires whatever the runtime catalog points at. The
+    /// chat layer only knows the protocol — it doesn't care whether
+    /// the bytes come from a stub gradient or a real Core ML pipeline.
+    private let imageRuntime: any ImageGenerationRuntime
     /// Per-conversation semantic recall over truncated message history.
     /// Used inside `performSend` to surface earlier turns the budgeter
     /// would otherwise drop. Reads the shared `embeddingService` LRU,
@@ -157,6 +163,7 @@ final class ConversationService: ObservableObject {
         summarizer: SummarizationService? = nil,
         embeddingService: EmbeddingService = EmbeddingService(),
         promptBudgetReporter: PromptBudgetReporter? = nil,
+        imageRuntime: (any ImageGenerationRuntime)? = nil,
         recentBackgroundTimestamp: @escaping @MainActor () -> Date? = { nil },
         onBackgroundCompletion: @escaping @MainActor () -> Void = {}
     ) {
@@ -174,6 +181,11 @@ final class ConversationService: ObservableObject {
         self.embeddingService = embeddingService
         self.recall = ConversationRecallService(embeddings: embeddingService)
         self.promptBudgetReporter = promptBudgetReporter
+        // Stub by default — the only on-device image runtime that
+        // currently exists. Once a real Core ML / MLX implementation
+        // lands, `AppContainer` can inject it here without touching
+        // the rest of the chat plumbing.
+        self.imageRuntime = imageRuntime ?? StubImageGenerationRuntime()
         self.recentBackgroundTimestamp = recentBackgroundTimestamp
         self.onBackgroundCompletion = onBackgroundCompletion
     }
@@ -1067,6 +1079,26 @@ final class ConversationService: ObservableObject {
         messagesByConversation[conversationID] = list
         try? await store.save(message: assistantMessage)
 
+        // `/image PROMPT` slash command. Detected here (after the
+        // user turn is persisted, before any LLM prompt assembly)
+        // so the rest of the chat plumbing — message list, history,
+        // background-task accounting — works identically. Branching
+        // out via early return keeps the LLM path's locals
+        // (prompt package, token budget, summarisation) untouched.
+        //
+        // Empty body after the prefix (e.g. user typed just "/image ")
+        // falls through to the LLM path — there's no useful prompt to
+        // feed the diffusion runtime, and the model can ask the user
+        // what they wanted instead.
+        if let imagePrompt = Self.parseImagePromptCommand(userInput) {
+            await performImageGeneration(
+                prompt: imagePrompt,
+                conversationID: conversationID,
+                assistantIndex: assistantIndex
+            )
+            return
+        }
+
         // Summarisation: re-uses any summary that was generated for this
         // conversation in a previous turn. Live summary generation is gated
         // behind `settings.streamingEnabled` and a context-fill heuristic
@@ -1244,6 +1276,18 @@ final class ConversationService: ObservableObject {
             return "[\(speaker)] \(msg.content)"
         }
 
+        // Collect raw photo bytes from this turn's attachments. Filter
+        // to those that actually have image data — document attachments
+        // (PDF/TXT) leave `imageData` nil. The downstream gate in
+        // PromptAssemblyService discards the array entirely on text-only
+        // models, so it's safe to populate unconditionally here.
+        // Explicit closure rather than `\.imageData` key-path:
+        // the key-path form has triggered LLVM SimplifyCFGPass
+        // crashes on x86_64 during Release IRGen in this repo on
+        // some toolchains. The closure form sidesteps it without
+        // changing semantics — `compactMap` still drops nil entries.
+        let userImages: [Data] = (attachments ?? []).compactMap { $0.imageData }
+
         let package = PromptContextPackage(
             assistant: personaForTurn,
             user: personalization.userProfile,
@@ -1255,6 +1299,7 @@ final class ConversationService: ObservableObject {
             conversationSummary: summaryText,
             conversationRecall: recalledText,
             fileExcerpts: topExcerpts,
+            userImages: userImages,
             skillInstructions: skillInstructions,
             availableTools: enabledTools,
             userMemoryBlock: userMemory?.promptBlock(),
@@ -2334,5 +2379,150 @@ final class ConversationService: ObservableObject {
     private static func endBackgroundTask(_ id: UIBackgroundTaskIdentifier) {
         guard id != .invalid else { return }
         UIApplication.shared.endBackgroundTask(id)
+    }
+
+    // MARK: - Image generation (slash command)
+
+    /// Returns the non-empty prompt portion of an `/image …` command,
+    /// or `nil` when the input doesn't match. Tolerates a few
+    /// permutations users actually type:
+    ///   - `/image cat`         → "cat"
+    ///   - `/img a moonlit fox` → "a moonlit fox"
+    ///   - `/image   trim me  ` → "trim me"
+    ///
+    /// Empty body falls through (`nil`) so the regular LLM path can
+    /// handle "/image " — the model can ask what the user wanted
+    /// rather than silently producing a blank image.
+    static func parseImagePromptCommand(_ rawInput: String) -> String? {
+        let trimmed = rawInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        let prefixes = ["/image ", "/img "]
+        for prefix in prefixes where trimmed.lowercased().hasPrefix(prefix) {
+            let body = trimmed.dropFirst(prefix.count)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return body.isEmpty ? nil : body
+        }
+        return nil
+    }
+
+    /// Drives an image-generation turn end-to-end:
+    ///   1. Drop the prefill indicator (no real LLM prefill happens).
+    ///   2. Stream `ImageGenerationEvent`s from the runtime.
+    ///   3. On `.finished`, populate the assistant message with the
+    ///      bytes wrapped as a `Message.Artifact(.image(...))` and
+    ///      a brief Czech caption noting elapsed seconds.
+    ///   4. End the conversation's generation lifecycle and persist.
+    ///
+    /// On failure (cancelled, decode error) the assistant message
+    /// flips to `.failed` with the localized error string in
+    /// `content`, mirroring the text-path failure shape so chat
+    /// chrome doesn't need image-specific failure branches.
+    ///
+    /// ## Known limitations (real-runtime follow-ups)
+    ///
+    /// 1. **Watchdog timeout is shared with text path.** `performSend`
+    ///    arms `settings.current.generationTimeoutSeconds` for both
+    ///    branches. Stub finishes in ~200 ms so this is fine. Once a
+    ///    real Core ML / FLUX runtime lands and routinely needs
+    ///    30–60 s, image generation should get its own
+    ///    `imageGenerationTimeoutSeconds` setting (or this method
+    ///    should extend the watchdog explicitly when entering the
+    ///    image branch).
+    /// 2. **Cancellation depends on the runtime polling
+    ///    `Task.isCancelled`.** The user's Stop tap cancels the
+    ///    parent Task; the for-await loop sees it via Swift's
+    ///    standard cancellation propagation. The stub polls
+    ///    correctly inside its render loop. A real diffusion runtime
+    ///    that doesn't poll mid-step (e.g. some Core ML pipelines)
+    ///    would finish the full generation before the user's Stop
+    ///    takes effect. When that runtime lands, expose an explicit
+    ///    `cancel()` API on `ImageGenerationRuntime` and wire it
+    ///    here on Task cancellation.
+    private func performImageGeneration(
+        prompt: String,
+        conversationID: UUID,
+        assistantIndex: Int
+    ) async {
+        // Switch the placeholder from prefill ("Připravuju model…")
+        // to decoding ("Generuju…") so the UI shows progress, not the
+        // text-path indicator that would never tick over.
+        markDecoding(for: conversationID)
+
+        // Sanity-check the index — the user could in principle have
+        // cleared the conversation between our caller's append and
+        // this call site (`performSend` runs on @MainActor so this
+        // is a defensive belt-and-suspenders).
+        guard var list = messagesByConversation[conversationID],
+              list.indices.contains(assistantIndex) else {
+            endGenerationLifecycle(for: conversationID, cancellingTask: false)
+            return
+        }
+
+        let params = ImageGenerationParameters(prompt: prompt)
+        let stream = imageRuntime.generate(parameters: params)
+        var finalImage: GeneratedImage?
+        var failure: Error?
+
+        do {
+            for try await event in stream {
+                switch event {
+                case .progress, .preview:
+                    // No UI plumbing for incremental updates yet —
+                    // the stub finishes in ~200 ms anyway. When a
+                    // real diffusion runtime lands, this is where
+                    // we'd update an "X/Y steps" caption in the
+                    // assistant message.
+                    continue
+                case .finished(let image):
+                    finalImage = image
+                case .failed(let err):
+                    failure = err
+                }
+            }
+        } catch {
+            failure = error
+        }
+
+        // Re-snapshot the list — another path may have mutated it
+        // during the await above.
+        list = messagesByConversation[conversationID] ?? list
+        guard list.indices.contains(assistantIndex) else {
+            endGenerationLifecycle(for: conversationID, cancellingTask: false)
+            return
+        }
+        var assistantMessage = list[assistantIndex]
+
+        if let image = finalImage {
+            // Round duration to one decimal place for the caption —
+            // "0.20 s" reads cleaner than the raw double.
+            let seconds = (image.durationSeconds * 10).rounded() / 10
+            assistantMessage.content = "Vygenerovaný obrázek (\(seconds) s)"
+            assistantMessage.artifacts = [
+                Message.Artifact(kind: .image(data: image.data, mime: image.mime))
+            ]
+            assistantMessage.status = .complete
+        } else {
+            let reason = (failure as? LocalizedError)?.errorDescription
+                ?? failure?.localizedDescription
+                ?? "Generování obrázku selhalo."
+            assistantMessage.content = reason
+            assistantMessage.status = .failed
+        }
+
+        list[assistantIndex] = assistantMessage
+        messagesByConversation[conversationID] = list
+        try? await store.save(message: assistantMessage)
+
+        // Update conversation preview so the list view reflects the
+        // image turn ("🖼 Vygenerovaný obrázek") rather than leaving
+        // the stale user-prompt preview from `send(...)`.
+        if let idx = conversations.firstIndex(where: { $0.id == conversationID }) {
+            conversations[idx].lastMessagePreview = finalImage != nil
+                ? "🖼 Vygenerovaný obrázek"
+                : "⚠️ Generování obrázku selhalo"
+            conversations[idx].updatedAt = .now
+            try? await store.save(conversation: conversations[idx])
+        }
+
+        endGenerationLifecycle(for: conversationID, cancellingTask: false)
     }
 }

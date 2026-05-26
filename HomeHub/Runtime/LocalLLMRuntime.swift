@@ -274,6 +274,27 @@ struct RuntimeMessage: Sendable {
     enum Role: Sendable { case system, user, assistant }
     let role: Role
     let content: String
+    /// Image attachments paired with this message. Only populated
+    /// when the model's `ModelCapabilityProfile.supportsVision`
+    /// is `true` — the prompt assembly path leaves it `nil` for
+    /// text-only families to avoid a useless bytes-copy on every
+    /// turn. Each `Data` is a downscaled JPEG (~200–500 KB after
+    /// `MessageComposerView.downscaledForVision`). Order matches
+    /// the order they were attached so multi-image turns keep
+    /// stable indexing.
+    ///
+    /// Today the MLX runtime ignores this field (no VLM execution
+    /// path linked yet) — populating it is a forward-compatible
+    /// no-op. When the MLX-VLM path lands, the runtime branches on
+    /// `images != nil` to switch from `LLMModelFactory` to
+    /// `VLMModelFactory` without touching this protocol.
+    let images: [Data]?
+
+    init(role: Role, content: String, images: [Data]? = nil) {
+        self.role = role
+        self.content = content
+        self.images = images
+    }
 }
 
 struct RuntimeParameters: Sendable {
@@ -378,10 +399,21 @@ struct RuntimeWarning: Sendable, Equatable {
         /// 30 s, 60 s, 120 s; consumer may show a "model is taking
         /// longer than usual" banner.
         case generationStall
+        /// User attached an image and the active model's profile
+        /// claims `supportsVision`, but the runtime is still on the
+        /// text-only `LLMModelFactory` path. Image bytes are being
+        /// silently dropped — the chat surface MUST tell the user
+        /// instead of pretending the model "saw" the picture.
+        ///
+        /// Fires once at generate() start, not per token.
+        /// `secondsSilent` is 0 — kept on the type for layout
+        /// compatibility; UI should ignore it for non-stall kinds.
+        case visionPathNotWired
     }
     let kind: Kind
     let message: String
     /// Time since the last token (or generation start), seconds.
+    /// Meaningful for `.generationStall`; 0 for advisory kinds.
     let secondsSilent: Int
 }
 

@@ -158,6 +158,22 @@ struct MessageBubbleView: View {
                         .textSelection(.enabled)
                 }
 
+                // Inline artifact previews. Renders after the text
+                // body so the reading order is "prose → produced
+                // outputs", matching how a human would scan a reply.
+                // Each artifact gets its own row; for image artifacts
+                // we lay out a single preview rather than a grid
+                // because chat bubbles already cap their width and
+                // multi-column inside a narrow bubble looks cramped.
+                if let artifacts = message.artifacts, !artifacts.isEmpty {
+                    VStack(alignment: .leading, spacing: HHTheme.spaceS) {
+                        ForEach(artifacts) { artifact in
+                            ArtifactView(artifact: artifact)
+                        }
+                    }
+                    .padding(.top, 4)
+                }
+
                 // Compact tool-call chip rendered alongside the
                 // sanitized prose. Replaces the raw JSON envelope the
                 // user would otherwise see while the agentic loop is

@@ -7,6 +7,11 @@ private let composerLog = Logger(subsystem: "HomeHub", category: "MessageCompose
 
 struct MessageComposerView: View {
     @EnvironmentObject private var settings: SettingsService
+    /// Used purely as a read-only source of "can the active model see
+    /// images?" so the composer can warn the user when they're about
+    /// to send a photo to a text-only model. Optional — previews and
+    /// some embed surfaces don't inject a RuntimeManager.
+    @EnvironmentObject private var runtimeManager: RuntimeManager
     @Binding var draft: String
     let isStreaming: Bool
     let canSend: Bool
@@ -22,6 +27,26 @@ struct MessageComposerView: View {
     @State private var selectedPhotos: [PhotosPickerItem] = []
     @State private var showingPhotoPicker = false
     @State private var isWebSearchEnabled = false
+
+    /// `true` if any current attachment carries raw image bytes (i.e.
+    /// originated from the photo picker rather than a text document).
+    /// Drives the "this model only OCRs photos" hint below the strip.
+    private var hasImageAttachment: Bool {
+        attachments.contains { $0.imageData != nil }
+    }
+
+    /// Whether the currently loaded model claims vision capability via
+    /// its family profile. Defaults to `false` when no model is loaded
+    /// — that keeps the hint shown (user attached a photo, no model
+    /// can see it yet).
+    private var activeModelSupportsVision: Bool {
+        guard let active = runtimeManager.activeModel else { return false }
+        return ModelCapabilityProfile.resolve(
+            family: active.family,
+            parameterCount: active.parameterCount,
+            contextLength: active.contextLength
+        ).supportsVision
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -64,6 +89,45 @@ struct MessageComposerView: View {
                     }
                     .padding(.horizontal, HHTheme.spaceL)
                     .padding(.top, HHTheme.spaceM)
+                }
+
+                // Vision-capability hint. Only renders when the user
+                // has attached at least one *image* (text docs go
+                // through the OCR path regardless of model). Two
+                // states:
+                //   * no vision model loaded → tell the user the
+                //     image will be turned into OCR text only
+                //   * vision model loaded → small confirmation
+                //     badge so the user knows the picture itself
+                //     is in play, not just extracted text
+                //
+                // Renders inline (not as a popover/sheet) because
+                // it's contextual to the staged attachments — pulling
+                // the user away to a modal for a one-line hint would
+                // be heavier than the information warrants.
+                if hasImageAttachment {
+                    HStack(spacing: 6) {
+                        if activeModelSupportsVision {
+                            Image(systemName: "eye.fill")
+                                .foregroundColor(HHTheme.accent)
+                                .imageScale(.small)
+                            Text("Vision: model uvidí obrázek přímo.")
+                                .font(.caption2)
+                                .foregroundColor(HHTheme.textSecondary)
+                        } else {
+                            Image(systemName: "text.viewfinder")
+                                .foregroundColor(HHTheme.textSecondary)
+                                .imageScale(.small)
+                            Text("Aktivní model čte fotky jen jako OCR text. Pro skutečné porozumění obrázku zvol SmolVLM nebo Qwen2-VL.")
+                                .font(.caption2)
+                                .foregroundColor(HHTheme.textSecondary)
+                                .lineLimit(2)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, HHTheme.spaceL)
+                    .padding(.top, 4)
                 }
             }
 
@@ -186,18 +250,27 @@ struct MessageComposerView: View {
         ) { result in
             switch result {
             case .success(let urls):
-                for url in urls {
-                    do {
-                        let extracted = try DocumentReaderService.extractText(from: url)
-                        let newAttachment = Message.Attachment(
-                            id: UUID(),
-                            filename: url.lastPathComponent,
-                            extractedText: extracted
-                        )
-                        attachments.append(newAttachment)
-                    } catch {
-                        docErrorMessage = error.localizedDescription
-                        showingDocError = true
+                // OCR fallback path is async — wrap the loop in
+                // a Task so scanned PDFs without a text layer
+                // still produce text via Apple Vision instead of
+                // failing the attachment with "extraction failed".
+                Task { @MainActor in
+                    for url in urls {
+                        do {
+                            let pages = try await DocumentReaderService.extractPagesWithOCRFallback(from: url)
+                            let extracted = pages
+                                .map(\.text)
+                                .joined(separator: "\n\n")
+                            let newAttachment = Message.Attachment(
+                                id: UUID(),
+                                filename: url.lastPathComponent,
+                                extractedText: extracted
+                            )
+                            attachments.append(newAttachment)
+                        } catch {
+                            docErrorMessage = error.localizedDescription
+                            showingDocError = true
+                        }
                     }
                 }
             case .failure(let error):
@@ -216,23 +289,44 @@ struct MessageComposerView: View {
                         // edge keeps the peak under ~5 MB while
                         // preserving OCR accuracy (Vision's text
                         // recogniser internally normalises to a
-                        // similar scale anyway). Originals never enter
-                        // SwiftData — only the OCR'd text does — so
-                        // there's no quality argument for keeping the
-                        // full-resolution UIImage past this point.
+                        // similar scale anyway). The downscaled JPEG
+                        // is what we persist alongside the OCR text
+                        // so a future VLM path has actual pixels to
+                        // feed the model — quality 0.8 keeps perceived
+                        // detail high while landing each attachment
+                        // under ~500 KB on disk.
                         let image = Self.downscaledForVision(original)
-                        do {
-                            let extractedText = try await ImageVisionService.extractText(from: image)
-                            let newAttachment = Message.Attachment(
-                                id: UUID(),
-                                filename: "Fotografie (Text)",
-                                extractedText: extractedText
-                            )
-                            attachments.append(newAttachment)
-                        } catch {
-                            docErrorMessage = "Z obrázku se nepodařilo přečíst žádný text."
+                        let imageBytes = image.jpegData(compressionQuality: 0.8)
+                        // OCR is best-effort. A pure-graphic image
+                        // (chart, photo of a dog, UI screenshot
+                        // without OCR-able text) shouldn't fail the
+                        // attachment — the VLM cestou will read the
+                        // pixels later. We still try OCR so chat
+                        // gets the recognised text as a hint today.
+                        let extractedText: String = await {
+                            do {
+                                return try await ImageVisionService.extractText(from: image)
+                            } catch {
+                                return ""
+                            }
+                        }()
+                        let hasUseful = !extractedText.isEmpty || imageBytes != nil
+                        guard hasUseful else {
+                            docErrorMessage = "Obrázek se nepodařilo zpracovat."
                             showingDocError = true
+                            continue
                         }
+                        let displayName = extractedText.isEmpty
+                            ? "Fotografie"
+                            : "Fotografie (Text)"
+                        let newAttachment = Message.Attachment(
+                            id: UUID(),
+                            filename: displayName,
+                            extractedText: extractedText,
+                            imageData: imageBytes,
+                            imageMimeType: imageBytes == nil ? nil : "image/jpeg"
+                        )
+                        attachments.append(newAttachment)
                     }
                 }
                 selectedPhotos.removeAll() // reset

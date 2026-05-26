@@ -125,6 +125,7 @@
 		8B667E9D62F823E0E6728933 /* WebContentExtractor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 16E53268E76DB929B55696D8 /* WebContentExtractor.swift */; };
 		8BBC777AA67161F5B40F31A2 /* HardwareCapabilities.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18F292A83CCF7FFDB4D65F6F /* HardwareCapabilities.swift */; };
 		8BD63762303794B89F37DE98 /* MessageBubbleView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6724392F1312294A80B8820A /* MessageBubbleView.swift */; };
+		ARTV0000111122223333AAAA /* ArtifactView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ARTV0000FFFF999988887777 /* ArtifactView.swift */; };
 		8D21D0D254C799A969BC0154 /* LlamaContextHandle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C4E8723CCF07089EABDEDC9 /* LlamaContextHandle.swift */; };
 		8EB9246C67DE20F163EC9198 /* MockLocalRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7CE7ACCAEAA5FA7A738615B8 /* MockLocalRuntime.swift */; };
 		8EC233A0492DE6B184E799E2 /* PromptContextPackage.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC9F19536106211FD313F983 /* PromptContextPackage.swift */; };
@@ -142,6 +143,7 @@
 		9697BEFA801B28C73826B1A1 /* SettingsService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1921D24FCFF8E5BA1C78F08 /* SettingsService.swift */; };
 		97B2979898915DB7DE5607B1 /* PromptBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3CC16A0109B9DAF148718BCD /* PromptBuilder.swift */; };
 		998D67B6B6B8A3C182D84A93 /* MLXRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = 769B31D437F880BF85AF05C0 /* MLXRuntime.swift */; };
+		IMGN0000222233334444BBBB /* ImageGenerationRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = IMGN0000FFFFAAAA00001111 /* ImageGenerationRuntime.swift */; };
 		9BEC190AEA5714F14F431BC8 /* WebSearchSnippetCleanupTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB7BBFC71C3F75C6995DE948 /* WebSearchSnippetCleanupTests.swift */; };
 		9CE89E77C8AF7340D874135D /* KnowledgeBaseRetrieval.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7E974FD25BE00FB441FAE79 /* KnowledgeBaseRetrieval.swift */; };
 		9D5B684F9F258E2111DFA7E7 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 8ACB7AD6B67FD0E795922245 /* Assets.xcassets */; };
@@ -178,6 +180,7 @@
 		BB00F4F363ADB172D8C70B83 /* RoutingRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABB1D7D818A63E88F04A6018 /* RoutingRuntime.swift */; };
 		BB4DABB9DB1988621A9AAD2B /* ChatDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD74366D444F383B878ADE17 /* ChatDetailView.swift */; };
 		BD82D505C1ED53727C57548F /* MLXLLM in Frameworks */ = {isa = PBXBuildFile; productRef = 3644E5838BEC3A2E12593D42 /* MLXLLM */; };
+		AABBCCDDEEFF112233445566 /* MLXVLM in Frameworks */ = {isa = PBXBuildFile; productRef = 77889900AABBCCDDEEFF1122 /* MLXVLM */; };
 		BFA8B3A11AEA1055D6EAE332 /* TokenEstimatorCacheTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23F85BE1E19778D837C293DC /* TokenEstimatorCacheTests.swift */; };
 		C3255CC2686294D3AC8EB739 /* NLExtractionPass.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DA90D3CD0DAC38466D0F263 /* NLExtractionPass.swift */; };
 		C3AC682A8EBD1BCB997D5A06 /* UserMemoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2DE8C44856B796D2702D6001 /* UserMemoryStore.swift */; };
@@ -356,6 +359,7 @@
 		64AD44326A83011F6A0C8B79 /* LocalModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalModel.swift; sourceTree = "<group>"; };
 		65C9735C08DB1DCBC12EBC3A /* ModelCatalogService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelCatalogService.swift; sourceTree = "<group>"; };
 		6724392F1312294A80B8820A /* MessageBubbleView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageBubbleView.swift; sourceTree = "<group>"; };
+		ARTV0000FFFF999988887777 /* ArtifactView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArtifactView.swift; sourceTree = "<group>"; };
 		6926B949B74CD884DF4DB29D /* ShareExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = ShareExtension.entitlements; sourceTree = "<group>"; };
 		69F8C7A4201CA906B88E721E /* MemoryExtractionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryExtractionTests.swift; sourceTree = "<group>"; };
 		6AB838E7C6BD87C2B41AC8AA /* HHScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HHScreen.swift; sourceTree = "<group>"; };
@@ -371,6 +375,7 @@
 		74807E5B70A51A98C0CEEEB1 /* GenerationLifecycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GenerationLifecycleTests.swift; sourceTree = "<group>"; };
 		751058C1FA79E2B97A808BAB /* FetchPageSkill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FetchPageSkill.swift; sourceTree = "<group>"; };
 		769B31D437F880BF85AF05C0 /* MLXRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MLXRuntime.swift; sourceTree = "<group>"; };
+		IMGN0000FFFFAAAA00001111 /* ImageGenerationRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageGenerationRuntime.swift; sourceTree = "<group>"; };
 		77913079CEDF0E03BBE121C5 /* SkillManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillManager.swift; sourceTree = "<group>"; };
 		779985FABD01F582CB76B2E2 /* AssistantProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssistantProfile.swift; sourceTree = "<group>"; };
 		7964824A9D3837A73A4C5D1C /* HFTokenRedactionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HFTokenRedactionTests.swift; sourceTree = "<group>"; };
@@ -497,6 +502,7 @@
 			files = (
 				CE7856A15EC312DF7E9F2CC0 /* MLX in Frameworks */,
 				BD82D505C1ED53727C57548F /* MLXLLM in Frameworks */,
+				AABBCCDDEEFF112233445566 /* MLXVLM in Frameworks */,
 				82D65671D72C0318A4D551B4 /* MLXLMCommon in Frameworks */,
 				7A0D9656B6282E84CC87FBCC /* Transformers in Frameworks */,
 				D0032BAF9E31B8D3853E3712 /* WhisperKit in Frameworks */,
@@ -709,6 +715,7 @@
 				2157F5F058E2F589FB2AE3C3 /* ChatListView.swift */,
 				8B7180FC9914D775B43317D9 /* MarkdownContentView.swift */,
 				6724392F1312294A80B8820A /* MessageBubbleView.swift */,
+				ARTV0000FFFF999988887777 /* ArtifactView.swift */,
 				CD026A935096B65055B83C91 /* MessageComposerView.swift */,
 				D6B4FD7CBFE807C2D81485BA /* PersonaPickerSheet.swift */,
 				B533DF182B8F44E936C2323E /* ToolPresenter.swift */,
@@ -804,6 +811,7 @@
 				369CFA371BDA4EB069C38349 /* LlamaCppRuntime.swift */,
 				903A7DCCA8DACF4957B33D57 /* LlamaRuntimeActor.swift */,
 				5779CBB193E71E8D6EADB598 /* LocalLLMRuntime.swift */,
+				IMGN0000FFFFAAAA00001111 /* ImageGenerationRuntime.swift */,
 				F48895B5432EA6FA83753567 /* MLXLoader.swift */,
 				ADB0BB14A98647E2C4C531E3 /* MLXLoadProgress.swift */,
 				769B31D437F880BF85AF05C0 /* MLXRuntime.swift */,
@@ -980,6 +988,7 @@
 			packageProductDependencies = (
 				766AE4FB5ACA8EDE4BFCAF41 /* MLX */,
 				3644E5838BEC3A2E12593D42 /* MLXLLM */,
+				77889900AABBCCDDEEFF1122 /* MLXVLM */,
 				6C3B2A986E385D4C601A2766 /* MLXLMCommon */,
 				0F5310EB2527D7F060DB0CA1 /* Transformers */,
 				B3D8A322EAD0841636F4DEEB /* WhisperKit */,
@@ -1149,6 +1158,7 @@
 				A46CD504E28D18CFE739DAA9 /* LocalModelService.swift in Sources */,
 				7B28BF89BAA20C52DCB4E605 /* MLXBackgroundDownloader.swift in Sources */,
 				7D97B22CD92260C99CC9BF45 /* MLXLoadProgress.swift in Sources */,
+				IMGN0000222233334444BBBB /* ImageGenerationRuntime.swift in Sources */,
 				459235F0B7FA21EA42CB75B7 /* MLXLoader.swift in Sources */,
 				998D67B6B6B8A3C182D84A93 /* MLXRuntime.swift in Sources */,
 				2574110AE11637A12767E115 /* MainTabView.swift in Sources */,
@@ -1161,6 +1171,7 @@
 				347D21A99A4140A99AA304AA /* MemoryView.swift in Sources */,
 				C9CD09F3CED06D9917FF448D /* Message.swift in Sources */,
 				8BD63762303794B89F37DE98 /* MessageBubbleView.swift in Sources */,
+				ARTV0000111122223333AAAA /* ArtifactView.swift in Sources */,
 				5DC2B36601037F8FAB429E11 /* MessageComposerView.swift in Sources */,
 				AB36ACB74A1CEC8B34333558 /* MessageImportance.swift in Sources */,
 				8EB9246C67DE20F163EC9198 /* MockLocalRuntime.swift in Sources */,
@@ -1721,6 +1732,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 1AC5A201B35C19C38999F847 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */;
 			productName = MLXLLM;
+		};
+		77889900AABBCCDDEEFF1122 /* MLXVLM */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 1AC5A201B35C19C38999F847 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */;
+			productName = MLXVLM;
 		};
 		6C3B2A986E385D4C601A2766 /* MLXLMCommon */ = {
 			isa = XCSwiftPackageProductDependency;

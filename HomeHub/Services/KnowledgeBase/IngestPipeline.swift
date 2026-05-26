@@ -289,7 +289,11 @@ actor IngestPipeline {
             // chunking path is uniform.
             document.indexingStatus = .parsing
             try await documentStore.upsert(document: document)
-            let pages = try DocumentReaderService.extractPages(from: absURL)
+            // OCR fallback path so scanned PDFs (no text layer)
+            // still ingest into the KB. Falls back transparently
+            // when the textual layer is missing; pays no OCR cost
+            // for normal text PDFs.
+            let pages = try await DocumentReaderService.extractPagesWithOCRFallback(from: absURL)
             guard !pages.isEmpty else {
                 throw NSError(
                     domain: "IngestPipeline",

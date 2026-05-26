@@ -604,5 +604,99 @@ enum ModelCatalog {
             backend: .mlx,
             format: .mlx
         ),
+
+        // MARK: Vision-Language Models (multimodal — image + text)
+        //
+        // These entries unlock the `supportsVision` profile path that
+        // `PromptAssemblyService` checks before forwarding image bytes
+        // to the runtime. Today the MLX runtime still uses
+        // `LLMModelFactory` and ignores the image array — these models
+        // therefore behave as text-only until the
+        // `VLMModelFactory` swap lands. Catalog entries are kept here
+        // ahead of that swap so the download flow is ready and the
+        // UI can render the "Vision" badge.
+        //
+        // Picked these three as the sweet spot:
+        //   - SmolVLM 256M is the smallest practical vision model that
+        //     still reads images (≈200 MB) — great for iPhone 16 Pro.
+        //   - SmolVLM 500M trades RAM for better recognition quality.
+        //   - Qwen2-VL 2B is the highest quality that comfortably fits
+        //     an iPhone 16 Pro; the 7B variant is iPad-only.
+
+        LocalModel(
+            id: "mlx-smolvlm-256m-it",
+            displayName: "SmolVLM 256M (MLX, Vision)",
+            family: "SmolVLM",
+            parameterCount: "256M",
+            quantization: "4-bit",
+            sizeBytes: 220_000_000,             // HF: ~200 MB
+            contextLength: 2048,                // Vision tokens budget eats into context; keep modest
+            downloadURL: URL(static: "https://huggingface.co/mlx-community/SmolVLM-256M-Instruct-4bit"),
+            sha256: nil,
+            installState: .notInstalled,
+            recommendedFor: [.iPhone, .iPadMSeries],
+            license: "Apache 2.0",
+            backend: .mlx,
+            format: .mlx
+        ),
+
+        LocalModel(
+            id: "mlx-smolvlm-500m-it",
+            displayName: "SmolVLM 500M (MLX, Vision)",
+            family: "SmolVLM",
+            parameterCount: "500M",
+            quantization: "4-bit",
+            sizeBytes: 420_000_000,             // HF: ~400 MB
+            contextLength: 2048,
+            downloadURL: URL(static: "https://huggingface.co/mlx-community/SmolVLM-500M-Instruct-4bit"),
+            sha256: nil,
+            installState: .notInstalled,
+            recommendedFor: [.iPhone, .iPadMSeries],
+            license: "Apache 2.0",
+            backend: .mlx,
+            format: .mlx
+        ),
+
+        LocalModel(
+            id: "mlx-qwen2-vl-2b-it",
+            displayName: "Qwen2-VL 2B (MLX, Vision)",
+            family: "Qwen2-VL",
+            parameterCount: "2B",
+            quantization: "4-bit",
+            sizeBytes: 1_650_000_000,           // HF: ~1.55 GB
+            contextLength: 2048,
+            downloadURL: URL(static: "https://huggingface.co/mlx-community/Qwen2-VL-2B-Instruct-4bit"),
+            sha256: nil,
+            installState: .notInstalled,
+            recommendedFor: [.iPhone, .iPadMSeries],
+            license: "Qwen RESEARCH LICENSE",
+            backend: .mlx,
+            format: .mlx
+        ),
+
+        // 7B variant — iPad M-series only. Same architecture as 2B
+        // but the safetensors shard pushes ~4.5 GB and inference
+        // memory pressure is meaningfully higher; iPhone 16 Pro
+        // would jetsam during prefill on long image inputs.
+        LocalModel(
+            id: "mlx-qwen2-vl-7b-it",
+            displayName: "Qwen2-VL 7B (MLX, Vision)",
+            family: "Qwen2-VL",
+            parameterCount: "7B",
+            quantization: "4-bit",
+            sizeBytes: 4_500_000_000,           // HF: ~4.3 GB
+            contextLength: 4096,
+            downloadURL: URL(static: "https://huggingface.co/mlx-community/Qwen2-VL-7B-Instruct-4bit"),
+            sha256: nil,
+            installState: .notInstalled,
+            recommendedFor: [.iPadMSeries],
+            license: "Qwen RESEARCH LICENSE",
+            backend: .mlx,
+            format: .mlx,
+            // Same mmap entitlement story as Gemma 3n E4B — single
+            // shard >2 GB so iOS sandbox needs the extended VA
+            // entitlement before the runtime can map weights.
+            requiresLargeMmapAddressing: true
+        ),
     ]
 }
