@@ -1,5 +1,5 @@
 {
-  "originHash" : "e3687f6bf70f7d38089660c7f3b9e040ed1c2df074b255208ae68dac9ca009c0",
+  "originHash" : "290d0303a2f87698e89355d2cd81a8891ae55c118475deb76d944a0415c270ac",
   "pins" : [
     {
       "identity" : "jinja",
@@ -8,6 +8,15 @@
       "state" : {
         "revision" : "5c0a87846dfd36ca6621795ad2f09fdaab82b739",
         "version" : "1.3.0"
+      }
+    },
+    {
+      "identity" : "ml-stable-diffusion",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/Keksiczek/ml-stable-diffusion",
+      "state" : {
+        "branch" : "main",
+        "revision" : "ed34306ea4c88c58ff3c2cd563727d14c61ca1e6"
       }
     },
     {

@@ -173,12 +173,18 @@ struct LocalModel: Identifiable, Codable, Equatable, Hashable {
 enum ModelBackend: String, Codable, Sendable {
     case llamaCpp = "llama.cpp"
     case mlx = "mlx"
+    /// Apple's Core ML pipeline for Stable Diffusion image generation.
+    /// Backed by the vendored `StableDiffusion` Swift package (fork of
+    /// apple/ml-stable-diffusion). Different runtime path entirely —
+    /// `RoutingRuntime` doesn't dispatch text turns to it; image-only.
+    case coreML = "coreml"
 
     /// Short capitalised label for UI badges and diagnostics (e.g. "MLX" / "GGUF").
     var displayName: String {
         switch self {
         case .mlx:      return "MLX"
         case .llamaCpp: return "GGUF"
+        case .coreML:   return "Core ML"
         }
     }
 
@@ -189,6 +195,7 @@ enum ModelBackend: String, Codable, Sendable {
         switch self {
         case .mlx:      return "Apple MLX runtime — výchozí v této buildu."
         case .llamaCpp: return "llama.cpp runtime — vyžaduje opt-in build s llama.xcframework."
+        case .coreML:   return "Apple Core ML — pro generování obrázků na Neural Engine."
         }
     }
 }
@@ -196,6 +203,15 @@ enum ModelBackend: String, Codable, Sendable {
 enum ModelFormat: String, Codable, Sendable {
     case gguf = "GGUF"
     case mlx = "MLX"
+    /// Bundle of `.mlmodelc` directories produced by Apple's
+    /// `python_coreml_stable_diffusion` converter. Layout:
+    ///   ResourcesDir/
+    ///     TextEncoder.mlmodelc/
+    ///     Unet.mlmodelc/  (or UnetChunk1+2 for memory-split builds)
+    ///     VAEDecoder.mlmodelc/
+    ///     vocab.json
+    ///     merges.txt
+    case coreMLPackage = "CoreML"
 }
 
 /// Compile-time map of which runtime backends are linked into this build.
@@ -220,10 +236,23 @@ enum RuntimeBackendAvailability {
         #endif
     }
 
+    /// Core ML SD compiles in when the `StableDiffusion` Swift package
+    /// resolves. The actual runtime file gates the implementation with
+    /// `#if canImport(StableDiffusion)` so a build without the package
+    /// still links — calls just return `notImplemented`.
+    static var coreMLAvailable: Bool {
+        #if canImport(StableDiffusion)
+        return true
+        #else
+        return false
+        #endif
+    }
+
     static func isAvailable(_ backend: ModelBackend) -> Bool {
         switch backend {
         case .mlx:      return mlxAvailable
         case .llamaCpp: return llamaCppAvailable
+        case .coreML:   return coreMLAvailable
         }
     }
 
@@ -287,6 +316,13 @@ extension LocalModel {
         case .mlx:
             // Should never happen — MLX is always available in this build.
             return "MLX runtime is unexpectedly unavailable in this build."
+        case .coreML:
+            // Fires when the `StableDiffusion` Swift package isn't
+            // linked into the build (someone stripped it from
+            // project.yml to shrink binary size). The runtime file
+            // still compiles thanks to `#if canImport(StableDiffusion)`
+            // — every call just throws `notImplemented`.
+            return "Core ML Stable Diffusion modul není v tomto buildu nalinkovaný. Generování obrázků nebude fungovat."
         }
     }
 }

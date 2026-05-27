@@ -28,6 +28,15 @@ struct MessageComposerView: View {
     @State private var showingPhotoPicker = false
     @State private var isWebSearchEnabled = false
 
+    /// Captures a pending send when the user tapped "Send" with image
+    /// attachments while a text-only model is loaded. The
+    /// confirmation dialog flips the rebound copy into the real
+    /// `onSend` call; cancelling discards it without losing the
+    /// staged attachments (they stay on screen so the user can swap
+    /// model and retry).
+    @State private var showingVisionWarning = false
+    @State private var pendingVisionWarningPayload: ([Message.Attachment], Bool)? = nil
+
     /// `true` if any current attachment carries raw image bytes (i.e.
     /// originated from the photo picker rather than a text document).
     /// Drives the "this model only OCRs photos" hint below the strip.
@@ -115,13 +124,18 @@ struct MessageComposerView: View {
                                 .font(.caption2)
                                 .foregroundColor(HHTheme.textSecondary)
                         } else {
-                            Image(systemName: "text.viewfinder")
-                                .foregroundColor(HHTheme.textSecondary)
+                            // Tinted danger / amber so the user can't
+                            // miss it. We back this up with a
+                            // confirmation dialog on Send (see the
+                            // send-button action below) — the hint
+                            // is a heads-up, the dialog is the gate.
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundColor(HHTheme.warning)
                                 .imageScale(.small)
-                            Text("Aktivní model čte fotky jen jako OCR text. Pro skutečné porozumění obrázku zvol SmolVLM nebo Qwen2-VL.")
+                            Text("Aktivní model fotky nevidí. Pošleš ji jen jako OCR text — pro skutečné vision přepni na SmolVLM / Qwen2-VL v Nastavení → Modely.")
                                 .font(.caption2)
-                                .foregroundColor(HHTheme.textSecondary)
-                                .lineLimit(2)
+                                .foregroundColor(HHTheme.warning)
+                                .lineLimit(3)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                         Spacer(minLength: 0)
@@ -221,6 +235,17 @@ struct MessageComposerView: View {
                     Button {
                         HHHaptics.impact(.light, enabled: settings.current.haptics)
                         let items = attachments
+                        // Soft-block: if the user staged photos but
+                        // the active model is text-only, defer the
+                        // send and ask for explicit confirmation. The
+                        // staged attachments stay visible so the user
+                        // can swap model + retry without re-picking
+                        // photos from the library.
+                        if items.contains(where: { $0.imageData != nil }) && !activeModelSupportsVision {
+                            pendingVisionWarningPayload = (items, isWebSearchEnabled)
+                            showingVisionWarning = true
+                            return
+                        }
                         attachments.removeAll()
                         onSend(items, isWebSearchEnabled)
                         isWebSearchEnabled = false
@@ -336,6 +361,33 @@ struct MessageComposerView: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text(docErrorMessage)
+        }
+        // Soft-block confirmation for "image attached + text-only
+        // model". `.confirmationDialog` (vs `.alert`) is the iOS-
+        // native idiom for "destructive choice with a clear default
+        // option"; on iPhone it presents as an action sheet, which
+        // reads as more reversible than a modal alert.
+        .confirmationDialog(
+            "Aktivní model fotky nevidí",
+            isPresented: $showingVisionWarning,
+            titleVisibility: .visible
+        ) {
+            Button("Pošli stejně (jen OCR text)") {
+                guard let payload = pendingVisionWarningPayload else { return }
+                pendingVisionWarningPayload = nil
+                attachments.removeAll()
+                onSend(payload.0, payload.1)
+                isWebSearchEnabled = false
+            }
+            Button("Zrušit", role: .cancel) {
+                pendingVisionWarningPayload = nil
+                // Don't clear `attachments` — the user may want to
+                // swap model and retry; re-picking photos from the
+                // library is a heavier flow than this dialog
+                // justifies.
+            }
+        } message: {
+            Text("Obrázek se nepošle do modelu — vidíš jen OCR text. Pro skutečné porozumění obrázku přepni v Nastavení → Modely na SmolVLM nebo Qwen2-VL a zkus to znovu.")
         }
     }
 

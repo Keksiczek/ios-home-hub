@@ -56,6 +56,17 @@ struct AppSettings: Codable, Equatable {
     /// single model pass. Default: 120 s.
     var generationTimeoutSeconds: Int
 
+    /// Maximum seconds a single `/image` diffusion run may take before the
+    /// watchdog cancels it. SD 2.1 base palettized on iPhone 16 Pro with
+    /// Neural Engine completes a 20-step run in roughly 20–40 s, but cold
+    /// loads (the first generation after app launch — Core ML compiles +
+    /// mmaps weights) can stretch this to ~90 s, and a memory-pressured
+    /// device throttles further. Default 240 s gives that headroom without
+    /// stranding the user on a wedged inference. Decoupled from
+    /// `generationTimeoutSeconds` because text and image timelines live on
+    /// different orders of magnitude.
+    var imageGenerationTimeoutSeconds: Int
+
     /// Trade-off between memory headroom and freedom to load larger models.
     /// Drives `RuntimeManager.memorySafetyFactor(for:)` on the next load.
     /// See `PerformanceProfile` for the exact factor mapping.
@@ -118,6 +129,7 @@ struct AppSettings: Codable, Equatable {
         locationHint: "Nymburk, CZ",
         guardrailsConfig: .default,
         generationTimeoutSeconds: 120,
+        imageGenerationTimeoutSeconds: 240,
         performanceProfile: .balanced,
         searxngBaseURL: "",
         iCloudSyncEnabled: false,
@@ -203,6 +215,7 @@ struct AppSettings: Codable, Equatable {
         case language, answerLength, enabledTools, locationHint
         case guardrailsConfig
         case generationTimeoutSeconds
+        case imageGenerationTimeoutSeconds
         case performanceProfile
         case searxngBaseURL
         case iCloudSyncEnabled
@@ -234,6 +247,7 @@ struct AppSettings: Codable, Equatable {
         locationHint: String,
         guardrailsConfig: GuardrailsConfig = .default,
         generationTimeoutSeconds: Int = 120,
+        imageGenerationTimeoutSeconds: Int = 240,
         performanceProfile: PerformanceProfile = .balanced,
         searxngBaseURL: String = "",
         iCloudSyncEnabled: Bool = false,
@@ -261,6 +275,7 @@ struct AppSettings: Codable, Equatable {
         self.locationHint = locationHint
         self.guardrailsConfig = guardrailsConfig
         self.generationTimeoutSeconds = generationTimeoutSeconds
+        self.imageGenerationTimeoutSeconds = imageGenerationTimeoutSeconds
         self.performanceProfile = performanceProfile
         self.searxngBaseURL = searxngBaseURL
         self.iCloudSyncEnabled = iCloudSyncEnabled
@@ -316,6 +331,7 @@ struct AppSettings: Codable, Equatable {
         self.locationHint     = try c.decodeIfPresent(String.self,        forKey: .locationHint)     ?? fallback.locationHint
         self.guardrailsConfig = try c.decodeIfPresent(GuardrailsConfig.self, forKey: .guardrailsConfig) ?? fallback.guardrailsConfig
         self.generationTimeoutSeconds = try c.decodeIfPresent(Int.self, forKey: .generationTimeoutSeconds) ?? fallback.generationTimeoutSeconds
+        self.imageGenerationTimeoutSeconds = try c.decodeIfPresent(Int.self, forKey: .imageGenerationTimeoutSeconds) ?? fallback.imageGenerationTimeoutSeconds
         self.performanceProfile = try c.decodeIfPresent(PerformanceProfile.self, forKey: .performanceProfile) ?? fallback.performanceProfile
         self.searxngBaseURL = try c.decodeIfPresent(String.self, forKey: .searxngBaseURL) ?? fallback.searxngBaseURL
         self.iCloudSyncEnabled = try c.decodeIfPresent(Bool.self, forKey: .iCloudSyncEnabled) ?? fallback.iCloudSyncEnabled
@@ -361,6 +377,7 @@ struct AppSettings: Codable, Equatable {
         try c.encode(locationHint, forKey: .locationHint)
         try c.encode(guardrailsConfig, forKey: .guardrailsConfig)
         try c.encode(generationTimeoutSeconds, forKey: .generationTimeoutSeconds)
+        try c.encode(imageGenerationTimeoutSeconds, forKey: .imageGenerationTimeoutSeconds)
         try c.encode(performanceProfile, forKey: .performanceProfile)
         try c.encode(searxngBaseURL, forKey: .searxngBaseURL)
         try c.encode(iCloudSyncEnabled, forKey: .iCloudSyncEnabled)

@@ -165,6 +165,11 @@ private struct ModelPickerRow: View {
         switch model.backend {
         case .mlx:      return HHTheme.accent
         case .llamaCpp: return HHTheme.textSecondary
+        // Core ML SD models are image-generation only (no LLM
+        // role) and onboarding does not surface them as a primary
+        // pick — but the badge still needs a colour when these
+        // models show up in any picker that reuses this row.
+        case .coreML:   return HHTheme.textSecondary
         }
     }
 
@@ -172,6 +177,7 @@ private struct ModelPickerRow: View {
         switch model.backend {
         case .mlx:      return HHTheme.accent.opacity(0.15)
         case .llamaCpp: return HHTheme.textSecondary.opacity(0.12)
+        case .coreML:   return HHTheme.textSecondary.opacity(0.12)
         }
     }
 

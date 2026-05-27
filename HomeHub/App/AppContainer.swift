@@ -141,6 +141,20 @@ final class AppContainer: ObservableObject {
         final class WeakSelf { weak var value: AppContainer? }
         let weakHolder = WeakSelf()
 
+        // Real Core ML Stable Diffusion runtime for the `/image` slash
+        // command. Compiled in whenever the `StableDiffusion` Swift
+        // package resolves (default for the app target); when stripped
+        // out at build time, the constructor still succeeds but every
+        // generate call returns `notImplemented` — the chat surface
+        // then shows the localized failure caption instead of a stub
+        // gradient, so users know image generation isn't available.
+        //
+        // Tests can override the default by passing
+        // `imageRuntime: StubImageGenerationRuntime()` to the
+        // `ConversationService` initializer, keeping unit tests free
+        // of multi-GB diffusion downloads.
+        let imageRuntime: any ImageGenerationRuntime = CoreMLStableDiffusionRuntime()
+
         let conversations = ConversationService(
             store: store,
             runtime: runtimeManager,
@@ -152,6 +166,21 @@ final class AppContainer: ObservableObject {
             summarizer: summarizer,
             embeddingService: embedding,
             promptBudgetReporter: promptBudgetReporter,
+            imageRuntime: imageRuntime,
+            // Hand the catalog query in as a closure rather than
+            // injecting the whole `ModelCatalogService` so
+            // `ConversationService` stays free of that dep. The
+            // filter — installed AND Core ML format — runs on every
+            // `/image` cold start; cheap enough at this list size
+            // (catalog ~10 entries) that no caching is needed.
+            installedImageModelIDsProvider: { [weak catalog] in
+                guard let catalog else { return [] }
+                return catalog.models.compactMap { model -> String? in
+                    guard model.format == .coreMLPackage else { return nil }
+                    guard case .installed = model.installState else { return nil }
+                    return model.id
+                }
+            },
             recentBackgroundTimestamp: { [weak weakHolder] in
                 weakHolder?.value?.lastBackgroundedAt
             },

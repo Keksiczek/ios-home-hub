@@ -799,6 +799,14 @@ final class RuntimeManager: ObservableObject {
         let templateSource: String = {
             switch model.format {
             case .mlx:  return "tokenizer snapshot (MLX ChatSession)"
+            case .coreMLPackage:
+                // SD bundles have no chat template — image
+                // generation. This branch should never fire in
+                // practice (RoutingRuntime rejects `.coreML` before
+                // we get here), but we surface a coherent string
+                // so any future log-grep tooling doesn't see "switch
+                // covered all cases" diagnostic chatter.
+                return "n/a (Core ML image pipeline)"
             case .gguf:
                 if meta?.chatTemplate != nil { return "GGUF metadata" }
                 return "built-in template for family '\(model.family)'"

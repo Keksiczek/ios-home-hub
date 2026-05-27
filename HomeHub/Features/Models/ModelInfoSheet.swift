@@ -358,6 +358,19 @@ struct ModelInfoSheet: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
+            case .coreMLPackage:
+                // Core ML Stable Diffusion bundles ship as a tree of
+                // `.mlmodelc` directories, not a single file with
+                // embedded chat-template metadata. We surface only
+                // the static facts: architecture, native output size,
+                // and the runtime path.
+                LabeledContent("Architecture", value: model.family)
+                LabeledContent("Native resolution", value: "512 × 512")
+                LabeledContent("Runtime", value: "Apple Core ML (Neural Engine)")
+                Text("Stable Diffusion models run through Apple's Core ML pipeline. The bundle contains compiled `.mlmodelc` directories for the text encoder, U-Net, and VAE decoder — there is no chat template to surface for image generation.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
             case .gguf:
                 if let meta {
                     LabeledContent("Architecture", value: meta.architecture ?? "unknown")

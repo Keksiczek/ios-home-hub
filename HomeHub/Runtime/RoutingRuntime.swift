@@ -95,6 +95,19 @@ final class RoutingRuntime: LocalLLMRuntime, @unchecked Sendable {
             #endif
         case .mlx:
             targetBackend = mlx
+        case .coreML:
+            // Core ML Stable Diffusion is image-generation only. It
+            // does NOT participate in LLM routing — the
+            // `/image PROMPT` slash command bypasses this code path
+            // entirely (see `ConversationService.performImageGeneration`).
+            // Reaching this branch means a user somehow selected an
+            // SD model as their text completion model; surface that
+            // as a backend-unavailable error rather than silently
+            // letting them get a confusing failure deeper in.
+            throw RuntimeError.backendUnavailable(
+                modelName: model.displayName,
+                backend: .coreML
+            )
         }
 
         log.info("RoutingRuntime: Routing '\(model.id, privacy: .public)' to '\(targetBackend.identifier, privacy: .public)'")

@@ -475,6 +475,14 @@ enum RuntimeError: LocalizedError, Equatable {
             case .mlx:
                 return "\"\(name)\" vyžaduje MLX runtime, který není v tomto buildu k dispozici. " +
                        "(Pravděpodobně chyba v build configu — MLX má být vždy přítomný.)"
+            case .coreML:
+                // Reached when a user somehow picks a Stable Diffusion
+                // model as their text-completion model — that's an
+                // image-generation runtime and doesn't participate in
+                // the LLM routing path. Tell the user to pick a real
+                // text model instead.
+                return "\"\(name)\" je Core ML Stable Diffusion model určený pro generování obrázků. " +
+                       "Pro chat vyber MLX text model v Nastavení → Modely."
             }
         case .missingFiles(let name, let missing):
             let list = missing.isEmpty ? "required files" : missing.joined(separator: ", ")

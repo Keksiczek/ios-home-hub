@@ -935,6 +935,10 @@ private struct ModelBrowserRow: View {
         switch model.backend {
         case .mlx:      return HHTheme.accent
         case .llamaCpp: return HHTheme.textSecondary
+        // Core ML SD models are image-generation, not LLM — give
+        // them a secondary tint to visually disambiguate them from
+        // text models in the same picker.
+        case .coreML:   return HHTheme.textSecondary
         }
     }
 
@@ -943,6 +947,7 @@ private struct ModelBrowserRow: View {
         switch model.backend {
         case .mlx:      return HHTheme.accent.opacity(0.15)
         case .llamaCpp: return HHTheme.textSecondary.opacity(0.12)
+        case .coreML:   return HHTheme.textSecondary.opacity(0.12)
         }
     }
 
