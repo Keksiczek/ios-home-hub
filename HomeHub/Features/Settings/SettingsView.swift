@@ -111,6 +111,7 @@ struct SettingsView: View {
 
                 DisclosureGroup {
                     generationSection
+                    routingSection
                 } label: {
                     Label("Generation Engine", systemImage: "bolt.fill")
                         .font(HHTheme.subheadline.weight(.semibold))
@@ -746,6 +747,108 @@ struct SettingsView: View {
         } footer: {
             Text("Vyšší teplota je kreativnější, ale méně předvídatelná. Pro většinu úloh se hodí 0,6–0,8. Penalizace opakování 1,1 a Min-p 0,05 jsou rozumné výchozí hodnoty — menší modely se s nimi tolik nezacyklí ani neprodukují nesmysly.\n\nTight Gemma 3n sampling vrátí starší přísnější výchozí hodnoty (temp 0.40, topK 32) jen pro rodinu Gemma 3n. Zapni jen pokud nové uvolněné hodnoty produkují drift do cizích jazyků.")
         }
+    }
+
+    // MARK: - Auto-routing (Apple-Intelligence-style triage)
+
+    /// Settings UI for `AppSettings.routingPolicy` + per-tier model
+    /// picks. Mirrors the pattern of `generationSection` but lives
+    /// in its own block because routing is conceptually separate
+    /// from sampler tuning — users typically configure routing once
+    /// and forget it, vs. tweaking temperature per task.
+    ///
+    /// Layout:
+    ///   1. Policy picker (Vypnuto / Automatic / Experimental)
+    ///   2. Three tier model pickers (FAST / BALANCED / SMART) —
+    ///      disabled when policy is `.manual` to make the dependency
+    ///      explicit. Empty picks fall back to a heuristic catalog
+    ///      walk inside `ModelRouter`.
+    ///   3. Inline summary text explaining what each policy does.
+    private var routingSection: some View {
+        Section {
+            Picker("Automatické přepínání", selection: Binding(
+                get: { settings.current.routingPolicy },
+                set: { newValue in Task { await settings.set(\.routingPolicy, to: newValue) } }
+            )) {
+                ForEach(RoutingPolicy.allCases, id: \.self) { policy in
+                    Text(policy.displayNameCZ).tag(policy)
+                }
+            }
+            .pickerStyle(.menu)
+
+            Text(settings.current.routingPolicy.summaryCZ)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            tierModelPicker(label: "Rychlý model (FAST)",
+                            help: "Krátké chat, pozdravy, jednoduché dotazy.",
+                            keyPath: \.fastModelID)
+            tierModelPicker(label: "Vyvážený model (BALANCED)",
+                            help: "Středně dlouhé otázky, běžný chat.",
+                            keyPath: \.balancedModelID)
+            tierModelPicker(label: "Chytrý model (SMART)",
+                            help: "Kód, dlouhé úlohy, vícekrokové reasoning.",
+                            keyPath: \.smartModelID)
+        } header: {
+            Text("Automatické přepínání modelů")
+        } footer: {
+            Text("Router vybírá z modelů, které máš nainstalované. Kategorie nastavené na Auto router vybere sám — nejmenší vhodný z katalogu. Apple Intelligence (pokud je dostupné na zařízení) má prioritu pro FAST + BALANCED úlohy.")
+                .font(.caption2)
+        }
+    }
+
+    /// Reusable per-tier picker row. The "Auto" option maps to `nil`
+    /// — the router then walks the catalog itself. Only installed
+    /// MLX text + Apple Intelligence models show up; SD bundles and
+    /// uninstalled models are filtered out (they wouldn't be loadable
+    /// anyway).
+    @ViewBuilder
+    private func tierModelPicker(
+        label: String,
+        help: String,
+        keyPath: WritableKeyPath<AppSettings, String?>
+    ) -> some View {
+        let candidates = routingTierCandidates()
+        let disabled = settings.current.routingPolicy == .manual
+        VStack(alignment: .leading, spacing: 4) {
+            Picker(label, selection: Binding(
+                get: { settings.current[keyPath: keyPath] ?? "" },
+                set: { newValue in
+                    let stored: String? = newValue.isEmpty ? nil : newValue
+                    Task { await settings.set(keyPath, to: stored) }
+                }
+            )) {
+                Text("Auto (router vybere)").tag("")
+                ForEach(candidates, id: \.id) { model in
+                    Text(model.displayName).tag(model.id)
+                }
+            }
+            .pickerStyle(.menu)
+
+            Text(help)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        // `.disabled` on the VStack greys out the whole row
+        // (label + picker control + help text) rather than just
+        // the picker — matches the iOS Settings convention where
+        // a disabled row reads as a single inert block.
+        .disabled(disabled)
+    }
+
+    /// Catalog models eligible to appear as a tier pick: installed,
+    /// usable in this build, and either MLX text or Apple
+    /// Intelligence. Excludes Core ML SD entries (those drive
+    /// `/image`, not the chat router).
+    private func routingTierCandidates() -> [LocalModel] {
+        modelCatalog.models
+            .filter { model in
+                guard model.isUsableInThisBuild else { return false }
+                if case .installed = model.installState { /* ok */ } else { return false }
+                return model.backend == .mlx || model.backend == .appleFoundationModels
+            }
+            .sorted { $0.sizeBytes < $1.sizeBytes }
     }
 
     // MARK: - Appearance

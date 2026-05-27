@@ -163,21 +163,23 @@ private struct ModelPickerRow: View {
 
     private var badgeForeground: Color {
         switch model.backend {
-        case .mlx:      return HHTheme.accent
-        case .llamaCpp: return HHTheme.textSecondary
+        case .mlx:                   return HHTheme.accent
+        case .llamaCpp:              return HHTheme.textSecondary
         // Core ML SD models are image-generation only (no LLM
         // role) and onboarding does not surface them as a primary
         // pick — but the badge still needs a colour when these
         // models show up in any picker that reuses this row.
-        case .coreML:   return HHTheme.textSecondary
+        case .coreML:                return HHTheme.textSecondary
+        case .appleFoundationModels: return HHTheme.accent
         }
     }
 
     private var badgeBackground: Color {
         switch model.backend {
-        case .mlx:      return HHTheme.accent.opacity(0.15)
-        case .llamaCpp: return HHTheme.textSecondary.opacity(0.12)
-        case .coreML:   return HHTheme.textSecondary.opacity(0.12)
+        case .mlx:                   return HHTheme.accent.opacity(0.15)
+        case .llamaCpp:              return HHTheme.textSecondary.opacity(0.12)
+        case .coreML:                return HHTheme.textSecondary.opacity(0.12)
+        case .appleFoundationModels: return HHTheme.accent.opacity(0.15)
         }
     }
 

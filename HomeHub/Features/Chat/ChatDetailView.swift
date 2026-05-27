@@ -851,6 +851,21 @@ struct ChatDetailView: View {
             ? { conversations.continueLastAssistantResponse(in: conversationID) }
             : nil
 
+        // Follow-up suggestions strip — only the most recent
+        // completed assistant message gets it. The
+        // `!wasTruncatedByLength` clause prevents the chips from
+        // appearing alongside the "Pokračovat" button on a
+        // length-cut reply (where continuing the same thread is
+        // strictly more useful than diverting to a new prompt).
+        let showFollowUps = message.role == .assistant
+            && message.status == .complete
+            && !message.wasTruncatedByLength
+            && !isStreaming
+            && messages.last(where: { $0.role == .assistant })?.id == message.id
+        let followUpTap: ((String) -> Void)? = showFollowUps
+            ? { suggestion in draft = suggestion }
+            : nil
+
         MessageBubbleView(
             message: message,
             onRegenerate: regenerate,
@@ -858,7 +873,9 @@ struct ChatDetailView: View {
             onEdit: edit,
             onToggleBookmark: bookmark,
             onContinue: continueReply,
-            isPrefill: isPrefillBubble(message)
+            isPrefill: isPrefillBubble(message),
+            showFollowUpSuggestions: showFollowUps,
+            onFollowUpTap: followUpTap
         )
     }
 

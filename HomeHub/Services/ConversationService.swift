@@ -87,6 +87,37 @@ final class ConversationService: ObservableObject {
     /// `format == .coreMLPackage` AND `installState == .installed`.
     private let installedImageModelIDsProvider: @MainActor () -> [String]
 
+    /// Auto-routing pick provider. Called at turn start when
+    /// `settings.current.routingPolicy != .manual` to decide which
+    /// model should handle this turn. Returns `nil` when no
+    /// installed model matches (caller falls back to the currently-
+    /// loaded model and the chat surface shows an actionable
+    /// banner). Injected as a closure so this service stays free
+    /// of `ModelRouter` / `ModelCatalogService` deps — production
+    /// wires it to a real `ModelRouter.pick`, tests pass `{ _,_ in nil }`
+    /// for the legacy single-model behaviour.
+    private let routePickProvider: @MainActor (_ userInput: String, _ hasImage: Bool) -> ModelRouter.Decision?
+
+    /// "Fast helps smart" excerpt compressor. Called only when
+    /// `routingPolicy == .experimental`, the picked tier is
+    /// `.smart`, and the concatenated `fileExcerpts` exceeds
+    /// `excerptCompressionByteThreshold`. Returns the compressed
+    /// paragraph (caller substitutes it for the verbatim
+    /// excerpts) or `nil` to fall back to verbatim — see
+    /// `ExcerptCompressor.compress(...)` for the full contract.
+    /// Default closure returns `nil` so tests / previews skip
+    /// compression without configuration.
+    private let excerptCompressorProvider: @MainActor (_ excerpts: [String], _ language: AppLanguage) async -> String?
+
+    /// Soft byte threshold above which "fast helps smart"
+    /// compression becomes worthwhile. Below this, the Apple
+    /// Intelligence round-trip costs more than the prefill saving
+    /// on the smart model. Above this, the verbatim prefill on a
+    /// 7B+ MLX model grows visibly slower than AFM compression +
+    /// a smaller prefill. Tuned for iPhone 16 Pro — re-measure
+    /// if defaults change.
+    static let excerptCompressionByteThreshold = 6_000
+
     /// Per-conversation semantic recall over truncated message history.
     /// Used inside `performSend` to surface earlier turns the budgeter
     /// would otherwise drop. Reads the shared `embeddingService` LRU,
@@ -175,6 +206,8 @@ final class ConversationService: ObservableObject {
         promptBudgetReporter: PromptBudgetReporter? = nil,
         imageRuntime: (any ImageGenerationRuntime)? = nil,
         installedImageModelIDsProvider: @escaping @MainActor () -> [String] = { [] },
+        routePickProvider: @escaping @MainActor (_ userInput: String, _ hasImage: Bool) -> ModelRouter.Decision? = { _, _ in nil },
+        excerptCompressorProvider: @escaping @MainActor (_ excerpts: [String], _ language: AppLanguage) async -> String? = { _, _ in nil },
         recentBackgroundTimestamp: @escaping @MainActor () -> Date? = { nil },
         onBackgroundCompletion: @escaping @MainActor () -> Void = {}
     ) {
@@ -198,6 +231,8 @@ final class ConversationService: ObservableObject {
         // the rest of the chat plumbing.
         self.imageRuntime = imageRuntime ?? StubImageGenerationRuntime()
         self.installedImageModelIDsProvider = installedImageModelIDsProvider
+        self.routePickProvider = routePickProvider
+        self.excerptCompressorProvider = excerptCompressorProvider
         self.recentBackgroundTimestamp = recentBackgroundTimestamp
         self.onBackgroundCompletion = onBackgroundCompletion
     }
@@ -1101,6 +1136,60 @@ final class ConversationService: ObservableObject {
         messagesByConversation[conversationID] = list
         try? await store.save(message: assistantMessage)
 
+        // Auto-routing decision. Consulted only when the user has
+        // opted into automatic / experimental policy via Settings
+        // → Modely. The provider closure is responsible for honouring
+        // the policy switch — for `.manual` it returns `nil` and
+        // this whole block is a no-op, preserving the legacy
+        // behaviour where the user's explicit model pick handles
+        // every turn.
+        //
+        // When a different model than the currently-loaded one is
+        // picked, we load it BEFORE the LLM prompt assembly hits
+        // the runtime. The load is awaited so the prefill phase
+        // uses the right model — there's no point starting MLX
+        // tokenisation with the wrong tokeniser. A failed load
+        // (no installed candidate, OOM, etc.) falls back to the
+        // existing model: the chat surface keeps working, just
+        // without the routing benefit. Errors get logged but
+        // don't block the turn.
+        // Router decision captured here so the downstream
+        // "fast helps smart" compression step (see ~line 1390) can
+        // gate on the picked tier without re-classifying.
+        var routerDecision: ModelRouter.Decision?
+        if settings.current.routingPolicy != .manual {
+            let hasImage = (attachments ?? []).contains { $0.imageData != nil }
+            if let decision = routePickProvider(userInput, hasImage) {
+                routerDecision = decision
+                let current = runtime.activeModel
+                // Hysteresis: skip the swap when the currently-
+                // loaded model already lives in the classifier's
+                // picked tier. Without this, two borderline prompts
+                // in a row could thrash between two same-tier
+                // models (each fast model is "interchangeable" from
+                // the user's perspective but a load cycle is
+                // 5–15 s — never worth it for a same-tier swap).
+                // We still swap when the tier itself differs: the
+                // user *does* want a bigger model when their prompt
+                // gets longer/more complex.
+                let currentTier = current.map { ModelRouter.tierFor(model: $0) }
+                let sameTier = currentTier == decision.tier
+                if current?.id != decision.model.id && !sameTier {
+                    HHLog.chat.info("Auto-route: \(decision.tier.rawValue, privacy: .public) → \(decision.model.id, privacy: .public) — \(decision.reasonCZ, privacy: .public)")
+                    // `RuntimeManager.load(_:)` is non-throwing; it
+                    // logs and surfaces failure through
+                    // `lastGenerationError`. We await it directly so
+                    // the prefill phase uses the correct tokeniser;
+                    // any failure shows up in the chat surface via
+                    // the standard error path on the first turn
+                    // that follows.
+                    await runtime.load(decision.model)
+                } else if sameTier && current?.id != decision.model.id {
+                    HHLog.chat.info("Auto-route: hysteresis kept \(current?.id ?? "?", privacy: .public) instead of swapping to same-tier \(decision.model.id, privacy: .public)")
+                }
+            }
+        }
+
         // `/image PROMPT` slash command. Detected here (after the
         // user turn is persisted, before any LLM prompt assembly)
         // so the rest of the chat plumbing — message list, history,
@@ -1204,7 +1293,44 @@ final class ConversationService: ObservableObject {
                 HHLog.kb.error("web search failed: \(error.localizedDescription, privacy: .public) — omitting from context")
             }
         }
-        
+
+        // "Fast helps smart" — `.experimental` policy + SMART tier
+        // + excerpts above byte threshold. Compress via Apple
+        // Intelligence so the SMART MLX model sees a tight summary
+        // instead of multi-KB raw excerpts. Saves prefill time on
+        // the big model; AFM's round-trip is sub-second.
+        //
+        // All four gates must pass:
+        //   1. Policy is `.experimental` (user opted in).
+        //   2. Router picked SMART tier for this turn (the only
+        //      tier where prefill dominates).
+        //   3. Combined excerpts exceed the heuristic threshold —
+        //      below it the AFM round-trip costs more than it saves.
+        //   4. Compressor closure returns non-nil (AFM available,
+        //      didn't time out, didn't throw, wasn't cancelled).
+        //
+        // Cancellation: `Task.checkCancellation()` brackets the
+        // compressor call so a Stop tap aborts before the SMART
+        // model even starts loading prompt context.
+        if settings.current.routingPolicy == .experimental,
+           routerDecision?.tier == .smart,
+           !topExcerpts.isEmpty {
+            let totalBytes = topExcerpts.reduce(0) { $0 + $1.utf8.count }
+            if totalBytes > Self.excerptCompressionByteThreshold {
+                if Task.isCancelled {
+                    HHLog.chat.info("Excerpt compression skipped: turn cancelled before AFM call")
+                } else {
+                    let language = settings.current.language
+                    if let summary = await excerptCompressorProvider(topExcerpts, language) {
+                        HHLog.chat.info("Excerpt compression: \(totalBytes, privacy: .public) B → \(summary.utf8.count, privacy: .public) B via AFM")
+                        topExcerpts = [summary]
+                    } else {
+                        HHLog.chat.info("Excerpt compression returned nil (AFM unavailable / failed / timed out) — injecting verbatim")
+                    }
+                }
+            }
+        }
+
         // Intersect "registered" and "user-enabled" to get the allow-list
         // that drives BOTH the L4 instructions and the runtime dispatch.
         // Doing this once per turn keeps prompt and execution in lockstep:
@@ -1309,6 +1435,24 @@ final class ConversationService: ObservableObject {
         // some toolchains. The closure form sidesteps it without
         // changing semantics — `compactMap` still drops nil entries.
         let userImages: [Data] = (attachments ?? []).compactMap { $0.imageData }
+
+        // Stamp the assistant placeholder with the fact IDs we're
+        // about to inject — surfaced under the response as a
+        // "🧠 Použito X fakt" chip so users can audit what the model
+        // saw of their memory. Empty array (vs nil) means "memory
+        // checked, no relevant facts" — UI skips the chip then.
+        //
+        // We persist the placeholder again here so:
+        //   1. The dictionary-backed in-memory list reflects the
+        //      stamp immediately (the entry was already inserted at
+        //      ~line 1101 as an empty placeholder).
+        //   2. The on-disk message gets the stamp BEFORE the first
+        //      token streams in. A mid-stream crash then preserves
+        //      the audit trail of which facts the model saw; without
+        //      this we'd lose the chip data on every crashed turn.
+        assistantMessage.appliedMemoryFactIDs = facts.map(\.id)
+        messagesByConversation[conversationID]?[assistantIndex] = assistantMessage
+        try? await store.save(message: assistantMessage)
 
         let package = PromptContextPackage(
             assistant: personaForTurn,
@@ -1556,8 +1700,19 @@ final class ConversationService: ObservableObject {
                                 try? await store.save(message: snapshot)
                             }
                         }
-                    case .finished(let reason, _):
+                    case .finished(let reason, let stats):
                         assistantMessage.status = (reason == .cancelled) ? .cancelled : .complete
+                        // Capture throughput so the chat surface can
+                        // show a "12 tok · 9.4 t/s" footer chip.
+                        // Skipped for cancelled turns (stats would
+                        // be misleading — partial generation).
+                        if reason != .cancelled {
+                            assistantMessage.generationStats = Message.GenerationStats(
+                                tokensGenerated: stats.tokensGenerated,
+                                tokensPerSecond: stats.tokensPerSecond,
+                                totalDurationMs: stats.totalDurationMs
+                            )
+                        }
                         // Persist the finish reason as a raw string so
                         // the chat layer can surface "Pokračovat" on
                         // `.length` cuts without importing the runtime

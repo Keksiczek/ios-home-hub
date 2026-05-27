@@ -2,6 +2,22 @@ import SwiftUI
 
 struct MessageBubbleView: View {
     let message: Message
+    /// Memory service used to resolve `message.appliedMemoryFactIDs`
+    /// back to live `MemoryFact` rows for the "🧠 Použito X fakt"
+    /// chip.
+    ///
+    /// **Important:** `@EnvironmentObject` raises a fatal error if
+    /// the object is missing from the environment. Production
+    /// hierarchies inject it at the root in `HomeHubApp` and at
+    /// the tab root in `MainTabView`, so every real chat surface
+    /// is safe. Xcode canvas previews that render
+    /// `MessageBubbleView` directly MUST also call
+    /// `.environmentObject(AppContainer.preview().memoryService)`
+    /// or they crash on display. See `DashboardView.swift:663` for
+    /// the pattern; the same idiom belongs in any
+    /// MessageBubbleView preview.
+    @EnvironmentObject private var memoryService: MemoryService
+    @State private var showingAppliedFacts = false
     /// Called when the user picks "Regenerate" from the context menu.
     /// Pass `nil` for all messages except the last completed assistant reply.
     var onRegenerate: (() -> Void)? = nil
@@ -28,6 +44,17 @@ struct MessageBubbleView: View {
     /// `true`, the typing indicator is replaced by a "Čte kontext…"
     /// label so long RAG prefills don't read as a frozen app.
     var isPrefill: Bool = false
+
+    /// Render the follow-up suggestion chips strip below this bubble.
+    /// Gated by the parent (ChatDetailView) so only the most recent
+    /// completed assistant message shows the strip — old messages
+    /// would just clutter the scroll history.
+    var showFollowUpSuggestions: Bool = false
+
+    /// Called when the user taps a follow-up suggestion chip.
+    /// Receives the suggestion text verbatim; the parent injects it
+    /// into the composer's draft. `nil` hides the strip entirely.
+    var onFollowUpTap: ((String) -> Void)? = nil
 
     /// Content with chat-template control tokens (`<start_of_turn>`,
     /// `<|eot_id|>`, `</s>` …) AND tool-call envelopes removed. The
@@ -203,11 +230,22 @@ struct MessageBubbleView: View {
                                 options: .repeating,
                                 isActive: message.status == .streaming
                             )
-                        Text(message.status == .streaming
-                             ? style.runningLabel
-                             : style.completedLabel)
-                            .font(HHTheme.caption.weight(.semibold))
-                            .foregroundStyle(HHTheme.textSecondary)
+                        // Multi-stage rotating label for tools with
+                        // `streamingPhases` (WebSearch, FetchPage).
+                        // For single-phase tools and completed turns
+                        // we just render a static Text — keeps the
+                        // bubble cheap when nothing's animating.
+                        if message.status == .streaming, let phases = style.streamingPhases, phases.count > 1 {
+                            RotatingPhaseLabel(phases: phases)
+                                .font(HHTheme.caption.weight(.semibold))
+                                .foregroundStyle(HHTheme.textSecondary)
+                        } else {
+                            Text(message.status == .streaming
+                                 ? style.runningLabel
+                                 : style.completedLabel)
+                                .font(HHTheme.caption.weight(.semibold))
+                                .foregroundStyle(HHTheme.textSecondary)
+                        }
                     }
                     .padding(.horizontal, HHTheme.spaceS)
                     .padding(.vertical, 4)
@@ -218,6 +256,50 @@ struct MessageBubbleView: View {
                     statusLine(label: "Failed", icon: "exclamationmark.triangle.fill", color: HHTheme.warning)
                 } else if message.status == .cancelled {
                     statusLine(label: "Stopped", icon: "stop.circle.fill", color: HHTheme.textSecondary)
+                }
+
+                // Memory chip: surfaces which user-memory facts the
+                // model "saw" when producing this answer. Tappable
+                // sheet expands to the actual fact rows. Renders
+                // only on completed assistant turns to avoid
+                // distracting from the streaming surface. Facts the
+                // user deleted since the turn are filtered out at
+                // resolve time so the chip count matches what we
+                // can actually show.
+                if message.role == .assistant,
+                   message.status == .complete,
+                   let appliedIDs = message.appliedMemoryFactIDs,
+                   !appliedIDs.isEmpty {
+                    let resolved = resolveAppliedFacts(ids: appliedIDs)
+                    if !resolved.isEmpty {
+                        appliedMemoryChip(count: resolved.count)
+                    }
+                }
+
+                // Generation stats footer: "12 tok · 9.4 t/s · 1.3 s".
+                // Renders ONLY on completed assistant messages with
+                // stats captured. Small + secondary tint so it
+                // doesn't compete with the response content; the
+                // numbers build user intuition for "which model
+                // is fast on my device" without leaving chat.
+                if message.role == .assistant,
+                   message.status == .complete,
+                   let stats = message.generationStats {
+                    generationStatsFooter(stats)
+                }
+
+                // Follow-up suggestion chips. Render under the most
+                // recent completed assistant message (gated by
+                // `showFollowUpSuggestions`, set by ChatDetailView
+                // for the latest assistant turn only). Static
+                // heuristic prompts — cheap, predictable, no extra
+                // inference. Tapping injects the text into the
+                // composer draft via `onFollowUpTap`.
+                if message.role == .assistant,
+                   message.status == .complete,
+                   showFollowUpSuggestions,
+                   onFollowUpTap != nil {
+                    followUpSuggestions
                 }
 
                 // Length-truncated reply → inline "Pokračovat" affordance.
@@ -356,6 +438,170 @@ struct MessageBubbleView: View {
         }
     }
 
+    /// Stats footer: "12 tok · 9.4 t/s · 1.3 s". Number formatting:
+    ///   * tokens: integer
+    ///   * t/s: one decimal (matches the fastest perceptible delta
+    ///     for users; sub-decimal precision is noise)
+    ///   * seconds: one decimal up to 9.9, then integer (10+ s)
+    /// Renders as a small secondary line, not a chip — three numbers
+    /// in a row read more naturally as a status line.
+    private func generationStatsFooter(_ stats: Message.GenerationStats) -> some View {
+        let durationSec = Double(stats.totalDurationMs) / 1000.0
+        let durationLabel: String = durationSec < 10
+            ? String(format: "%.1f s", durationSec)
+            : "\(Int(durationSec.rounded())) s"
+        let tpsLabel = String(format: "%.1f t/s", stats.tokensPerSecond)
+        return HStack(spacing: 6) {
+            Image(systemName: "speedometer")
+                .imageScale(.small)
+            Text("\(stats.tokensGenerated) tok · \(tpsLabel) · \(durationLabel)")
+                .font(.caption2)
+        }
+        .foregroundStyle(HHTheme.textSecondary)
+        .padding(.top, 2)
+    }
+
+    /// Static heuristic follow-up prompts. Three reasonable next
+    /// moves that work for almost any assistant response:
+    ///   1. "Vysvětli detailněji" — depth zoom
+    ///   2. "Shrň to do 3 bullet pointů" — compression
+    ///   3. "Co bys mi k tomu doporučil?" — opinion / next step
+    /// Tap → parent sets composer draft to the chip text, focusing
+    /// the keyboard. The user can edit before sending so this isn't
+    /// auto-firing a turn — it's a starter, not a shortcut.
+    private var followUpSuggestions: some View {
+        let prompts = [
+            "Vysvětli to detailněji",
+            "Shrň to do 3 bullet pointů",
+            "Co bys mi k tomu doporučil?"
+        ]
+        return ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: HHTheme.spaceS) {
+                ForEach(prompts, id: \.self) { prompt in
+                    Button {
+                        HHHaptics.selection(enabled: true)
+                        onFollowUpTap?(prompt)
+                    } label: {
+                        Text(prompt)
+                            .font(HHTheme.caption)
+                            .foregroundStyle(HHTheme.accent)
+                            .padding(.horizontal, HHTheme.spaceM)
+                            .padding(.vertical, 6)
+                            .background(HHTheme.accent.opacity(0.10), in: Capsule())
+                            .overlay(Capsule().stroke(HHTheme.accent.opacity(0.25), lineWidth: 1))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.top, 4)
+        }
+    }
+
+    /// Resolve `appliedMemoryFactIDs` back to live `MemoryFact` rows.
+    /// Drops IDs that no longer exist in the user's memory (deleted
+    /// since the turn) so the chip count and the sheet contents
+    /// agree. Preserves the original ordering — facts were already
+    /// ranked by `MemoryService.relevantFacts` so the order has
+    /// semantic meaning we don't want to lose.
+    private func resolveAppliedFacts(ids: [UUID]) -> [MemoryFact] {
+        let idSet = Set(ids)
+        let byID = Dictionary(uniqueKeysWithValues: memoryService.facts.filter { idSet.contains($0.id) }.map { ($0.id, $0) })
+        return ids.compactMap { byID[$0] }
+    }
+
+    /// Tappable "🧠 Použito X fakt" chip. Renders below the
+    /// completed assistant bubble; tapping opens a sheet listing
+    /// the actual fact bodies. Keeps the bubble compact — most
+    /// users won't expand it, the chip is a transparency
+    /// affordance that pays for itself only when the user wants
+    /// to verify what the model "remembered".
+    private func appliedMemoryChip(count: Int) -> some View {
+        Button {
+            // Haptic feedback is opt-in via settings; the bubble
+            // doesn't have a settings env binding, so we just
+            // pass `enabled: true` — matches the "tap on a button
+            // I made" feel users expect. If a future haptics-
+            // disabled audit lands, this becomes
+            // `settings.current.haptics`.
+            HHHaptics.selection(enabled: true)
+            showingAppliedFacts = true
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "brain.head.profile")
+                    .imageScale(.small)
+                Text(memoryChipLabel(count: count))
+                    .font(HHTheme.caption.weight(.semibold))
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .semibold))
+                    .opacity(0.6)
+            }
+            .foregroundStyle(HHTheme.accent)
+            .padding(.horizontal, HHTheme.spaceS)
+            .padding(.vertical, 4)
+            .background(HHTheme.accent.opacity(0.12), in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .sheet(isPresented: $showingAppliedFacts) {
+            appliedFactsSheet(ids: message.appliedMemoryFactIDs ?? [])
+        }
+    }
+
+    /// Czech grammar shim — `1 fakt` / `2-4 fakta` / `5+ faktů`
+    /// follows the language's small-numbers declension. The default
+    /// "X fakt" form sounds robotic; this stays readable across the
+    /// realistic 1-15 range memory typically applies per turn.
+    private func memoryChipLabel(count: Int) -> String {
+        switch count {
+        case 1:        return "🧠 Použil 1 fakt"
+        case 2, 3, 4:  return "🧠 Použil \(count) fakta"
+        default:       return "🧠 Použil \(count) faktů"
+        }
+    }
+
+    /// Bottom sheet listing the actual fact bodies. Read-only —
+    /// editing a fact mid-conversation is a separate flow (the
+    /// dedicated MemoryView). The sheet uses a `List` so iOS handles
+    /// scrolling + dividers; height auto-fits via
+    /// `presentationDetents(.medium, .large)`.
+    private func appliedFactsSheet(ids: [UUID]) -> some View {
+        let facts = resolveAppliedFacts(ids: ids)
+        return NavigationStack {
+            List {
+                Section {
+                    ForEach(facts) { fact in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(fact.content)
+                                .font(.body)
+                            HStack(spacing: 6) {
+                                Text(fact.category.rawValue.capitalized)
+                                    .font(.caption2)
+                                    .foregroundStyle(HHTheme.textSecondary)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(HHTheme.stroke, in: Capsule())
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    }
+                } header: {
+                    Text("Co model viděl o tobě při této odpovědi")
+                } footer: {
+                    Text("Fakta jsou injektovaná do prompt kontextu. Mazat nebo upravovat je můžeš v Nastavení → Paměť.")
+                        .font(.caption2)
+                }
+            }
+            .navigationTitle("Použitá fakta")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Hotovo") { showingAppliedFacts = false }
+                }
+            }
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
+        }
+    }
+
     // MARK: - Header (role + timestamp)
 
     private var header: some View {
@@ -484,5 +730,50 @@ private struct TypingIndicator: View {
                 phase = (phase + 1) % 3
             }
         }
+    }
+}
+
+/// Rotating multi-phase label for long-running tool calls. Used by
+/// the chat bubble chip to show "Hledám na webu… → Čtu výsledky… →
+/// Shrnuju…" while a WebSearch / FetchPage call is in flight, instead
+/// of a static "Hledám…" that reads as stuck.
+///
+/// Phase advances every ~1.6 s. The label crossfades between phases
+/// (no horizontal slide — keeps the chip width stable so neighbouring
+/// content doesn't reflow on each tick). Driven by `.task`, so the
+/// timer cancels automatically when the bubble leaves the hierarchy
+/// (e.g. user scrolls away, conversation switched).
+///
+/// **Style note.** Apple's Settings → Apple Intelligence uses a
+/// shimmer gradient sweep on the in-flight "Thinking…" label.
+/// We chose the simpler crossfade because it survives older
+/// iOS (the gradient mask trick needs `iOS 17` and only renders well
+/// on backgrounds with a known fill colour, which our capsule chip
+/// doesn't have — capsules sit on whatever the chat bubble's tint
+/// is).
+private struct RotatingPhaseLabel: View {
+    let phases: [String]
+    @State private var index: Int = 0
+
+    var body: some View {
+        // `.contentTransition(.opacity)` triggers a smooth alpha
+        // crossfade between phase strings rather than the default
+        // immediate cut. SwiftUI ties the transition to value
+        // identity via the inner `Text(...)`, so the animation
+        // applies whenever `index` changes.
+        Text(phases[index % phases.count])
+            .contentTransition(.opacity)
+            .animation(.easeInOut(duration: 0.25), value: index)
+            .task {
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .milliseconds(1600))
+                    if Task.isCancelled { return }
+                    // Modulo on increment (vs. on read) keeps `index`
+                    // bounded for the lifetime of the view —
+                    // theoretically a tool call could run long enough
+                    // to overflow `Int` if we didn't wrap.
+                    index = (index + 1) % max(phases.count, 1)
+                }
+            }
     }
 }

@@ -807,6 +807,10 @@ final class RuntimeManager: ObservableObject {
                 // so any future log-grep tooling doesn't see "switch
                 // covered all cases" diagnostic chatter.
                 return "n/a (Core ML image pipeline)"
+            case .builtIn:
+                // Apple Intelligence: template is internal to the
+                // `LanguageModelSession` API. We don't see it.
+                return "n/a (Apple Intelligence — managed by iOS)"
             case .gguf:
                 if meta?.chatTemplate != nil { return "GGUF metadata" }
                 return "built-in template for family '\(model.family)'"

@@ -483,6 +483,10 @@ enum RuntimeError: LocalizedError, Equatable {
                 // text model instead.
                 return "\"\(name)\" je Core ML Stable Diffusion model určený pro generování obrázků. " +
                        "Pro chat vyber MLX text model v Nastavení → Modely."
+            case .appleFoundationModels:
+                return "\"\(name)\" vyžaduje Apple Intelligence (iOS 26+). " +
+                       "Buď je tvůj iOS / hardware nepodporuje, nebo je tento build zkompilovaný proti starší SDK. " +
+                       "Vyber MLX model jako fallback."
             }
         case .missingFiles(let name, let missing):
             let list = missing.isEmpty ? "required files" : missing.joined(separator: ", ")

@@ -43,6 +43,47 @@ struct Message: Identifiable, Codable, Equatable, Hashable {
     /// where it stopped instead of re-rolling the whole answer.
     var finishReason: String?
 
+    /// IDs of `MemoryFact` rows that were injected into the prompt
+    /// for THIS turn. Set by `ConversationService` right before the
+    /// runtime call; surfaced in `MessageBubbleView` as a tappable
+    /// "🧠 Použito X fakt" chip so users see what the model
+    /// "remembered" about them.
+    ///
+    /// Optional so older persisted messages decode without a
+    /// migration (synthesised `Codable` treats missing keys as `nil`
+    /// for optionals). `nil` on user/system messages and on assistant
+    /// turns that didn't pull memory (memory disabled, no facts
+    /// matched). Empty array also OK — means "memory was checked, no
+    /// facts applied" and we don't render the chip.
+    ///
+    /// Resolved back to live `MemoryFact` objects at render time by
+    /// looking each ID up in `MemoryService.facts`. Facts the user
+    /// has deleted since the turn just don't render — graceful
+    /// degradation.
+    var appliedMemoryFactIDs: [UUID]?
+
+    /// Generation throughput snapshot captured from
+    /// `RuntimeEvent.finished` for assistant messages. Surfaced as a
+    /// small "12 tok · 9.4 t/s" footer on completed bubbles so users
+    /// can build intuition for which model / quant is actually fast
+    /// on their device without leaving the chat for a diagnostics
+    /// screen.
+    ///
+    /// Optional + `decodeIfPresent`-safe via the synthesised Codable
+    /// for forward compat. `nil` on user/system messages and on
+    /// assistant messages persisted before this field existed.
+    var generationStats: GenerationStats?
+
+    /// Snapshot of one generation's throughput numbers. Plain value
+    /// type — mirrors `RuntimeStats` from the runtime layer but
+    /// lives in the model layer so the chat surface doesn't need
+    /// to import MLX types.
+    struct GenerationStats: Codable, Equatable, Hashable, Sendable {
+        let tokensGenerated: Int
+        let tokensPerSecond: Double
+        let totalDurationMs: Int
+    }
+
     /// Convenience for "is this message bookmarked?" so the UI doesn't
     /// have to repeat the `?? false` defaulting at every call site.
     var isBookmarked: Bool { bookmarked == true }

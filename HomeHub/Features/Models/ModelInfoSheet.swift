@@ -371,6 +371,20 @@ struct ModelInfoSheet: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
+            case .builtIn:
+                // Apple Intelligence: no on-disk artifacts, no chat
+                // template we control. The chat template, sampling
+                // params, and tokeniser all live behind Apple's
+                // `LanguageModelSession` API. We surface only the
+                // identity row and a "managed by iOS" disclosure so
+                // users understand why there's no Download / Delete /
+                // Re-quantise affordance.
+                LabeledContent("Runtime", value: "Apple Intelligence (iOS 26+)")
+                LabeledContent("Storage", value: "Managed by iOS — no local file")
+                Text("Apple Intelligence ships as part of iOS. The model weights, chat template, and tokeniser are managed by the system; HomeHub uses the public `FoundationModels` framework to send turns through it.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
             case .gguf:
                 if let meta {
                     LabeledContent("Architecture", value: meta.architecture ?? "unknown")

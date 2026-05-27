@@ -366,6 +366,47 @@ enum ModelCatalog {
     /// populate them after verifying a known-good download to enable integrity
     /// checks.
     static let curated: [LocalModel] = [
+        // MARK: Apple Intelligence (built-in, no download)
+        //
+        // Apple Foundation Models is the only catalog entry whose
+        // `installState` is unconditionally `.installed` — there's
+        // nothing to download. The runtime path
+        // (`AppleFoundationModelsRuntime`) gates actual availability
+        // at `load(...)` time via `SystemLanguageModel.default.availability`,
+        // surfacing a Czech actionable error if Apple Intelligence
+        // isn't enabled on the device.
+        //
+        // We list it FIRST so onboarding's "pick a model" picker
+        // shows it at the top — for iOS 26+ users it's the
+        // zero-friction default (instant TTFT, no GB download).
+        LocalModel(
+            id: "apple-foundation-1",
+            displayName: "Apple Intelligence",
+            family: "Apple Foundation Models",
+            parameterCount: "~3B",        // Apple's published figure for the on-device model
+            quantization: "system",       // Apple manages quantisation internally
+            sizeBytes: 0,                  // No HomeHub-controlled storage
+            contextLength: 4096,           // Apple's documented context for v1 of the on-device model
+            // Placeholder URL — `ModelDownloadService` short-circuits
+            // for `format == .builtIn` so this is never fetched. We
+            // keep a valid URL anyway because `LocalModel.downloadURL`
+            // is non-optional. The Apple Intelligence support page
+            // surfaces if a user taps "View source" in the model
+            // info sheet.
+            downloadURL: URL(static: "https://www.apple.com/apple-intelligence/"),
+            sha256: nil,
+            // Synthetic installState — the runtime layer overrides
+            // this for the actual gating decision (see
+            // `AppleFoundationModelsRuntime.load(...)`), but UI
+            // surfaces honour it as "ready to use" so the user
+            // sees the model immediately on iOS 26+.
+            installState: .installed(localURL: URL(fileURLWithPath: "/dev/null")),
+            recommendedFor: [.iPhone, .iPadMSeries],
+            license: "Apple — system-managed",
+            backend: .appleFoundationModels,
+            format: .builtIn
+        ),
+
         // MARK: MLX models (default backend)
         //
         // MLX models are managed by `MLXLMCommon` and downloaded into the Hugging Face

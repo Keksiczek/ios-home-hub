@@ -181,6 +181,27 @@ final class AppContainer: ObservableObject {
                     return model.id
                 }
             },
+            // Auto-routing pick. The router is a thin pure service
+            // wrapping catalog + settings — instantiated here on
+            // demand because it has no own state worth keeping
+            // resident. Closure capture is `[weak catalog, weak settings]`
+            // so the runtime hot path doesn't accidentally extend the
+            // container's lifetime.
+            routePickProvider: { [weak catalog, weak settings] userInput, hasImage in
+                guard let catalog, let settings else { return nil }
+                let router = ModelRouter(catalog: catalog, settings: settings)
+                return router.pick(userInput: userInput, hasImageAttachment: hasImage)
+            },
+            // "Fast helps smart" excerpt compressor. Goes through
+            // `ExcerptCompressor.compress(...)` which Apple-
+            // Intelligence-gates internally — when AFM isn't
+            // available the closure returns `nil` and
+            // `ConversationService` falls back to injecting the
+            // verbatim excerpts. No AppContainer-level branching
+            // needed; the closure is a stateless thin adapter.
+            excerptCompressorProvider: { excerpts, language in
+                await ExcerptCompressor.compress(excerpts: excerpts, language: language)
+            },
             recentBackgroundTimestamp: { [weak weakHolder] in
                 weakHolder?.value?.lastBackgroundedAt
             },
@@ -1338,11 +1359,22 @@ final class AppContainer: ObservableObject {
 
         let mlx = makeMLXRuntime()
 
+        // Apple Intelligence runtime — conditionally instantiated when
+        // the build SDK includes `FoundationModels` AND the device is
+        // on iOS 26+. `RuntimeBackendAvailability.appleFoundationModelsAvailable`
+        // gates both at once. When unavailable, `nil` propagates into
+        // `RoutingRuntime` which then rejects `.appleFoundationModels`
+        // model loads with `backendUnavailable` — same path as a build
+        // that strips MLX or `llamaCpp`.
+        let afm: AppleFoundationModelsRuntime? = RuntimeBackendAvailability.appleFoundationModelsAvailable
+            ? AppleFoundationModelsRuntime()
+            : nil
+
         #if HOMEHUB_LLAMA_RUNTIME
         let llama = LlamaCppRuntime()
-        let runtime: any LocalLLMRuntime = RoutingRuntime(llamaCpp: llama, mlx: mlx)
+        let runtime: any LocalLLMRuntime = RoutingRuntime(llamaCpp: llama, mlx: mlx, appleFoundationModels: afm)
         #else
-        let runtime: any LocalLLMRuntime = RoutingRuntime(mlx: mlx)
+        let runtime: any LocalLLMRuntime = RoutingRuntime(mlx: mlx, appleFoundationModels: afm)
         #endif
 
         let store: any Store

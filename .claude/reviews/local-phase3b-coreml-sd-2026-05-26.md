@@ -446,3 +446,452 @@ the same write path.
 | Errors | 0 |
 | New warnings on touched files | 0 |
 
+
+---
+
+# Batch 4 — Apple Intelligence + UX chip suite (2026-05-27)
+
+Driven by user observation of competing local-LLM apps shipping
+zero-download Apple Intelligence, animated search chips, memory
+transparency, and per-turn diagnostics. `code-explorer` agent mapped
+the current model-switching / search / memory architecture in
+parallel; surface the 3 friction points listed below.
+
+## What changed
+
+### A — Apple Intelligence integration
+- **`HomeHub/Runtime/AppleFoundationModelsRuntime.swift`** (new) —
+  LocalLLMRuntime conformance backed by `FoundationModels` framework.
+  Per-conversation `LanguageModelSession` cache for prompt-prefill
+  amortisation. `#if canImport(FoundationModels)` build gate + iOS-26
+  `if #available` runtime gate; falls back to MLX cleanly on older
+  builds/devices. Translates `SystemLanguageModel.Availability`
+  unavailable reasons (deviceNotEligible, appleIntelligenceNotEnabled,
+  modelNotReady) into Czech actionable error strings.
+- `ModelBackend.appleFoundationModels` + `ModelFormat.builtIn` enum
+  cases — 8 exhaustive-switch sites updated (RoutingRuntime,
+  RuntimeManager, LocalLLMRuntime error string, ModelInfoSheet,
+  ModelsView, OnboardingModelPickerView, LocalModel.unavailableReason).
+- `RoutingRuntime` accepts optional `AppleFoundationModelsRuntime`;
+  `AppContainer` instantiates it gated by
+  `RuntimeBackendAvailability.appleFoundationModelsAvailable`.
+- Catalog entry `apple-foundation-1` at the TOP of the curated
+  list — `installState = .installed` synthetically, no downloadURL
+  semantics (the runtime's `load()` does the real
+  Apple-Intelligence-enabled check).
+- `PipelineBox`-equivalent isn't needed: Apple's
+  `LanguageModelSession.streamResponse(to:)` emits
+  `ResponseStream<String>.Snapshot` which isn't Sendable — we use a
+  generic `string<S>(from snapshot: S) -> String` helper rather than
+  `any Sendable` so the for-await iteration stays within one actor.
+
+### B — WebSearch / FetchPage rotating phase labels
+- `ToolPresenter.Style` gains optional `streamingPhases: [String]?`.
+  WebSearch cycles `Hledám na webu… → Čtu výsledky… → Shrnuju…`;
+  FetchPage cycles `Stahuju HTML… → Čistím obsah… → Extrahuju text…`.
+- New `RotatingPhaseLabel` view in `MessageBubbleView` — 1.6 s
+  per-phase crossfade via `contentTransition(.opacity)`. Timer runs
+  in `.task` so it stops when the bubble leaves the hierarchy.
+
+### C — Memory transparency chips
+- `Message.appliedMemoryFactIDs: [UUID]?` field. ConversationService
+  stamps it before the agentic loop (after `relevantFacts(for:)`)
+  with the fact IDs being injected into the prompt.
+- `MessageBubbleView` resolves IDs back to `MemoryFact` via injected
+  `MemoryService`; renders a `🧠 Použil X fakt` chip with proper
+  Czech plural declension (1 → `fakt`, 2-4 → `fakta`, 5+ → `faktů`).
+- Tap → bottom sheet with the live fact bodies + categories. Facts
+  the user deleted since the turn drop out at resolve time — chip
+  count and sheet stay consistent.
+
+### D — Generation stats footer
+- `Message.GenerationStats` value type (`tokensGenerated`,
+  `tokensPerSecond`, `totalDurationMs`) decoded permissively for
+  forward compat.
+- `ConversationService` captures stats from
+  `RuntimeEvent.finished(reason, stats)` — was previously discarded.
+  Skipped for `.cancelled` (partial-generation numbers are
+  misleading).
+- `MessageBubbleView` renders `12 tok · 9.4 t/s · 1.3 s` footer
+  under completed assistant messages with secondary tint.
+
+### E — Follow-up suggestion chips
+- 3 static heuristic prompts: `Vysvětli to detailněji`,
+  `Shrň to do 3 bullet pointů`, `Co bys mi k tomu doporučil?`
+- Render ONLY on the most recent completed (`.complete`, not
+  `.length`-truncated) assistant message — gated by
+  `showFollowUpSuggestions: Bool` from ChatDetailView.
+- Tap → `onFollowUpTap(suggestion)` callback injects the text into
+  the composer draft via `draft = suggestion`. User can edit before
+  send — chips are starters, not auto-fire shortcuts.
+
+## Files changed in batch 4
+
+### New
+- `HomeHub/Runtime/AppleFoundationModelsRuntime.swift` — 354 LOC
+
+### Modified
+- `HomeHub/Models/LocalModel.swift` — `appleFoundationModels` backend +
+  `builtIn` format + 2 new switch arms in `unavailableReason` /
+  `isAvailable`
+- `HomeHub/Models/Message.swift` — `appliedMemoryFactIDs`,
+  `generationStats` + `GenerationStats` value type
+- `HomeHub/Runtime/RoutingRuntime.swift` — optional AFM dependency
+  injection + `.appleFoundationModels` dispatch case
+- `HomeHub/Runtime/LocalLLMRuntime.swift` — backend-unavailable Czech
+  copy for AFM
+- `HomeHub/Services/ConversationService.swift` — fact-ID stamping +
+  stats capture from `.finished`
+- `HomeHub/Services/ModelCatalogService.swift` — Apple Intelligence
+  catalog entry at top of curated list
+- `HomeHub/Services/RuntimeManager.swift` — `.builtIn` template-source
+  log line
+- `HomeHub/App/AppContainer.swift` — conditional AFM instantiation
+- `HomeHub/Features/Chat/MessageBubbleView.swift` — memory chip,
+  stats footer, follow-up suggestions, RotatingPhaseLabel
+- `HomeHub/Features/Chat/ChatDetailView.swift` — follow-up wire-up
+  (draft injection)
+- `HomeHub/Features/Chat/ToolPresenter.swift` — `streamingPhases`
+- `HomeHub/Features/Models/ModelInfoSheet.swift` — `.builtIn` arm
+- `HomeHub/Features/Models/ModelsView.swift` — AFM badge tint
+- `HomeHub/Features/Onboarding/OnboardingModelPickerView.swift` —
+  AFM badge tint
+
+## Build hygiene
+
+| Check | Result |
+|---|---|
+| `xcodebuild build` | ✅ Pass |
+| `xcodebuild build-for-testing` | ✅ Pass |
+| New warnings on touched files | 0 |
+| Architecture gates | `if #available(iOS 26, *)` + `#if canImport(FoundationModels)` on every AFM-specific call site |
+
+## Outstanding
+
+- **H1** (Phase 3c): SD bundle download path. Unchanged from earlier
+  batches.
+- **Search offload to smaller model**: examined, deferred. On 8 GB
+  iPhone the 3× load cycle (main → tiny → main) is slower than
+  letting the loaded model digest the search snippets directly.
+  Worth reopening for M-series iPad where memory headroom permits
+  keeping both resident.
+- **i18n sweep**: all new strings remain Czech-only. Consistent with
+  existing surface; future Localizable.strings migration is a
+  separate workstream.
+
+## Code-explorer agent findings
+
+The architecture map (run before any edits) flagged three baseline
+issues that batch 4 addresses directly:
+
+| Pre-batch friction | Resolved by |
+|---|---|
+| Silent image drop on text-only model | Already fixed in batch 3 (`MessageComposerView` confirmation dialog) |
+| No SD model picker / cryptic `modelNotLoaded` | Already fixed in batch 3 (auto-load + actionable failure) |
+| No automatic per-task routing | Apple Intelligence catalog entry default — iOS 26+ users get instant TTFT without manual model picking |
+
+Search-offload to smaller-model summarisation was considered and
+deferred (see Outstanding above).
+
+---
+
+# Batch 5 — Auto-routing + batch-4 audit fixes (2026-05-27)
+
+User feedback: a competing app auto-switches between three model tiers
+based on task shape, with an experimental "fast helps smart" toggle.
+Plus a request to verify the batch-4 UX additions actually work
+end-to-end. We ran two parallel agents — `code-reviewer` audited the
+batch-4 diff, `code-explorer` mapped the catalog for the auto-routing
+design — and synthesised both into this batch.
+
+## What changed
+
+### Stage 1 — Batch-4 audit fixes
+- **[HIGH] `_lastError` stale across turns** —
+  `AppleFoundationModelsRuntime.runGeneration` now clears
+  `_lastError = nil` at the success path entry. Mirrors MLX's
+  contract; without this any prior turn's failure stayed visible
+  through `lastGenerationError` indefinitely.
+- **[HIGH] AFM session-rebuild corrupted role alternation** — the
+  earlier draft looped `session.respond(to:)` over every prior
+  `RuntimeMessage`, which fed past assistant outputs back to Apple
+  as new USER turns. Removed the replay loop entirely; sessions
+  now start fresh and rely on (a) the system prompt's embedded
+  conversation summary, (b) session-cache reuse within a single
+  conversation, (c) the current user turn going through
+  `respond(to:)` as the only role-correct path. Rationale
+  documented in the source.
+- **[MED] `@EnvironmentObject MemoryService` crash** in
+  `MessageBubbleView` — doc comment incorrectly claimed nil-safety.
+  Updated to spell out the production injection points
+  (`HomeHubApp.swift:20`, `MainTabView.swift:135`) and the preview
+  requirement (`.environmentObject(AppContainer.preview().memoryService)`).
+- **[MED] Follow-up chips bleeding onto `.length`-truncated replies**
+  — `ChatDetailView` gating expanded with `!message.wasTruncatedByLength`
+  so the "Pokračovat" affordance is exclusive with the chip strip.
+- **[MED] `appliedMemoryFactIDs` persisted late** — moved the
+  `messagesByConversation[...]` write + `store.save(...)` immediately
+  after the stamp instead of waiting for the first token, so crash
+  recovery doesn't lose the audit trail.
+- **[LOW] `RotatingPhaseLabel.index` unbounded** — `index = (index + 1) % phases.count`.
+- **[LOW] `string<S>(from:)` Mirror brittleness** — added a
+  beta-tracker TODO so a future SDK rename doesn't silently corrupt
+  responses.
+
+### Stage 2 — Auto-routing
+- **`AppSettings`** gained `routingPolicy: RoutingPolicy`,
+  `fastModelID`, `balancedModelID`, `smartModelID`. All
+  `decodeIfPresent`-safe; migration silent.
+- **`RoutingPolicy` enum** — `.manual` (default, legacy behaviour) /
+  `.automatic` (heuristic router) / `.experimental` (router +
+  "fast helps smart" co-residency).
+- **`ModelRouter`** — new MainActor service. Pure heuristic
+  classifier (length, code markers, depth-marker phrases) → tier.
+  Resolution honours user's explicit tier picks, Apple-Intelligence
+  priority for FAST/BALANCED, smallest-fit-first inside the tier,
+  device-class downgrade for iPad-only models, vision override for
+  attached photos. `coResidentFastModelID` set only under
+  `.experimental` + budget headroom.
+- **`ConversationService`** auto-route hook — closure-injected
+  `routePickProvider` consulted at turn-start when
+  `routingPolicy != .manual`. Loads the picked model via
+  `RuntimeManager.load(_:)` before LLM prompt assembly hits the
+  runtime so prefill uses the right tokeniser.
+- **`AppContainer`** wires the closure to a freshly-instantiated
+  `ModelRouter`. Weak captures on catalog + settings keep the
+  service-graph lifetime contract intact.
+- **Settings UI** — new `routingSection` under "Generation Engine".
+  Policy picker + three per-tier model pickers (disabled when
+  `policy == .manual`). Help footer explains Apple Intelligence
+  priority + Auto behaviour.
+
+## Files changed in batch 5
+
+### New
+- `HomeHub/Services/ModelRouter.swift` — 305 LOC
+
+### Modified
+- `HomeHub/Models/AppSettings.swift` — 3 fields + `RoutingPolicy` enum
+- `HomeHub/Services/ConversationService.swift` — closure field +
+  auto-route block in `performSend`, persistence fix for
+  `appliedMemoryFactIDs`
+- `HomeHub/App/AppContainer.swift` — `routePickProvider` wire
+- `HomeHub/Features/Settings/SettingsView.swift` — `routingSection`,
+  `tierModelPicker`, `routingTierCandidates`
+- `HomeHub/Runtime/AppleFoundationModelsRuntime.swift` — `_lastError`
+  clear, session-rebuild simplified, Mirror TODO
+- `HomeHub/Features/Chat/MessageBubbleView.swift` —
+  `RotatingPhaseLabel` modulo, MemoryService env doc
+- `HomeHub/Features/Chat/ChatDetailView.swift` — follow-up gating
+
+## Build hygiene
+
+| Check | Result |
+|---|---|
+| `xcodebuild build-for-testing` | ✅ Pass |
+| `xcrun simctl list devices available` | None — tests build but don't execute on this machine |
+| New warnings on touched files | 0 |
+| Sendable / Swift 6 strict concurrency | All paths typed |
+| Backwards-compat decoding | All new AppSettings fields are `decodeIfPresent` with defaults |
+
+## Open follow-ups
+
+- **"Fast helps smart" actually consuming `coResidentFastModelID`** —
+  the router signals "OK to keep fast warm" but ConversationService
+  doesn't yet pre-summarise search results / OCR text through the
+  fast model. Next batch: thread the second runtime instance into
+  `PromptAssemblyService` so `.experimental` policy compresses
+  long `fileExcerpts` before they hit the smart model.
+- **Manual override sticky after first auto-pick** — when the user
+  toggles policy to `.automatic` mid-conversation, the next turn
+  loads a router-picked model; subsequent turns might re-pick on
+  every input. A small hysteresis ("once we've loaded model X, only
+  swap if classify drops two tiers below X") would smooth this. v1
+  is acceptable because the load watchdog avoids thrashing.
+- **No router tests yet** — `ModelRouter.classify` is `nonisolated static`
+  precisely so it's trivially testable. Skipped this batch to keep
+  scope contained; a follow-up should add the standard parameterised
+  test suite (greetings → fast, code → smart, etc.).
+
+---
+
+# Batch 6 — Concurrency hardening + UI nits (2026-05-27)
+
+Spawned two parallel agents (`swift-reviewer` for concurrency,
+`code-reviewer` for broad integration) on Stage 2 / batch 5 work.
+swift-reviewer flagged a real data race risk in
+`AppleFoundationModelsRuntime`; code-reviewer surfaced a `.disabled`
+scope nit. Both addressed here.
+
+## swift-reviewer findings
+
+**[HIGH] AFM `@unchecked Sendable` with 5 mutable fields touched from
+both `@MainActor` (observers) and cooperative-pool `Task` inside
+`generate(...)`**. The "single-thread access enforced by RuntimeManager"
+claim wasn't actually enforced — `RuntimeManager.operationTask`
+serialises `load()` / `unload()` against each other but doesn't gate
+observer reads of `lastGenerationError` / `isCurrentlyGenerating`
+against writes in `runGeneration`.
+
+**[HIGH] `_sessionsAny: Any?` had dual write paths** — raw
+`_sessionsAny = nil` direct assignment vs. computed setter
+`sessions.removeAll()`. Fragile under future edits.
+
+**[LOW] `Mirror` reflection fallback** — already TODO'd.
+
+## code-reviewer findings
+
+**[MED] `send()` vs `sendAndWait()` contract asymmetry** — documented
+in source as carry-over; UI paths are gated correctly, only
+non-UI callers (widgets, voice) could fire turns with no model.
+Accepted as-is.
+
+**[LOW] `.disabled` scope on Picker only, not VStack** — only the
+control greyed out; label + help stayed opaque. Fixed.
+
+## Fixes applied
+
+### 1. AFM state locked under `OSAllocatedUnfairLock<MutableState>`
+
+Replaced 5 separate `private var` fields with a single
+`MutableState` struct held in `OSAllocatedUnfairLock`. All reads
+(`loadedModel`, `isCurrentlyGenerating`, `lastGenerationError`,
+`activeSessionConversationID`) go through `lockedState.withLock { $0.field }`.
+All writes (load/unload/runGeneration burst) wrap their mutations
+in a single `withLock` block so observers never see a half-
+unloaded runtime.
+
+**Why a lock, not an actor.** The protocol surface
+(`var loadedModel: LocalModel? { get }`) is synchronous + nonisolated.
+Migrating to an actor would force `async` on every call site — far
+wider surgery than the value of the change. `OSAllocatedUnfairLock`
+gives O(ns) reads from any isolation context with identical
+getter ergonomics.
+
+### 2. `SessionBox: @unchecked Sendable` wrapper
+
+`LanguageModelSession` isn't Sendable. Putting it directly into
+`MutableState.sessionsAny: Any?` works (`@unchecked Sendable` on
+the struct), but mutating the typed dictionary via a closure
+captured by `OSAllocatedUnfairLock.withLock { ... }` (which is
+`@Sendable`) tripped strict concurrency — the closure captured
+non-Sendable `LanguageModelSession`. Solution mirrors
+`CoreMLStableDiffusionRuntime.PipelineBox`: wrap each session in
+a tiny `@unchecked Sendable` class, then the dictionary's value
+type is Sendable and closures cross cleanly.
+
+### 3. Session cache API now three narrow ops
+
+Dropped the closure-based `mutateSessions(_:)` helper that had
+the dual-write footgun. Replaced with three direct functions:
+- `session(for conversationID:) -> LanguageModelSession?`
+- `setSession(_:for:)`
+- `removeSession(for:)`
+
+Plus `clearSessionCache()` for the unload/background/trim paths.
+Single source of truth; future edits can't accidentally bypass
+the lock.
+
+### 4. `tierModelPicker` `.disabled` moved to VStack
+
+The whole row (label + control + help text) now greys out under
+`.manual` policy. Matches iOS Settings convention.
+
+### 5. ModelRouter classifier tests
+
+New `HomeHubTests/ModelRouterClassifyTests.swift` — 12 cases
+covering greetings → fast, code markers → smart, depth phrases
+→ smart, length thresholds, vision attachment override, edge
+cases (empty input, case-insensitive matches, marker boundary
+regression).
+
+## Files changed in batch 6
+
+### New
+- `HomeHubTests/ModelRouterClassifyTests.swift` — 149 LOC
+
+### Modified
+- `HomeHub/Runtime/AppleFoundationModelsRuntime.swift` — locked
+  state refactor, `SessionBox` wrapper, narrow session API,
+  cleaned orphaned brace block left over from earlier edit
+- `HomeHub/Features/Settings/SettingsView.swift` — `.disabled`
+  on VStack
+
+## Build hygiene
+
+| Check | Result |
+|---|---|
+| `xcodebuild build-for-testing` | ✅ Pass |
+| New errors | 0 |
+| New warnings on touched files | 0 |
+| Sendable / Swift 6 strict concurrency | All paths typed |
+
+## Open follow-ups (unchanged from batch 5)
+
+- **Fast helps smart actually consuming `coResidentFastModelID`** —
+  router signals "OK to keep fast warm" but ConversationService
+  doesn't pre-summarise search results / OCR text through the
+  fast model yet. Standalone batch.
+- **Router hysteresis** to prevent rapid model thrashing on
+  borderline prompts.
+- **Phase 3c**: ModelDownloadService extension for SD bundles.
+
+---
+
+# Batch 7 — Fast helps smart + router hysteresis (2026-05-27)
+
+Spawned an `architect` agent for the cross-service design check
+before any code landed. Their plan went straight into
+implementation — captured below alongside the build-time gotchas
+that hit during execution.
+
+## Design (per architect)
+
+| Decision | Rationale |
+|---|---|
+| Compression in `performSend`, not `PromptAssemblyService.build` | Builder is sync + pure; `performSend` already owns async cancellation context |
+| Closure-injected `excerptCompressorProvider`, not protocol or direct AFM dep | Matches existing `routePickProvider` / `installedImageModelIDsProvider` idiom; keeps the AFM availability fence at the composition root |
+| 6 KB byte threshold | Below: AFM round-trip cost > prefill saving. Above: smart-model verbatim prefill grows visibly slower |
+| Cancellation: native `Task.isCancelled` checkpoints + soft 4 s timeout | AFM's `respond(to:)` honours task cancellation natively; the 4 s deadline guards against AFM hangs |
+| Failure: skip compression, inject verbatim, log only | Verbatim path is functionally correct — no user action available. UI warnings would train users to ignore them |
+
+## What changed
+
+### `HomeHub/Services/ExcerptCompressor.swift` (new, 197 LOC)
+- `@MainActor` class with one public `static func compress(excerpts:language:) async -> String?`
+- Race AFM `LanguageModelSession.respond(to:)` against a 4 s soft timeout via `withTaskGroup` — first to finish wins, loser is cancelled
+- Per-language strict instructions block (Czech / English) demanding one paragraph, no bullets, name/number/date preservation
+- Multiple gates short-circuit to `nil`: iOS < 26, `SystemLanguageModel.default.availability != .available`, AFM throw, timeout, cancelled
+- `nonisolated` on `logger`, `timeoutSeconds`, `responseText`, `instructions` because the `withTaskGroup` children run on the cooperative pool, not MainActor
+
+### `HomeHub/Services/ConversationService.swift`
+- New `excerptCompressorProvider` closure on `init` (default `{ _, _ in nil }`)
+- `static let excerptCompressionByteThreshold = 6_000`
+- Capture `routerDecision` in `performSend` so the downstream compression step gates without re-classifying
+- **Hysteresis**: skip the runtime swap when current model and decision share a tier — prevents thrashing between same-tier models on borderline classifier flips
+- Compression gate runs after `topExcerpts` is fully assembled (post WebSearch), before prompt-context-package construction. All four gates: `.experimental` policy + SMART tier + bytes > threshold + non-nil compressor result
+
+### `HomeHub/Services/ModelRouter.swift`
+- `tierFor(model:)` promoted from `private` to `nonisolated static` so `ConversationService` can apply hysteresis without re-instantiating the router
+- Internal call sites updated to `Self.tierFor(...)`
+
+### `HomeHub/App/AppContainer.swift`
+- Wires `excerptCompressorProvider` to `ExcerptCompressor.compress(...)` — stateless thin adapter, no AFM branching here (compressor self-gates)
+
+## Build hygiene
+
+| Check | Result |
+|---|---|
+| `xcodebuild build-for-testing` | ✅ Pass |
+| New errors | 0 |
+| New warnings on touched files | 0 |
+
+## Gotchas hit during execution
+
+1. **`@MainActor` class + nonisolated static usage** — initial draft had `logger`, `timeoutSeconds`, `responseText` as actor-isolated statics, but the `withTaskGroup` children run on the cooperative pool and tripped strict concurrency. Marked them `nonisolated` (and `nonisolated(unsafe)` for the Logger). Pattern: anything called from inside `TaskGroup.addTask { ... }` must be reachable from any actor.
+
+## Open follow-ups (unchanged)
+
+- Phase 3c: ModelDownloadService extension for `.coreMLPackage` repo snapshots.
+- Tests for the compressor gating logic (would need to stub AFM availability — feasible but deferred).
+- Telemetry: track how often compression fires vs. skips so the 6 KB threshold can be tuned with field data.
