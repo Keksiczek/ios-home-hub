@@ -77,6 +77,47 @@ final class ConversationService: ObservableObject {
     /// chat layer only knows the protocol — it doesn't care whether
     /// the bytes come from a stub gradient or a real Core ML pipeline.
     private let imageRuntime: any ImageGenerationRuntime
+
+    /// Looks up the IDs of installed image-generation models from the
+    /// catalog. Injected as a closure so this service stays decoupled
+    /// from `ModelCatalogService`. Used by `performImageGeneration`
+    /// to auto-load the first installed SD model on cold start —
+    /// without this, the first `/image` of every app launch would
+    /// fail with `modelNotLoaded`. Returns IDs of models whose
+    /// `format == .coreMLPackage` AND `installState == .installed`.
+    private let installedImageModelIDsProvider: @MainActor () -> [String]
+
+    /// Auto-routing pick provider. Called at turn start when
+    /// `settings.current.routingPolicy != .manual` to decide which
+    /// model should handle this turn. Returns `nil` when no
+    /// installed model matches (caller falls back to the currently-
+    /// loaded model and the chat surface shows an actionable
+    /// banner). Injected as a closure so this service stays free
+    /// of `ModelRouter` / `ModelCatalogService` deps — production
+    /// wires it to a real `ModelRouter.pick`, tests pass `{ _,_ in nil }`
+    /// for the legacy single-model behaviour.
+    private let routePickProvider: @MainActor (_ userInput: String, _ hasImage: Bool) -> ModelRouter.Decision?
+
+    /// "Fast helps smart" excerpt compressor. Called only when
+    /// `routingPolicy == .experimental`, the picked tier is
+    /// `.smart`, and the concatenated `fileExcerpts` exceeds
+    /// `excerptCompressionByteThreshold`. Returns the compressed
+    /// paragraph (caller substitutes it for the verbatim
+    /// excerpts) or `nil` to fall back to verbatim — see
+    /// `ExcerptCompressor.compress(...)` for the full contract.
+    /// Default closure returns `nil` so tests / previews skip
+    /// compression without configuration.
+    private let excerptCompressorProvider: @MainActor (_ excerpts: [String], _ language: AppLanguage) async -> String?
+
+    /// Soft byte threshold above which "fast helps smart"
+    /// compression becomes worthwhile. Below this, the Apple
+    /// Intelligence round-trip costs more than the prefill saving
+    /// on the smart model. Above this, the verbatim prefill on a
+    /// 7B+ MLX model grows visibly slower than AFM compression +
+    /// a smaller prefill. Tuned for iPhone 16 Pro — re-measure
+    /// if defaults change.
+    static let excerptCompressionByteThreshold = 6_000
+
     /// Per-conversation semantic recall over truncated message history.
     /// Used inside `performSend` to surface earlier turns the budgeter
     /// would otherwise drop. Reads the shared `embeddingService` LRU,
@@ -164,6 +205,9 @@ final class ConversationService: ObservableObject {
         embeddingService: EmbeddingService = EmbeddingService(),
         promptBudgetReporter: PromptBudgetReporter? = nil,
         imageRuntime: (any ImageGenerationRuntime)? = nil,
+        installedImageModelIDsProvider: @escaping @MainActor () -> [String] = { [] },
+        routePickProvider: @escaping @MainActor (_ userInput: String, _ hasImage: Bool) -> ModelRouter.Decision? = { _, _ in nil },
+        excerptCompressorProvider: @escaping @MainActor (_ excerpts: [String], _ language: AppLanguage) async -> String? = { _, _ in nil },
         recentBackgroundTimestamp: @escaping @MainActor () -> Date? = { nil },
         onBackgroundCompletion: @escaping @MainActor () -> Void = {}
     ) {
@@ -186,6 +230,9 @@ final class ConversationService: ObservableObject {
         // lands, `AppContainer` can inject it here without touching
         // the rest of the chat plumbing.
         self.imageRuntime = imageRuntime ?? StubImageGenerationRuntime()
+        self.installedImageModelIDsProvider = installedImageModelIDsProvider
+        self.routePickProvider = routePickProvider
+        self.excerptCompressorProvider = excerptCompressorProvider
         self.recentBackgroundTimestamp = recentBackgroundTimestamp
         self.onBackgroundCompletion = onBackgroundCompletion
     }
@@ -987,10 +1034,20 @@ final class ConversationService: ObservableObject {
         // This Task is the body that exits via the `defer` below.
 
         // Timeout watchdog: cancels the stream and marks the message `.failed`
-        // if generation hangs beyond `generationTimeoutSeconds`. The watchdog
+        // if generation hangs beyond the configured ceiling. The watchdog
         // task is cancelled in `defer` whenever generation completes normally,
         // so it never fires on a successful turn.
-        let timeoutSeconds = settings.current.generationTimeoutSeconds
+        //
+        // Image vs. text branch each carry their own configured timeout —
+        // text completions are tuned for streaming responsiveness (~120 s),
+        // while a real Core ML diffusion run on iPhone routinely needs
+        // 30–90 s for a single 20-step turn and cold loads stretch further.
+        // We peek at the user input here (a pure static parse) so the
+        // watchdog seconds match the branch performSend will actually take
+        // once we hit the early-return at line ~1093.
+        let timeoutSeconds = Self.parseImagePromptCommand(userInput) != nil
+            ? settings.current.imageGenerationTimeoutSeconds
+            : settings.current.generationTimeoutSeconds
         let watchdog = Task { @MainActor [weak self] in
             do {
                 try await Task.sleep(for: .seconds(timeoutSeconds))
@@ -1079,6 +1136,60 @@ final class ConversationService: ObservableObject {
         messagesByConversation[conversationID] = list
         try? await store.save(message: assistantMessage)
 
+        // Auto-routing decision. Consulted only when the user has
+        // opted into automatic / experimental policy via Settings
+        // → Modely. The provider closure is responsible for honouring
+        // the policy switch — for `.manual` it returns `nil` and
+        // this whole block is a no-op, preserving the legacy
+        // behaviour where the user's explicit model pick handles
+        // every turn.
+        //
+        // When a different model than the currently-loaded one is
+        // picked, we load it BEFORE the LLM prompt assembly hits
+        // the runtime. The load is awaited so the prefill phase
+        // uses the right model — there's no point starting MLX
+        // tokenisation with the wrong tokeniser. A failed load
+        // (no installed candidate, OOM, etc.) falls back to the
+        // existing model: the chat surface keeps working, just
+        // without the routing benefit. Errors get logged but
+        // don't block the turn.
+        // Router decision captured here so the downstream
+        // "fast helps smart" compression step (see ~line 1390) can
+        // gate on the picked tier without re-classifying.
+        var routerDecision: ModelRouter.Decision?
+        if settings.current.routingPolicy != .manual {
+            let hasImage = (attachments ?? []).contains { $0.imageData != nil }
+            if let decision = routePickProvider(userInput, hasImage) {
+                routerDecision = decision
+                let current = runtime.activeModel
+                // Hysteresis: skip the swap when the currently-
+                // loaded model already lives in the classifier's
+                // picked tier. Without this, two borderline prompts
+                // in a row could thrash between two same-tier
+                // models (each fast model is "interchangeable" from
+                // the user's perspective but a load cycle is
+                // 5–15 s — never worth it for a same-tier swap).
+                // We still swap when the tier itself differs: the
+                // user *does* want a bigger model when their prompt
+                // gets longer/more complex.
+                let currentTier = current.map { ModelRouter.tierFor(model: $0) }
+                let sameTier = currentTier == decision.tier
+                if current?.id != decision.model.id && !sameTier {
+                    HHLog.chat.info("Auto-route: \(decision.tier.rawValue, privacy: .public) → \(decision.model.id, privacy: .public) — \(decision.reasonCZ, privacy: .public)")
+                    // `RuntimeManager.load(_:)` is non-throwing; it
+                    // logs and surfaces failure through
+                    // `lastGenerationError`. We await it directly so
+                    // the prefill phase uses the correct tokeniser;
+                    // any failure shows up in the chat surface via
+                    // the standard error path on the first turn
+                    // that follows.
+                    await runtime.load(decision.model)
+                } else if sameTier && current?.id != decision.model.id {
+                    HHLog.chat.info("Auto-route: hysteresis kept \(current?.id ?? "?", privacy: .public) instead of swapping to same-tier \(decision.model.id, privacy: .public)")
+                }
+            }
+        }
+
         // `/image PROMPT` slash command. Detected here (after the
         // user turn is persisted, before any LLM prompt assembly)
         // so the rest of the chat plumbing — message list, history,
@@ -1090,9 +1201,9 @@ final class ConversationService: ObservableObject {
         // falls through to the LLM path — there's no useful prompt to
         // feed the diffusion runtime, and the model can ask the user
         // what they wanted instead.
-        if let imagePrompt = Self.parseImagePromptCommand(userInput) {
+        if let imageCommand = Self.parseImageCommand(userInput) {
             await performImageGeneration(
-                prompt: imagePrompt,
+                command: imageCommand,
                 conversationID: conversationID,
                 assistantIndex: assistantIndex
             )
@@ -1182,7 +1293,44 @@ final class ConversationService: ObservableObject {
                 HHLog.kb.error("web search failed: \(error.localizedDescription, privacy: .public) — omitting from context")
             }
         }
-        
+
+        // "Fast helps smart" — `.experimental` policy + SMART tier
+        // + excerpts above byte threshold. Compress via Apple
+        // Intelligence so the SMART MLX model sees a tight summary
+        // instead of multi-KB raw excerpts. Saves prefill time on
+        // the big model; AFM's round-trip is sub-second.
+        //
+        // All four gates must pass:
+        //   1. Policy is `.experimental` (user opted in).
+        //   2. Router picked SMART tier for this turn (the only
+        //      tier where prefill dominates).
+        //   3. Combined excerpts exceed the heuristic threshold —
+        //      below it the AFM round-trip costs more than it saves.
+        //   4. Compressor closure returns non-nil (AFM available,
+        //      didn't time out, didn't throw, wasn't cancelled).
+        //
+        // Cancellation: `Task.checkCancellation()` brackets the
+        // compressor call so a Stop tap aborts before the SMART
+        // model even starts loading prompt context.
+        if settings.current.routingPolicy == .experimental,
+           routerDecision?.tier == .smart,
+           !topExcerpts.isEmpty {
+            let totalBytes = topExcerpts.reduce(0) { $0 + $1.utf8.count }
+            if totalBytes > Self.excerptCompressionByteThreshold {
+                if Task.isCancelled {
+                    HHLog.chat.info("Excerpt compression skipped: turn cancelled before AFM call")
+                } else {
+                    let language = settings.current.language
+                    if let summary = await excerptCompressorProvider(topExcerpts, language) {
+                        HHLog.chat.info("Excerpt compression: \(totalBytes, privacy: .public) B → \(summary.utf8.count, privacy: .public) B via AFM")
+                        topExcerpts = [summary]
+                    } else {
+                        HHLog.chat.info("Excerpt compression returned nil (AFM unavailable / failed / timed out) — injecting verbatim")
+                    }
+                }
+            }
+        }
+
         // Intersect "registered" and "user-enabled" to get the allow-list
         // that drives BOTH the L4 instructions and the runtime dispatch.
         // Doing this once per turn keeps prompt and execution in lockstep:
@@ -1287,6 +1435,24 @@ final class ConversationService: ObservableObject {
         // some toolchains. The closure form sidesteps it without
         // changing semantics — `compactMap` still drops nil entries.
         let userImages: [Data] = (attachments ?? []).compactMap { $0.imageData }
+
+        // Stamp the assistant placeholder with the fact IDs we're
+        // about to inject — surfaced under the response as a
+        // "🧠 Použito X fakt" chip so users can audit what the model
+        // saw of their memory. Empty array (vs nil) means "memory
+        // checked, no relevant facts" — UI skips the chip then.
+        //
+        // We persist the placeholder again here so:
+        //   1. The dictionary-backed in-memory list reflects the
+        //      stamp immediately (the entry was already inserted at
+        //      ~line 1101 as an empty placeholder).
+        //   2. The on-disk message gets the stamp BEFORE the first
+        //      token streams in. A mid-stream crash then preserves
+        //      the audit trail of which facts the model saw; without
+        //      this we'd lose the chip data on every crashed turn.
+        assistantMessage.appliedMemoryFactIDs = facts.map(\.id)
+        messagesByConversation[conversationID]?[assistantIndex] = assistantMessage
+        try? await store.save(message: assistantMessage)
 
         let package = PromptContextPackage(
             assistant: personaForTurn,
@@ -1534,8 +1700,19 @@ final class ConversationService: ObservableObject {
                                 try? await store.save(message: snapshot)
                             }
                         }
-                    case .finished(let reason, _):
+                    case .finished(let reason, let stats):
                         assistantMessage.status = (reason == .cancelled) ? .cancelled : .complete
+                        // Capture throughput so the chat surface can
+                        // show a "12 tok · 9.4 t/s" footer chip.
+                        // Skipped for cancelled turns (stats would
+                        // be misleading — partial generation).
+                        if reason != .cancelled {
+                            assistantMessage.generationStats = Message.GenerationStats(
+                                tokensGenerated: stats.tokensGenerated,
+                                tokensPerSecond: stats.tokensPerSecond,
+                                totalDurationMs: stats.totalDurationMs
+                            )
+                        }
                         // Persist the finish reason as a raw string so
                         // the chat layer can surface "Pokračovat" on
                         // `.length` cuts without importing the runtime
@@ -2383,25 +2560,91 @@ final class ConversationService: ObservableObject {
 
     // MARK: - Image generation (slash command)
 
+    /// Parsed shape of an `/image …` chat command. Carries the prompt
+    /// body plus optional power-user flags that map onto
+    /// `ImageGenerationParameters`. Untouched flags fall through to
+    /// the runtime's defaults (20 steps, guidance 7.5 for SD 2.1).
+    struct ImageCommand: Equatable, Sendable {
+        let prompt: String
+        /// Diffusion step count override (`--steps 30`). `nil` ⇒
+        /// runtime default.
+        let steps: Int?
+        /// Classifier-free guidance scale override (`--guidance 9.0`).
+        /// `nil` ⇒ runtime default. Higher values push the output
+        /// closer to the prompt at the cost of variety.
+        let guidanceScale: Double?
+    }
+
     /// Returns the non-empty prompt portion of an `/image …` command,
-    /// or `nil` when the input doesn't match. Tolerates a few
-    /// permutations users actually type:
-    ///   - `/image cat`         → "cat"
-    ///   - `/img a moonlit fox` → "a moonlit fox"
-    ///   - `/image   trim me  ` → "trim me"
+    /// or `nil` when the input doesn't match. Thin wrapper around
+    /// `parseImageCommand` kept for callers that only care about the
+    /// branching decision (e.g. the watchdog-timeout picker).
+    nonisolated static func parseImagePromptCommand(_ rawInput: String) -> String? {
+        parseImageCommand(rawInput)?.prompt
+    }
+
+    /// Parses `/image …` (or `/img …`) with optional flags. Examples:
+    ///   - `/image cat`                          → prompt="cat"
+    ///   - `/img a fox`                          → prompt="a fox"
+    ///   - `/image   trim me  `                  → prompt="trim me"
+    ///   - `/image --steps 30 a fox`             → prompt="a fox", steps=30
+    ///   - `/image --guidance 9.0 a fox`         → prompt="a fox", guidance=9.0
+    ///   - `/image --steps 30 --guidance 9 fox`  → prompt="fox", steps=30, guidance=9
+    ///   - `/image --steps abc fox`              → prompt="--steps abc fox" (no clamp on parse fail —
+    ///                                              the flag is consumed as prose so the user can ask
+    ///                                              about a literal step count)
     ///
-    /// Empty body falls through (`nil`) so the regular LLM path can
-    /// handle "/image " — the model can ask what the user wanted
-    /// rather than silently producing a blank image.
-    static func parseImagePromptCommand(_ rawInput: String) -> String? {
+    /// Flags MUST appear before the prompt body. Unknown / malformed
+    /// flags stop the flag-eating loop and roll their tokens back into
+    /// the prompt — that way a future LLM-only feature like
+    /// `--system "…"` doesn't ghost the user's literal text.
+    ///
+    /// `nonisolated` because the parse is a pure function over its
+    /// String input — no dependence on `ConversationService`'s
+    /// MainActor-isolated state. Lets tests call it directly without
+    /// hopping to the MainActor and lets `performSend` invoke it
+    /// from the watchdog-timeout decision before the MainActor hop
+    /// to the message store.
+    nonisolated static func parseImageCommand(_ rawInput: String) -> ImageCommand? {
         let trimmed = rawInput.trimmingCharacters(in: .whitespacesAndNewlines)
         let prefixes = ["/image ", "/img "]
-        for prefix in prefixes where trimmed.lowercased().hasPrefix(prefix) {
-            let body = trimmed.dropFirst(prefix.count)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            return body.isEmpty ? nil : body
+        guard let prefix = prefixes.first(where: { trimmed.lowercased().hasPrefix($0) }) else {
+            return nil
         }
-        return nil
+        let body = trimmed.dropFirst(prefix.count)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !body.isEmpty else { return nil }
+
+        // Token-by-token flag eater. Stops at the first non-flag
+        // token (or malformed flag) and treats everything from that
+        // point on as the prompt body — including embedded
+        // whitespace runs.
+        var tokens = body.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
+        var steps: Int? = nil
+        var guidanceScale: Double? = nil
+
+        flagLoop: while let token = tokens.first {
+            switch token {
+            case "--steps":
+                guard tokens.count >= 2, let value = Int(tokens[1]), (1...100).contains(value) else {
+                    break flagLoop
+                }
+                steps = value
+                tokens.removeFirst(2)
+            case "--guidance":
+                guard tokens.count >= 2, let value = Double(tokens[1]), (0...30).contains(value) else {
+                    break flagLoop
+                }
+                guidanceScale = value
+                tokens.removeFirst(2)
+            default:
+                break flagLoop
+            }
+        }
+
+        let promptBody = tokens.joined(separator: " ")
+        guard !promptBody.isEmpty else { return nil }
+        return ImageCommand(prompt: promptBody, steps: steps, guidanceScale: guidanceScale)
     }
 
     /// Drives an image-generation turn end-to-end:
@@ -2417,31 +2660,26 @@ final class ConversationService: ObservableObject {
     /// `content`, mirroring the text-path failure shape so chat
     /// chrome doesn't need image-specific failure branches.
     ///
-    /// ## Known limitations (real-runtime follow-ups)
+    /// ## Watchdog + cancellation contract
     ///
-    /// 1. **Watchdog timeout is shared with text path.** `performSend`
-    ///    arms `settings.current.generationTimeoutSeconds` for both
-    ///    branches. Stub finishes in ~200 ms so this is fine. Once a
-    ///    real Core ML / FLUX runtime lands and routinely needs
-    ///    30–60 s, image generation should get its own
-    ///    `imageGenerationTimeoutSeconds` setting (or this method
-    ///    should extend the watchdog explicitly when entering the
-    ///    image branch).
-    /// 2. **Cancellation depends on the runtime polling
-    ///    `Task.isCancelled`.** The user's Stop tap cancels the
-    ///    parent Task; the for-await loop sees it via Swift's
-    ///    standard cancellation propagation. The stub polls
-    ///    correctly inside its render loop. A real diffusion runtime
-    ///    that doesn't poll mid-step (e.g. some Core ML pipelines)
-    ///    would finish the full generation before the user's Stop
-    ///    takes effect. When that runtime lands, expose an explicit
-    ///    `cancel()` API on `ImageGenerationRuntime` and wire it
-    ///    here on Task cancellation.
+    /// 1. **Image-specific timeout.** `performSend` picks
+    ///    `imageGenerationTimeoutSeconds` (default 240 s) when
+    ///    `parseImagePromptCommand` returns non-nil — independent of
+    ///    the text-path `generationTimeoutSeconds`. Stub finishes in
+    ///    ~200 ms regardless; Core ML SD 2.1 base typically lands in
+    ///    20–90 s on iPhone 16 Pro NE.
+    /// 2. **Explicit cancellation.** Runtimes implement
+    ///    `cancel()` on `ImageGenerationRuntime`. This method wraps
+    ///    the for-await in `withTaskCancellationHandler` so user Stop
+    ///    taps reach the runtime even when its inner step loop
+    ///    doesn't poll `Task.isCancelled` between Core ML predict
+    ///    calls.
     private func performImageGeneration(
-        prompt: String,
+        command: ImageCommand,
         conversationID: UUID,
         assistantIndex: Int
     ) async {
+        let prompt = command.prompt
         // Switch the placeholder from prefill ("Připravuju model…")
         // to decoding ("Generuju…") so the UI shows progress, not the
         // text-path indicator that would never tick over.
@@ -2457,26 +2695,128 @@ final class ConversationService: ObservableObject {
             return
         }
 
-        let params = ImageGenerationParameters(prompt: prompt)
+        // Auto-load the first installed SD model if the runtime has
+        // nothing resident. Cold start of the app + first `/image` of
+        // the day would otherwise fail with `.modelNotLoaded` — that's
+        // a confusing failure for users who don't know that image
+        // generation is a separate runtime from text. We pick the
+        // first installed `.coreMLPackage` model from the catalog
+        // (v1 only ships SD 2.1 base palettized, so the list is
+        // 0 or 1 long; if/when more SD entries land, the user can
+        // pick via Settings → Modely and we just honour their pick).
+        if await imageRuntime.loadedModelID == nil {
+            let installedIDs = installedImageModelIDsProvider()
+            guard let firstID = installedIDs.first else {
+                // No SD model installed at all — surface an actionable
+                // failure instead of the cryptic "resources missing".
+                let actionable = "Pro generování obrázků si nejdřív stáhni model. Otevři Nastavení → Modely a najdi „Stable Diffusion 2.1 Base (Core ML)\"."
+                writeAssistantFailure(
+                    conversationID: conversationID,
+                    assistantIndex: assistantIndex,
+                    message: actionable,
+                    previewIcon: "⚠️ Chybí SD model"
+                )
+                endGenerationLifecycle(for: conversationID, cancellingTask: false)
+                return
+            }
+            // Surface the load — for a first-of-the-session run this
+            // is a multi-second wait (Core ML compiles + mmaps the
+            // weights). Users without the placeholder would assume
+            // the app froze.
+            if var loadingList = messagesByConversation[conversationID],
+               loadingList.indices.contains(assistantIndex) {
+                var msg = loadingList[assistantIndex]
+                msg.content = "Načítám model pro obrázky…"
+                loadingList[assistantIndex] = msg
+                messagesByConversation[conversationID] = loadingList
+            }
+            do {
+                try await imageRuntime.load(modelID: firstID)
+            } catch {
+                writeAssistantFailure(
+                    conversationID: conversationID,
+                    assistantIndex: assistantIndex,
+                    message: (error as? LocalizedError)?.errorDescription ?? error.localizedDescription,
+                    previewIcon: "⚠️ Generování obrázku selhalo"
+                )
+                endGenerationLifecycle(for: conversationID, cancellingTask: false)
+                return
+            }
+        }
+
+        // Flags from the slash command override the runtime's defaults.
+        // Untouched flags fall through to `ImageGenerationParameters`'
+        // own defaults (steps=20, guidance=7.5 — tuned for SD 2.1 base).
+        let params = ImageGenerationParameters(
+            prompt: prompt,
+            guidanceScale: command.guidanceScale ?? 7.5,
+            steps: command.steps ?? 20
+        )
         let stream = imageRuntime.generate(parameters: params)
         var finalImage: GeneratedImage?
         var failure: Error?
 
+        // `withTaskCancellationHandler` bridges parent-Task cancel
+        // (`cancelStream` → this generation Task → standard Swift
+        // cancellation propagation) to the runtime's explicit
+        // `cancel()` API. Without this bridge a Core ML diffusion
+        // runtime whose inner step loop doesn't poll
+        // `Task.isCancelled` would finish the full ~30-90 s
+        // generation after a Stop tap. The handler captures
+        // `imageRuntime` by reference and schedules a detached
+        // cancel-fire — the await chain inside the operation then
+        // observes the runtime's flag flip and exits with
+        // `ImageGenerationError.cancelled`.
+        // Throttle UI updates to ~1 visible refresh per 250 ms so the
+        // chat surface doesn't thrash when a real diffusion runtime
+        // emits a progress event per step (SD 2.1 base: 20 steps in
+        // ~20–40 s = roughly one event per second, already under the
+        // gate, but SDXL/Flux variants emit faster).
+        var lastProgressUpdate = Date.distantPast
         do {
-            for try await event in stream {
-                switch event {
-                case .progress, .preview:
-                    // No UI plumbing for incremental updates yet —
-                    // the stub finishes in ~200 ms anyway. When a
-                    // real diffusion runtime lands, this is where
-                    // we'd update an "X/Y steps" caption in the
-                    // assistant message.
-                    continue
-                case .finished(let image):
-                    finalImage = image
-                case .failed(let err):
-                    failure = err
+            try await withTaskCancellationHandler {
+                for try await event in stream {
+                    switch event {
+                    case .progress(let step, let total):
+                        // Refresh the assistant placeholder text in
+                        // place so the user sees real progress instead
+                        // of a static "Generuju…". The status stays
+                        // `.streaming` — only on `.finished` do we
+                        // flip to `.complete`. We're already on the
+                        // MainActor (the enclosing class is
+                        // `@MainActor`), so the dictionary mutation
+                        // is a direct sync write; SwiftUI picks it
+                        // up via @Published on the next runloop.
+                        let now = Date()
+                        guard now.timeIntervalSince(lastProgressUpdate) > 0.25 else { continue }
+                        lastProgressUpdate = now
+                        guard var progressList = messagesByConversation[conversationID],
+                              progressList.indices.contains(assistantIndex) else { continue }
+                        var msg = progressList[assistantIndex]
+                        msg.content = "Generuju obrázek… \(step)/\(total)"
+                        progressList[assistantIndex] = msg
+                        messagesByConversation[conversationID] = progressList
+                    case .preview:
+                        // No preview rendering yet — the stub doesn't
+                        // emit these and the Core ML runtime doesn't
+                        // decode intermediates by default. Reserve
+                        // this branch for a future SDXL refiner pass.
+                        continue
+                    case .finished(let image):
+                        finalImage = image
+                    case .failed(let err):
+                        failure = err
+                    }
                 }
+            } onCancel: {
+                // Cancellation handlers run synchronously on whatever
+                // context cancelled the parent, so we hop into an
+                // unstructured Task to reach the actor-isolated
+                // runtime API. Fire-and-forget: the operation's own
+                // for-await loop will throw `CancellationError` once
+                // the runtime publishes `.failed(.cancelled)` (or
+                // `Task.isCancelled` trips on its next suspension).
+                Task { [imageRuntime] in await imageRuntime.cancel() }
             }
         } catch {
             failure = error
@@ -2524,5 +2864,41 @@ final class ConversationService: ObservableObject {
         }
 
         endGenerationLifecycle(for: conversationID, cancellingTask: false)
+    }
+
+    /// Writes a user-readable failure into the assistant placeholder
+    /// for the image-generation branch. Mirrors the `.failed` shape
+    /// the text-runtime path uses so the chat surface doesn't need a
+    /// dedicated "image failed" cell — `.failed` status + a
+    /// localized string in `content` is enough for the standard
+    /// failure cell to render.
+    ///
+    /// Also updates the conversation preview so the chat list reflects
+    /// the failure instead of leaving the stale user-prompt preview
+    /// from `send(...)`.
+    private func writeAssistantFailure(
+        conversationID: UUID,
+        assistantIndex: Int,
+        message: String,
+        previewIcon: String
+    ) {
+        guard var list = messagesByConversation[conversationID],
+              list.indices.contains(assistantIndex) else { return }
+        var msg = list[assistantIndex]
+        msg.content = message
+        msg.status = .failed
+        list[assistantIndex] = msg
+        messagesByConversation[conversationID] = list
+        Task { [store, msg] in
+            try? await store.save(message: msg)
+        }
+        if let idx = conversations.firstIndex(where: { $0.id == conversationID }) {
+            conversations[idx].lastMessagePreview = previewIcon
+            conversations[idx].updatedAt = .now
+            let snapshot = conversations[idx]
+            Task { [store, snapshot] in
+                try? await store.save(conversation: snapshot)
+            }
+        }
     }
 }

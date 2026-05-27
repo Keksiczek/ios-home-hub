@@ -62,6 +62,11 @@ let package = Package(
         // that is compatible with WhisperKit 0.11.0 and mlx-swift-lm main.
         // from: "0.1.14" is the minimum version compatible with WhisperKit 0.11.0.
         .package(url: "https://github.com/huggingface/swift-transformers", from: "0.1.14"),
+        // Core ML Stable Diffusion. Fork of apple/ml-stable-diffusion with the
+        // swift-transformers pin loosened from `.exact("0.1.8")` to a range so
+        // it can coexist with the project's `from: 0.1.14`. See the
+        // `StableDiffusion` package block in project.yml for the rationale.
+        .package(url: "https://github.com/Keksiczek/ml-stable-diffusion", branch: "main"),
     ],
     targets: [
         .target(
@@ -71,9 +76,11 @@ let package = Package(
                 .product(name: "MLX",           package: "mlx-swift"),
                 .product(name: "MLXLLM",        package: "mlx-swift-lm"),
                 .product(name: "MLXLMCommon",   package: "mlx-swift-lm"),
+                .product(name: "MLXVLM",        package: "mlx-swift-lm"),
                 // Transformers is the only exported library product in swift-transformers.
                 // Hub and Tokenizers are internal targets compiled as part of it.
                 .product(name: "Transformers",  package: "swift-transformers"),
+                .product(name: "StableDiffusion", package: "ml-stable-diffusion"),
             ],
             path: "HomeHub",
             exclude: [

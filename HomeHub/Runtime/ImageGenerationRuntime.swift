@@ -129,6 +129,23 @@ protocol ImageGenerationRuntime: Sendable {
     /// previews / progress bars; the final `.finished` event carries
     /// the full-resolution image.
     func generate(parameters: ImageGenerationParameters) -> AsyncThrowingStream<ImageGenerationEvent, Error>
+
+    /// Best-effort cooperative cancel of the in-flight `generate(...)`
+    /// call. Implementations should:
+    ///   1. Set an internal flag the producing Task polls between
+    ///      steps (so a partially-completed run terminates promptly
+    ///      with `ImageGenerationError.cancelled`), AND
+    ///   2. Tear down any externally-held resources (Core ML
+    ///      predictions don't expose a cancel handle of their own,
+    ///      so the step boundary is the granularity we have).
+    ///
+    /// Safe to call when nothing is in-flight (no-op). Callers wrap
+    /// `for try await ... in generate(...)` in
+    /// `withTaskCancellationHandler` so the user's Stop tap reaches
+    /// the runtime even when its inner loop doesn't suspend
+    /// (Core ML's `prediction(from:)` is synchronous and won't
+    /// observe `Task.isCancelled` mid-call).
+    func cancel() async
 }
 
 // MARK: - Stub implementation
@@ -152,6 +169,12 @@ protocol ImageGenerationRuntime: Sendable {
 final class StubImageGenerationRuntime: ImageGenerationRuntime {
     private actor State {
         var loadedModelID: String?
+        /// `cancel()` flips this true; the render Task polls it
+        /// between progress ticks and aborts with
+        /// `ImageGenerationError.cancelled` when set. `generate(...)`
+        /// resets it back to false on entry so a previous cancelled
+        /// run doesn't poison the next one.
+        var cancellationRequested: Bool = false
 
         /// Setter on the actor so the public surface stays free of
         /// cross-isolation property writes (which strict concurrency
@@ -160,6 +183,9 @@ final class StubImageGenerationRuntime: ImageGenerationRuntime {
         func setLoaded(_ id: String?) {
             loadedModelID = id
         }
+
+        func requestCancel() { cancellationRequested = true }
+        func resetCancel() { cancellationRequested = false }
     }
     private let state = State()
 
@@ -179,9 +205,18 @@ final class StubImageGenerationRuntime: ImageGenerationRuntime {
         await state.setLoaded(nil)
     }
 
+    func cancel() async {
+        await state.requestCancel()
+    }
+
     func generate(parameters: ImageGenerationParameters) -> AsyncThrowingStream<ImageGenerationEvent, Error> {
         AsyncThrowingStream { continuation in
             Task {
+                // Reset the explicit-cancel flag on entry so a prior
+                // cancelled run can't poison this one — `cancel()`
+                // sets it true, and we'd otherwise short-circuit
+                // before the first progress tick.
+                await state.resetCancel()
                 let start = Date()
                 let totalSteps = max(parameters.steps, 1)
                 // Yield a handful of progress events so consumers
@@ -192,7 +227,16 @@ final class StubImageGenerationRuntime: ImageGenerationRuntime {
                 let progressTicks = min(totalSteps, 4)
                 for tick in 1...progressTicks {
                     try? await Task.sleep(nanoseconds: 40_000_000)  // 40 ms
-                    if Task.isCancelled {
+                    // Two cancellation channels: Swift's standard
+                    // structured-concurrency cancel (parent Task
+                    // was cancelled, e.g. user closed the view) AND
+                    // our explicit `cancel()` flag (user tapped Stop;
+                    // ConversationService called `cancel()` on us).
+                    // Either trips the early exit. Strict-concurrency
+                    // forbids `await` inside `||`'s short-circuit
+                    // autoclosure, so the two checks are split.
+                    let explicitCancel = await state.cancellationRequested
+                    if Task.isCancelled || explicitCancel {
                         continuation.finish(throwing: ImageGenerationError.cancelled)
                         return
                     }
@@ -200,6 +244,12 @@ final class StubImageGenerationRuntime: ImageGenerationRuntime {
                     continuation.yield(.progress(step: step, total: totalSteps))
                 }
                 guard let result = Self.renderGradient(parameters: parameters) else {
+                    // Failure exit doesn't reset `cancellationRequested`
+                    // — that's intentional. The next `generate(...)`
+                    // call starts with `resetCancel()` at the top, so
+                    // a leftover true flag from this branch can't
+                    // poison a subsequent run. Resetting here would
+                    // be defensive but redundant.
                     continuation.finish(throwing: ImageGenerationError.generationFailed("UIGraphicsImageRenderer returned nil"))
                     return
                 }

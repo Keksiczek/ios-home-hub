@@ -21,6 +21,15 @@ final class RoutingRuntime: LocalLLMRuntime, @unchecked Sendable {
     private let llamaCpp: LlamaCppRuntime?
     #endif
     private let mlx: MLXRuntime
+    /// Apple Intelligence runtime. Optional because:
+    ///   - The build SDK may not include `FoundationModels` (Xcode < 26)
+    ///   - Tests / previews may inject `nil` to skip the iOS-26-only path
+    ///   - Even when the build supports it, callers may want to wire
+    ///     `nil` to force every load through MLX (e.g. an Apple-
+    ///     Intelligence regression debug session).
+    /// Routing rejects `.appleFoundationModels` model loads with
+    /// `backendUnavailable` when this slot is `nil`.
+    private let appleFoundationModels: AppleFoundationModelsRuntime?
 
     private let log = Logger(subsystem: "HomeHub", category: "RoutingRuntime")
 
@@ -33,13 +42,22 @@ final class RoutingRuntime: LocalLLMRuntime, @unchecked Sendable {
     var telemetry: RuntimeTelemetry { activeBackend?.telemetry ?? .noOp }
 
     #if HOMEHUB_LLAMA_RUNTIME
-    init(llamaCpp: LlamaCppRuntime?, mlx: MLXRuntime) {
+    init(
+        llamaCpp: LlamaCppRuntime?,
+        mlx: MLXRuntime,
+        appleFoundationModels: AppleFoundationModelsRuntime? = nil
+    ) {
         self.llamaCpp = llamaCpp
         self.mlx = mlx
+        self.appleFoundationModels = appleFoundationModels
     }
     #else
-    init(mlx: MLXRuntime) {
+    init(
+        mlx: MLXRuntime,
+        appleFoundationModels: AppleFoundationModelsRuntime? = nil
+    ) {
         self.mlx = mlx
+        self.appleFoundationModels = appleFoundationModels
     }
     #endif
 
@@ -95,6 +113,32 @@ final class RoutingRuntime: LocalLLMRuntime, @unchecked Sendable {
             #endif
         case .mlx:
             targetBackend = mlx
+        case .coreML:
+            // Core ML Stable Diffusion is image-generation only. It
+            // does NOT participate in LLM routing — the
+            // `/image PROMPT` slash command bypasses this code path
+            // entirely (see `ConversationService.performImageGeneration`).
+            // Reaching this branch means a user somehow selected an
+            // SD model as their text completion model; surface that
+            // as a backend-unavailable error rather than silently
+            // letting them get a confusing failure deeper in.
+            throw RuntimeError.backendUnavailable(
+                modelName: model.displayName,
+                backend: .coreML
+            )
+        case .appleFoundationModels:
+            // Apple Intelligence is text-LLM but lives on a different
+            // runtime instance (no MLX, no llama.cpp). RoutingRuntime
+            // accepts an injected `appleFoundationModels` runtime
+            // (optional — build can be compiled without it). If the
+            // injected slot is nil, surface backendUnavailable.
+            guard let afm = appleFoundationModels else {
+                throw RuntimeError.backendUnavailable(
+                    modelName: model.displayName,
+                    backend: .appleFoundationModels
+                )
+            }
+            targetBackend = afm
         }
 
         log.info("RoutingRuntime: Routing '\(model.id, privacy: .public)' to '\(targetBackend.identifier, privacy: .public)'")

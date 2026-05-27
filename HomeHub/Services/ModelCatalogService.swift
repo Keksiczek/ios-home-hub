@@ -366,6 +366,47 @@ enum ModelCatalog {
     /// populate them after verifying a known-good download to enable integrity
     /// checks.
     static let curated: [LocalModel] = [
+        // MARK: Apple Intelligence (built-in, no download)
+        //
+        // Apple Foundation Models is the only catalog entry whose
+        // `installState` is unconditionally `.installed` — there's
+        // nothing to download. The runtime path
+        // (`AppleFoundationModelsRuntime`) gates actual availability
+        // at `load(...)` time via `SystemLanguageModel.default.availability`,
+        // surfacing a Czech actionable error if Apple Intelligence
+        // isn't enabled on the device.
+        //
+        // We list it FIRST so onboarding's "pick a model" picker
+        // shows it at the top — for iOS 26+ users it's the
+        // zero-friction default (instant TTFT, no GB download).
+        LocalModel(
+            id: "apple-foundation-1",
+            displayName: "Apple Intelligence",
+            family: "Apple Foundation Models",
+            parameterCount: "~3B",        // Apple's published figure for the on-device model
+            quantization: "system",       // Apple manages quantisation internally
+            sizeBytes: 0,                  // No HomeHub-controlled storage
+            contextLength: 4096,           // Apple's documented context for v1 of the on-device model
+            // Placeholder URL — `ModelDownloadService` short-circuits
+            // for `format == .builtIn` so this is never fetched. We
+            // keep a valid URL anyway because `LocalModel.downloadURL`
+            // is non-optional. The Apple Intelligence support page
+            // surfaces if a user taps "View source" in the model
+            // info sheet.
+            downloadURL: URL(static: "https://www.apple.com/apple-intelligence/"),
+            sha256: nil,
+            // Synthetic installState — the runtime layer overrides
+            // this for the actual gating decision (see
+            // `AppleFoundationModelsRuntime.load(...)`), but UI
+            // surfaces honour it as "ready to use" so the user
+            // sees the model immediately on iOS 26+.
+            installState: .installed(localURL: URL(fileURLWithPath: "/dev/null")),
+            recommendedFor: [.iPhone, .iPadMSeries],
+            license: "Apple — system-managed",
+            backend: .appleFoundationModels,
+            format: .builtIn
+        ),
+
         // MARK: MLX models (default backend)
         //
         // MLX models are managed by `MLXLMCommon` and downloaded into the Hugging Face
@@ -697,6 +738,53 @@ enum ModelCatalog {
             // shard >2 GB so iOS sandbox needs the extended VA
             // entitlement before the runtime can map weights.
             requiresLargeMmapAddressing: true
+        ),
+
+        // MARK: Image generation (Core ML Stable Diffusion)
+        //
+        // These entries drive the `/image PROMPT` slash command in
+        // chat. `CoreMLStableDiffusionRuntime` resolves the modelID
+        // to a directory under
+        // `Application Support/Models/coreml-sd/<id>/` and hands that
+        // path to `StableDiffusionPipeline(resourcesAt:)`.
+        //
+        // v1 ships SD 2.1 base palettized only:
+        //   - Best size/quality trade-off for an 8 GB iPhone (~1.6 GB
+        //     on disk, ~1.5 GB resident at runtime, ~2-3 GB peak with
+        //     reduceMemory: true).
+        //   - 4-bit palettized weights tuned for CPU+NE execution via
+        //     Apple's split_einsum_v2 conversion.
+        //   - 512×512 native output; chat surface renders it inline.
+        //
+        // Larger variants (SDXL, FLUX) are intentionally NOT in v1 —
+        // they don't fit iPhone RAM and their pipeline shapes differ
+        // enough that the runtime needs separate code paths.
+        LocalModel(
+            id: "coreml-sd-2-1-base-palettized",
+            displayName: "Stable Diffusion 2.1 Base (Core ML, palettized)",
+            family: "Stable Diffusion 2.1",
+            parameterCount: "865M",             // U-Net params; matches HF card
+            quantization: "4-bit palettized",
+            sizeBytes: 1_650_000_000,           // HF: ~1.55 GB across .mlmodelc bundles
+            contextLength: 77,                  // CLIP token cap — display-only for this format
+            downloadURL: URL(static: "https://huggingface.co/apple/coreml-stable-diffusion-2-1-base-palettized"),
+            sha256: nil,
+            installState: .notInstalled,
+            // Marked iPhone-compatible based on Apple's published
+            // benchmarks (iPhone 14+ run the palettized variant
+            // ~20-40 s per 20-step turn). iPhone 16 Pro Neural
+            // Engine compresses that further. Verify on real device
+            // before shipping — the simulator path downgrades to
+            // .cpuOnly automatically and is much slower.
+            recommendedFor: [.iPhone, .iPadMSeries],
+            license: "CreativeML Open RAIL-M (model) + MIT (pipeline)",
+            backend: .coreML,
+            format: .coreMLPackage,
+            // No single .mlmodelc weight file exceeds the 2 GB mmap
+            // ceiling — the palettized U-Net's largest shard is
+            // ~700 MB. So no extended-VA entitlement needed unlike
+            // Gemma 3n E4B or Qwen2-VL 7B.
+            requiresLargeMmapAddressing: false
         ),
     ]
 }

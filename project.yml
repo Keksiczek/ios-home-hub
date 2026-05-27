@@ -104,6 +104,19 @@ packages:
   WhisperKit:
     url: https://github.com/argmaxinc/WhisperKit
     from: 0.11.0
+  # Stable Diffusion via Apple's Core ML pipeline.
+  #
+  # We depend on a fork (Keksiczek/ml-stable-diffusion) rather than
+  # apple/ml-stable-diffusion because Apple's upstream pins
+  # swift-transformers to `.exact("0.1.8")` while HomeHub already needs
+  # >= 0.1.14 transitively (via mlx-swift-lm + WhisperKit 0.11.0).
+  # The fork loosens that one line to a range
+  # `"0.1.8"..<"0.2.0"` so SPM's intersection with our own `from: 0.1.14`
+  # is non-empty. Everything else in the fork is byte-identical to
+  # upstream; periodically rebase against apple/main to pick up fixes.
+  StableDiffusion:
+    url: https://github.com/Keksiczek/ml-stable-diffusion
+    branch: main
 
 settings:
   base:
@@ -190,6 +203,12 @@ targets:
         product: MLXLLM
       - package: MLXLM
         product: MLXLMCommon
+      # MLXVLM is imported by MLXRuntime.swift purely for its side
+      # effect: the framework's VLM model registry must be force-linked
+      # so subsequent MLX inference can locate the V-L head when a
+      # vision-language model is loaded. See MLXRuntime.swift:6-15.
+      - package: MLXLM
+        product: MLXVLM
       # Transformers is the only exported library product in swift-transformers.
       # Hub and Tokenizers are internal targets of it (not standalone products).
       - package: SwiftTransformers
@@ -197,6 +216,13 @@ targets:
       # WhisperKit for VoiceService.swift on-device STT.
       - package: WhisperKit
         product: WhisperKit
+      # Core ML Stable Diffusion via Apple's pipeline.
+      # `CoreMLStableDiffusionRuntime.swift` is gated behind
+      # `#if canImport(StableDiffusion)` so removing this dependency
+      # falls back to the deterministic stub renderer without breaking
+      # the chat plumbing.
+      - package: StableDiffusion
+        product: StableDiffusion
       # Share Extension target — must be a dependency (with implicit
       # embed) so Xcode copies the .appex into the host app's
       # PlugIns folder at build time. Without this, the extension

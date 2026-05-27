@@ -933,16 +933,25 @@ private struct ModelBrowserRow: View {
     private var badgeFg: Color {
         guard model.isUsableInThisBuild else { return HHTheme.textSecondary }
         switch model.backend {
-        case .mlx:      return HHTheme.accent
-        case .llamaCpp: return HHTheme.textSecondary
+        case .mlx:                   return HHTheme.accent
+        case .llamaCpp:              return HHTheme.textSecondary
+        // Core ML SD models are image-generation, not LLM — give
+        // them a secondary tint to visually disambiguate them from
+        // text models in the same picker.
+        case .coreML:                return HHTheme.textSecondary
+        // Apple Intelligence shares text-LLM accent — it IS a chat
+        // model, just one we don't manage weights for.
+        case .appleFoundationModels: return HHTheme.accent
         }
     }
 
     private var badgeBg: Color {
         guard model.isUsableInThisBuild else { return HHTheme.textSecondary.opacity(0.10) }
         switch model.backend {
-        case .mlx:      return HHTheme.accent.opacity(0.15)
-        case .llamaCpp: return HHTheme.textSecondary.opacity(0.12)
+        case .mlx:                   return HHTheme.accent.opacity(0.15)
+        case .llamaCpp:              return HHTheme.textSecondary.opacity(0.12)
+        case .coreML:                return HHTheme.textSecondary.opacity(0.12)
+        case .appleFoundationModels: return HHTheme.accent.opacity(0.15)
         }
     }
 

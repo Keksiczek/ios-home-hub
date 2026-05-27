@@ -173,12 +173,24 @@ struct LocalModel: Identifiable, Codable, Equatable, Hashable {
 enum ModelBackend: String, Codable, Sendable {
     case llamaCpp = "llama.cpp"
     case mlx = "mlx"
+    /// Apple's Core ML pipeline for Stable Diffusion image generation.
+    /// Backed by the vendored `StableDiffusion` Swift package (fork of
+    /// apple/ml-stable-diffusion). Different runtime path entirely —
+    /// `RoutingRuntime` doesn't dispatch text turns to it; image-only.
+    case coreML = "coreml"
+    /// Apple Intelligence's built-in on-device model via the
+    /// `FoundationModels` framework. No download, no install state,
+    /// gated behind iOS 26+ AND user-level Apple Intelligence
+    /// enablement. See `AppleFoundationModelsRuntime`.
+    case appleFoundationModels = "apple-foundation-models"
 
     /// Short capitalised label for UI badges and diagnostics (e.g. "MLX" / "GGUF").
     var displayName: String {
         switch self {
-        case .mlx:      return "MLX"
-        case .llamaCpp: return "GGUF"
+        case .mlx:                   return "MLX"
+        case .llamaCpp:              return "GGUF"
+        case .coreML:                return "Core ML"
+        case .appleFoundationModels: return "Apple Intelligence"
         }
     }
 
@@ -187,8 +199,10 @@ enum ModelBackend: String, Codable, Sendable {
     /// surface so users don't have to leave the screen for a docs page.
     var taglineCZ: String {
         switch self {
-        case .mlx:      return "Apple MLX runtime — výchozí v této buildu."
-        case .llamaCpp: return "llama.cpp runtime — vyžaduje opt-in build s llama.xcframework."
+        case .mlx:                   return "Apple MLX runtime — výchozí v této buildu."
+        case .llamaCpp:              return "llama.cpp runtime — vyžaduje opt-in build s llama.xcframework."
+        case .coreML:                return "Apple Core ML — pro generování obrázků na Neural Engine."
+        case .appleFoundationModels: return "Apple Intelligence — vestavěný systémový model. Bez stahování, vyžaduje iOS 26+."
         }
     }
 }
@@ -196,6 +210,20 @@ enum ModelBackend: String, Codable, Sendable {
 enum ModelFormat: String, Codable, Sendable {
     case gguf = "GGUF"
     case mlx = "MLX"
+    /// Bundle of `.mlmodelc` directories produced by Apple's
+    /// `python_coreml_stable_diffusion` converter. Layout:
+    ///   ResourcesDir/
+    ///     TextEncoder.mlmodelc/
+    ///     Unet.mlmodelc/  (or UnetChunk1+2 for memory-split builds)
+    ///     VAEDecoder.mlmodelc/
+    ///     vocab.json
+    ///     merges.txt
+    case coreMLPackage = "CoreML"
+    /// No on-disk format at all — the model is built into the OS.
+    /// Currently only Apple Intelligence (`FoundationModels` framework)
+    /// uses this. Catalog entries with this format have synthetic
+    /// `installState = .installed` and no `downloadURL` semantics.
+    case builtIn = "Built-in"
 }
 
 /// Compile-time map of which runtime backends are linked into this build.
@@ -220,10 +248,43 @@ enum RuntimeBackendAvailability {
         #endif
     }
 
+    /// Core ML SD compiles in when the `StableDiffusion` Swift package
+    /// resolves. The actual runtime file gates the implementation with
+    /// `#if canImport(StableDiffusion)` so a build without the package
+    /// still links — calls just return `notImplemented`.
+    static var coreMLAvailable: Bool {
+        #if canImport(StableDiffusion)
+        return true
+        #else
+        return false
+        #endif
+    }
+
+    /// Apple Intelligence availability has two gates:
+    ///   1. **Build time** — the `FoundationModels` framework must be
+    ///      in the SDK (iOS 26 SDK and newer). Older Xcode toolchains
+    ///      compile to `false`.
+    ///   2. **Runtime** — the device must be on iOS 26+ AND the user
+    ///      must have Apple Intelligence enabled. That second check
+    ///      happens inside `AppleFoundationModelsRuntime.load(...)`
+    ///      because the framework only answers it dynamically; UI
+    ///      surfaces the model as "installed" optimistically and the
+    ///      first load surfaces a clear failure if it isn't.
+    static var appleFoundationModelsAvailable: Bool {
+        #if canImport(FoundationModels)
+        if #available(iOS 26.0, *) { return true }
+        return false
+        #else
+        return false
+        #endif
+    }
+
     static func isAvailable(_ backend: ModelBackend) -> Bool {
         switch backend {
-        case .mlx:      return mlxAvailable
-        case .llamaCpp: return llamaCppAvailable
+        case .mlx:                   return mlxAvailable
+        case .llamaCpp:              return llamaCppAvailable
+        case .coreML:                return coreMLAvailable
+        case .appleFoundationModels: return appleFoundationModelsAvailable
         }
     }
 
@@ -287,6 +348,19 @@ extension LocalModel {
         case .mlx:
             // Should never happen — MLX is always available in this build.
             return "MLX runtime is unexpectedly unavailable in this build."
+        case .coreML:
+            // Fires when the `StableDiffusion` Swift package isn't
+            // linked into the build (someone stripped it from
+            // project.yml to shrink binary size). The runtime file
+            // still compiles thanks to `#if canImport(StableDiffusion)`
+            // — every call just throws `notImplemented`.
+            return "Core ML Stable Diffusion modul není v tomto buildu nalinkovaný. Generování obrázků nebude fungovat."
+        case .appleFoundationModels:
+            // Either the build SDK doesn't include FoundationModels
+            // (Xcode 16 / iOS 18 SDK) or the device is on iOS < 26.
+            // The runtime emits a more specific error at load time —
+            // this string is just the "greyed-out picker" affordance.
+            return "Apple Intelligence vyžaduje iOS 26 nebo novější a build s SDK 26+."
         }
     }
 }

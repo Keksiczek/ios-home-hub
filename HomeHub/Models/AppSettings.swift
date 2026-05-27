@@ -56,6 +56,17 @@ struct AppSettings: Codable, Equatable {
     /// single model pass. Default: 120 s.
     var generationTimeoutSeconds: Int
 
+    /// Maximum seconds a single `/image` diffusion run may take before the
+    /// watchdog cancels it. SD 2.1 base palettized on iPhone 16 Pro with
+    /// Neural Engine completes a 20-step run in roughly 20–40 s, but cold
+    /// loads (the first generation after app launch — Core ML compiles +
+    /// mmaps weights) can stretch this to ~90 s, and a memory-pressured
+    /// device throttles further. Default 240 s gives that headroom without
+    /// stranding the user on a wedged inference. Decoupled from
+    /// `generationTimeoutSeconds` because text and image timelines live on
+    /// different orders of magnitude.
+    var imageGenerationTimeoutSeconds: Int
+
     /// Trade-off between memory headroom and freedom to load larger models.
     /// Drives `RuntimeManager.memorySafetyFactor(for:)` on the next load.
     /// See `PerformanceProfile` for the exact factor mapping.
@@ -95,6 +106,34 @@ struct AppSettings: Codable, Equatable {
     /// drift on a specific quant or device.
     var gemma3nTightSamplingOverride: Bool
 
+    /// Auto-routing policy for picking the LLM per turn. The default
+    /// `.manual` preserves the legacy behaviour: every turn uses the
+    /// model the user explicitly loaded via Settings → Modely.
+    /// Switching to `.automatic` lets `ModelRouter` heuristically
+    /// pick one of three tier models (fast / balanced / smart) based
+    /// on the input shape. `.experimental` adds a "fast helps smart"
+    /// behaviour where the fast model pre-processes search results
+    /// and OCR text before they reach the heavyweight model — costs
+    /// extra RAM (two models resident) but reduces context bloat on
+    /// the smart model side.
+    var routingPolicy: RoutingPolicy
+
+    /// User-chosen FAST-tier model. `nil` means "let the router pick
+    /// the smallest installed". Auto-routing only honours this when
+    /// the model is actually installed; otherwise it falls back to
+    /// the catalog's first installed FAST candidate.
+    var fastModelID: String?
+
+    /// User-chosen BALANCED-tier model. See `fastModelID` for the
+    /// nil semantics.
+    var balancedModelID: String?
+
+    /// User-chosen SMART-tier model. Only honoured when the device
+    /// can actually run it (iPad M-series or extended-VA entitled
+    /// build); auto-routing degrades gracefully to BALANCED on
+    /// constrained hardware.
+    var smartModelID: String?
+
     static let `default` = AppSettings(
         memoryEnabled: true,
         autoExtractMemory: true,
@@ -118,10 +157,15 @@ struct AppSettings: Codable, Equatable {
         locationHint: "Nymburk, CZ",
         guardrailsConfig: .default,
         generationTimeoutSeconds: 120,
+        imageGenerationTimeoutSeconds: 240,
         performanceProfile: .balanced,
         searxngBaseURL: "",
         iCloudSyncEnabled: false,
-        gemma3nTightSamplingOverride: false
+        gemma3nTightSamplingOverride: false,
+        routingPolicy: .manual,
+        fastModelID: nil,
+        balancedModelID: nil,
+        smartModelID: nil
     )
 
     /// Sampling-knob factory defaults. Field-by-field equality against
@@ -203,10 +247,15 @@ struct AppSettings: Codable, Equatable {
         case language, answerLength, enabledTools, locationHint
         case guardrailsConfig
         case generationTimeoutSeconds
+        case imageGenerationTimeoutSeconds
         case performanceProfile
         case searxngBaseURL
         case iCloudSyncEnabled
         case gemma3nTightSamplingOverride
+        case routingPolicy
+        case fastModelID
+        case balancedModelID
+        case smartModelID
         // Retained only for migration from the previous schema.
         case responseStyle
     }
@@ -234,10 +283,15 @@ struct AppSettings: Codable, Equatable {
         locationHint: String,
         guardrailsConfig: GuardrailsConfig = .default,
         generationTimeoutSeconds: Int = 120,
+        imageGenerationTimeoutSeconds: Int = 240,
         performanceProfile: PerformanceProfile = .balanced,
         searxngBaseURL: String = "",
         iCloudSyncEnabled: Bool = false,
-        gemma3nTightSamplingOverride: Bool = false
+        gemma3nTightSamplingOverride: Bool = false,
+        routingPolicy: RoutingPolicy = .manual,
+        fastModelID: String? = nil,
+        balancedModelID: String? = nil,
+        smartModelID: String? = nil
     ) {
         self.memoryEnabled = memoryEnabled
         self.autoExtractMemory = autoExtractMemory
@@ -261,10 +315,15 @@ struct AppSettings: Codable, Equatable {
         self.locationHint = locationHint
         self.guardrailsConfig = guardrailsConfig
         self.generationTimeoutSeconds = generationTimeoutSeconds
+        self.imageGenerationTimeoutSeconds = imageGenerationTimeoutSeconds
         self.performanceProfile = performanceProfile
         self.searxngBaseURL = searxngBaseURL
         self.iCloudSyncEnabled = iCloudSyncEnabled
         self.gemma3nTightSamplingOverride = gemma3nTightSamplingOverride
+        self.routingPolicy = routingPolicy
+        self.fastModelID = fastModelID
+        self.balancedModelID = balancedModelID
+        self.smartModelID = smartModelID
     }
 
     init(from decoder: Decoder) throws {
@@ -316,10 +375,15 @@ struct AppSettings: Codable, Equatable {
         self.locationHint     = try c.decodeIfPresent(String.self,        forKey: .locationHint)     ?? fallback.locationHint
         self.guardrailsConfig = try c.decodeIfPresent(GuardrailsConfig.self, forKey: .guardrailsConfig) ?? fallback.guardrailsConfig
         self.generationTimeoutSeconds = try c.decodeIfPresent(Int.self, forKey: .generationTimeoutSeconds) ?? fallback.generationTimeoutSeconds
+        self.imageGenerationTimeoutSeconds = try c.decodeIfPresent(Int.self, forKey: .imageGenerationTimeoutSeconds) ?? fallback.imageGenerationTimeoutSeconds
         self.performanceProfile = try c.decodeIfPresent(PerformanceProfile.self, forKey: .performanceProfile) ?? fallback.performanceProfile
         self.searxngBaseURL = try c.decodeIfPresent(String.self, forKey: .searxngBaseURL) ?? fallback.searxngBaseURL
         self.iCloudSyncEnabled = try c.decodeIfPresent(Bool.self, forKey: .iCloudSyncEnabled) ?? fallback.iCloudSyncEnabled
         self.gemma3nTightSamplingOverride = try c.decodeIfPresent(Bool.self, forKey: .gemma3nTightSamplingOverride) ?? fallback.gemma3nTightSamplingOverride
+        self.routingPolicy = try c.decodeIfPresent(RoutingPolicy.self, forKey: .routingPolicy) ?? fallback.routingPolicy
+        self.fastModelID = try c.decodeIfPresent(String.self, forKey: .fastModelID)
+        self.balancedModelID = try c.decodeIfPresent(String.self, forKey: .balancedModelID)
+        self.smartModelID = try c.decodeIfPresent(String.self, forKey: .smartModelID)
 
         // Migration path for installs that persisted the previous
         // `responseStyle: "leanCI" | "casual"` field. Map leanCI→concise
@@ -361,12 +425,62 @@ struct AppSettings: Codable, Equatable {
         try c.encode(locationHint, forKey: .locationHint)
         try c.encode(guardrailsConfig, forKey: .guardrailsConfig)
         try c.encode(generationTimeoutSeconds, forKey: .generationTimeoutSeconds)
+        try c.encode(imageGenerationTimeoutSeconds, forKey: .imageGenerationTimeoutSeconds)
         try c.encode(performanceProfile, forKey: .performanceProfile)
         try c.encode(searxngBaseURL, forKey: .searxngBaseURL)
         try c.encode(iCloudSyncEnabled, forKey: .iCloudSyncEnabled)
         try c.encode(gemma3nTightSamplingOverride, forKey: .gemma3nTightSamplingOverride)
+        try c.encode(routingPolicy, forKey: .routingPolicy)
+        try c.encodeIfPresent(fastModelID, forKey: .fastModelID)
+        try c.encodeIfPresent(balancedModelID, forKey: .balancedModelID)
+        try c.encodeIfPresent(smartModelID, forKey: .smartModelID)
     }
 
+}
+
+/// How HomeHub picks the LLM that handles a chat turn. Lives in
+/// `AppSettings.routingPolicy`; consumed by `ModelRouter` and
+/// `ConversationService` at turn-start time.
+enum RoutingPolicy: String, Codable, Sendable, CaseIterable, Equatable {
+    /// The user picks the model explicitly via Settings → Modely.
+    /// Every turn uses that same model regardless of input shape.
+    /// Default — preserves the legacy behaviour any pre-routing
+    /// install relied on.
+    case manual
+
+    /// `ModelRouter` heuristically picks one of three tier models
+    /// (fast / balanced / smart) based on the prompt's length,
+    /// shape, and attachments. Triggers a runtime swap when the
+    /// picked model isn't the one currently resident.
+    case automatic
+
+    /// `automatic` PLUS the "fast helps smart" augmentation: when
+    /// the routed tier is SMART and the FAST model is co-resident
+    /// (memory budget permitting), the FAST model pre-processes
+    /// search results and OCR text into a tighter context block
+    /// before the SMART model sees them. Costs ~1 GB extra RAM
+    /// for the second resident model; degrades to plain
+    /// `automatic` when memory is tight.
+    case experimental
+
+    var displayNameCZ: String {
+        switch self {
+        case .manual:       return "Vypnuto (manuálně)"
+        case .automatic:    return "Automaticky"
+        case .experimental: return "Experimentální (rychlý pomáhá chytrému)"
+        }
+    }
+
+    var summaryCZ: String {
+        switch self {
+        case .manual:
+            return "Každý chat používá model, který jsi zvolil v Modelech."
+        case .automatic:
+            return "Pro každou zprávu router vybere model dle typu úkolu — krátké chat na FAST, delší úlohy na BALANCED, složité dotazy a kód na SMART."
+        case .experimental:
+            return "Automatický router + rychlý model předzpracuje výsledky vyhledávání a OCR text, než je předá většímu modelu. Šetří kontextové okno, vyžaduje ~1 GB navíc."
+        }
+    }
 }
 
 extension AppSettings {
