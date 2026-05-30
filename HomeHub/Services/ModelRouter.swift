@@ -1,5 +1,8 @@
 import Foundation
 import os
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// Picks the LLM model that should handle a given chat turn when
 /// `AppSettings.routingPolicy != .manual`. Consults the user's
