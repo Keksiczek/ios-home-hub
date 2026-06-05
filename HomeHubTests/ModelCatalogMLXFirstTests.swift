@@ -178,4 +178,85 @@ final class ModelCatalogMLXFirstTests: XCTestCase {
             "available — got \(starter.id) which is iPad-only."
         )
     }
+
+    // MARK: - Answer-quality regression guards (free-account lean-mode fixes)
+    //
+    // These lock in the three fixes that stop capable small models from
+    // collapsing into the lean (weak-instruction-follower) prompt path on a
+    // free Apple Developer account, which is what made answers feel degraded
+    // versus minimal chat apps.
+
+    /// Fix 1: the persona must stay network-neutral. The old wording ("no
+    /// internet access / no external services") contradicted the default-on
+    /// WebSearch tool and made small models refuse to search.
+    func testDefaultPersonaIsNetworkNeutral() {
+        let prompt = AssistantProfile.defaultSystemPrompt.lowercased()
+        XCTAssertFalse(
+            prompt.contains("no internet"),
+            "Persona must not hard-code a 'no internet' claim — it contradicts " +
+            "the default-on WebSearch tool. Network capability is owned by the " +
+            "dynamic tool/privacy rails in PromptAssemblyService."
+        )
+        XCTAssertFalse(
+            prompt.contains("external services"),
+            "Persona must not claim it calls no external services while " +
+            "WebSearch / FetchPage are enabled by default."
+        )
+        XCTAssertEqual(
+            AssistantProfile.defaultAssistant.systemPromptBase,
+            AssistantProfile.defaultSystemPrompt,
+            "Shipped default assistant should use the network-neutral persona."
+        )
+    }
+
+    /// Fix 2: onboarding's default model must be a STRONG instruction follower
+    /// so the default chat keeps the full (non-lean) prompt stack.
+    func testRecommendedStarterIsStrongInstructionFollower() {
+        let starter = catalog.recommendedStarter
+        let profile = ModelCapabilityProfile.resolve(
+            family: starter.family,
+            parameterCount: starter.parameterCount,
+            contextLength: starter.contextLength
+        )
+        XCTAssertFalse(
+            profile.isWeakInstructionFollower,
+            "recommendedStarter (\(starter.id)) must resolve to a STRONG " +
+            "instruction follower so onboarding defaults to the full prompt " +
+            "stack — a weak default forces lean mode and degrades answers."
+        )
+    }
+
+    /// Fix 3: the capable 3B chat model must declare context > 2048 so the
+    /// `isSmallVariant` (≤2048 ⇒ weak) rule doesn't demote it on the MLX path
+    /// (where the catalog value doesn't set a hard n_ctx anyway).
+    func testLlama3BAvoidsContextWeakPromotion() {
+        guard let model = catalog.models.first(where: { $0.id == "mlx-llama-3.2-3b-it" }) else {
+            return XCTFail("Llama 3.2 3B entry missing from the curated catalog.")
+        }
+        XCTAssertGreaterThan(model.contextLength, 2048,
+            "Llama 3.2 3B must declare context > 2048 to avoid the weak demotion.")
+        let profile = ModelCapabilityProfile.resolve(
+            family: model.family,
+            parameterCount: model.parameterCount,
+            contextLength: model.contextLength
+        )
+        XCTAssertFalse(profile.isWeakInstructionFollower,
+            "Llama 3.2 3B should resolve strong with its catalog context.")
+    }
+
+    /// Guard-rail: the context bump must NOT have turned every model strong.
+    /// The 1B is weak by parameter count (≤2B) regardless of context.
+    func testLlama1BStaysWeakByParameterCount() {
+        guard let model = catalog.models.first(where: { $0.id == "mlx-llama-3.2-1b-it" }) else {
+            return XCTFail("Llama 3.2 1B entry missing from the curated catalog.")
+        }
+        let profile = ModelCapabilityProfile.resolve(
+            family: model.family,
+            parameterCount: model.parameterCount,
+            contextLength: model.contextLength
+        )
+        XCTAssertTrue(profile.isWeakInstructionFollower,
+            "Llama 3.2 1B is ≤2B and must stay on the lean path even with a " +
+            "raised context.")
+    }
 }
