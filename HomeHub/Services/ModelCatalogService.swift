@@ -428,19 +428,32 @@ enum ModelCatalog {
         // 50 MB. The disk-space preflight in `ModelDownloadService` adds a
         // 10 % safety margin on top, so a small over-estimate here means
         // the user is never told mid-download "actually we need more room".
+        // Llama 3.2 3B — the recommended iPhone starter. Listed FIRST so
+        // `recommendedStarter` (which picks the first iPhone-safe MLX entry)
+        // selects it instead of the 1B. At 3B it stays a *strong* instruction
+        // follower, so `PromptAssemblyService` keeps the full prompt stack
+        // (facts, recall, hard rules, tools) instead of collapsing to the
+        // lean weak-model path the 1B is forced onto. This is the quality lever
+        // that matters most on a free-account iPhone 16 Pro.
+        //
+        // contextLength 4096 (was 2048): on the MLX path this value does NOT
+        // set a hard n_ctx — `MLXLLM.ChatSession` grows the KV cache lazily up
+        // to the model's trained 128K window. The catalog number only feeds
+        // (a) the weak-model promotion in `ModelCapabilityProfile.isSmallVariant`
+        // (≤2048 ⇒ weak — which is exactly what was wrongly demoting the 3B),
+        // and (b) the history budget. `adjustContextLength` still clamps it to
+        // the device tier (4096 on a moderate/free-account iPhone 16 Pro, 1024
+        // on a tight SE), so raising the base only *unlocks* headroom on devices
+        // that can use it — it can't push a small device past its tier ceiling.
         LocalModel(
-            id: "mlx-llama-3.2-1b-it",
-            displayName: "Llama 3.2 1B (MLX)",
+            id: "mlx-llama-3.2-3b-it",
+            displayName: "Llama 3.2 3B (MLX)",
             family: "Llama",
-            parameterCount: "1B",
+            parameterCount: "3B",
             quantization: "4-bit",
-            sizeBytes: 750_000_000,                 // HF: 0.695 GB
-            // Context optimized for iPhone stability (KV cache explosion prevention).
-            // Reduced from 8K to 2K tokens for safe multi-turn conversations.
-            // Prevents OOM crashes during extended chats. Users with iPad/desktop
-            // can override via `Add from URL`.
-            contextLength: 2048,
-            downloadURL: URL(static: "https://huggingface.co/mlx-community/Llama-3.2-1B-Instruct-4bit"),
+            sizeBytes: 1_900_000_000,               // HF: 1.81 GB
+            contextLength: 4096,
+            downloadURL: URL(static: "https://huggingface.co/mlx-community/Llama-3.2-3B-Instruct-4bit"),
             sha256: nil,
             installState: .notInstalled,
             recommendedFor: [.iPhone, .iPadMSeries],
@@ -449,15 +462,21 @@ enum ModelCatalog {
             format: .mlx
         ),
 
+        // Llama 3.2 1B — fast, low-RAM fallback. Always treated as a weak
+        // instruction follower (≤2B params) regardless of context, so it runs
+        // the lean prompt path. Kept for tight devices and quick smoke tests.
+        // contextLength raised to 4096 too (same MLX-lazy-KV rationale as the
+        // 3B above) so multi-turn history isn't needlessly truncated; the weak
+        // flag still fires off the parameter count, not the context.
         LocalModel(
-            id: "mlx-llama-3.2-3b-it",
-            displayName: "Llama 3.2 3B (MLX)",
+            id: "mlx-llama-3.2-1b-it",
+            displayName: "Llama 3.2 1B (MLX)",
             family: "Llama",
-            parameterCount: "3B",
+            parameterCount: "1B",
             quantization: "4-bit",
-            sizeBytes: 1_900_000_000,               // HF: 1.81 GB
-            contextLength: 2048,                    // Optimized for iPhone KV cache stability
-            downloadURL: URL(static: "https://huggingface.co/mlx-community/Llama-3.2-3B-Instruct-4bit"),
+            sizeBytes: 750_000_000,                 // HF: 0.695 GB
+            contextLength: 4096,
+            downloadURL: URL(static: "https://huggingface.co/mlx-community/Llama-3.2-1B-Instruct-4bit"),
             sha256: nil,
             installState: .notInstalled,
             recommendedFor: [.iPhone, .iPadMSeries],
@@ -473,7 +492,7 @@ enum ModelCatalog {
             parameterCount: "3.8B",
             quantization: "4-bit",
             sizeBytes: 2_250_000_000,               // HF: 2.15 GB
-            contextLength: 1024,                    // Aggressive KV cache limit for iPhone stability
+            contextLength: 4096,                    // MLX grows KV lazily; adjustContextLength clamps to device tier
             downloadURL: URL(static: "https://huggingface.co/mlx-community/Phi-3.5-mini-instruct-4bit"),
             sha256: nil,
             installState: .notInstalled,
@@ -495,7 +514,7 @@ enum ModelCatalog {
             parameterCount: "2B",
             quantization: "4-bit",
             sizeBytes: 1_500_000_000,               // HF: 1.47 GB
-            contextLength: 2048,                    // Optimized for iPhone KV cache stability
+            contextLength: 4096,                    // MLX grows KV lazily; adjustContextLength clamps to device tier
             downloadURL: URL(static: "https://huggingface.co/mlx-community/gemma-2-2b-it-4bit"),
             sha256: nil,
             installState: .notInstalled,
