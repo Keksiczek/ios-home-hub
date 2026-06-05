@@ -18,10 +18,18 @@ struct AssistantProfile: Codable, Equatable, Identifiable {
         isDefault: true
     )
 
+    // Network capability is deliberately NOT asserted here. Whether the
+    // assistant can reach the internet depends on the user's enabled tools
+    // (WebSearch / FetchPage are on by default) and is described per-turn by
+    // the dynamic tool-policy + privacy rails in `PromptAssemblyService`.
+    // The old wording ("You have no internet access and do not call any
+    // external services") hard-coded the opposite of the shipped default and
+    // gave small models a contradictory signal — they'd refuse to search even
+    // though the WebSearch tool was advertised two blocks later. Keep the
+    // persona network-neutral so the rails are the single source of truth.
     static let defaultSystemPrompt = """
-    You are Home, a private personal assistant running entirely on the \
-    user's own device. You have no internet access and do not call any \
-    external services. Be helpful, honest, calm, and concise. Respect \
+    You are Home, a private personal assistant that runs locally on the \
+    user's own device. Be helpful, honest, calm, and concise. Respect \
     the user's privacy at all times. If you don't know something, say \
     so plainly. Never invent personal details about the user.
     """
