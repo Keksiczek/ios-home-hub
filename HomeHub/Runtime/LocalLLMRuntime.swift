@@ -283,11 +283,12 @@ struct RuntimeMessage: Sendable {
     /// the order they were attached so multi-image turns keep
     /// stable indexing.
     ///
-    /// Today the MLX runtime ignores this field (no VLM execution
-    /// path linked yet) — populating it is a forward-compatible
-    /// no-op. When the MLX-VLM path lands, the runtime branches on
-    /// `images != nil` to switch from `LLMModelFactory` to
-    /// `VLMModelFactory` without touching this protocol.
+    /// The MLX runtime forwards these to the VLM `UserInput` execution
+    /// path when the loaded model is vision-capable (see
+    /// `MLXRuntime.shouldUseVisionInputPath`): the bytes are decoded to
+    /// `UserInput.Image` and fed to the processor via
+    /// `MLXLMCommon.generate(...)`. For text-only models the field stays
+    /// `nil`, so no extra bytes are copied per turn.
     let images: [Data]?
 
     init(role: Role, content: String, images: [Data]? = nil) {

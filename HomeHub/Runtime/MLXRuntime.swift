@@ -300,6 +300,30 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
         Self.percentile(sorted, fraction: fraction)
     }
 
+    /// Decides whether a generation turn must run through the VLM
+    /// `UserInput` execution path instead of the text-only `ChatSession`
+    /// path.
+    ///
+    /// `MLXLLM.ChatSession` cannot carry image inputs — its
+    /// `streamResponse(to:role:images:videos:)` is always called with
+    /// `images: []` on this runtime, so a vision turn routed through it
+    /// silently loses the picture. The `UserInput` /
+    /// `MLXLMCommon.generate(...)` path is the only one that decodes the
+    /// attached bytes into `UserInput.Image` tensors and feeds them to
+    /// the processor. Because `loadModelContainer` returns a
+    /// `ModelContainer` for vision-language models too, the container
+    /// type alone can't disambiguate — this predicate does.
+    ///
+    /// Returns `true` exactly when the turn has at least one image AND
+    /// the loaded model declares vision capability. Pure, so the routing
+    /// contract is unit-testable without a real model container.
+    nonisolated static func shouldUseVisionInputPath(
+        hasImages: Bool,
+        modelSupportsVision: Bool
+    ) -> Bool {
+        hasImages && modelSupportsVision
+    }
+
     /// The baseline GPU cache limit applied at init time. Stored so the
     /// adaptive resize on memory pressure (`adjustGPUCacheLimit(...)`) can
     /// restore the headroom when pressure clears. `0` until first init.
@@ -534,7 +558,7 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
         // shard independently.
         if !DeviceMemoryProvider.kernelEntitlementsEnabled,
            preflight.largestShardBytes > 0 {
-            let mmapCeiling: Int64 = 2_100_000_000  // ~2 GB sandbox limit (conservative)
+            let mmapCeiling = DeviceMemoryProvider.sandboxedSingleShardCeilingBytes  // single source of truth (~2 GB)
             if preflight.largestShardBytes > mmapCeiling {
                 let mbShard = preflight.largestShardBytes / 1_048_576
                 let mbCeiling = mmapCeiling / 1_048_576
@@ -545,7 +569,7 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                     "ceilingMB": "\(mbCeiling)"
                 ])
                 throw RuntimeError.initializationFailed(
-                    "Model \"\(model.displayName)\" má jediný weight soubor \(mbShard) MB, ale tato verze HomeHubu (bez placeného Apple Developer účtu) zvládne nejvýše ~\(mbCeiling) MB v jednom kuse. Vyber menší variantu modelu (např. Gemma 3n E2B), nebo pro tento konkrétní model použij build s entitlementem extended-virtual-addressing — viz KERNEL_ENTITLEMENTS.md."
+                    "Model \"\(model.displayName)\" má jediný weight soubor \(mbShard) MB, ale tato verze HomeHubu (bez placeného Apple Developer účtu) zvládne nejvýše ~\(mbCeiling) MB v jednom kuse. Vyber model, který se vejde — na free účtu fungují např. Gemma 2 2B (1,5 GB) nebo Llama 3.2 3B (1,8 GB). Pro tento konkrétní model použij build s entitlementem extended-virtual-addressing — viz KERNEL_ENTITLEMENTS.md."
                 )
             }
         }
@@ -940,6 +964,18 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                     )))
                 }
 
+                // When the turn carries image bytes AND the loaded model is
+                // vision-capable, generation MUST go through the VLM
+                // `UserInput` path below: the text-only `ChatSession` path
+                // calls `streamResponse(images: [])` and would silently drop
+                // the picture. `loadModelContainer` returns a `ModelContainer`
+                // for VLMs too, so without this gate every production vision
+                // turn fell into the ChatSession branch and lost the image.
+                let useVisionInputPath = Self.shouldUseVisionInputPath(
+                    hasImages: hasImageInPrompt,
+                    modelSupportsVision: loadedSupportsVision
+                )
+
                 // Bug fix: previous code dropped topK / minP /
                 // repeatPenalty with a warning ("not supported by
                 // current GenerateParameters"). The current
@@ -983,7 +1019,7 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                 // through `firstTokenLatency(for:)` for diagnostics.
                 var firstTokenAt: Date?
 
-                if let nativeContainer = self.container as? ModelContainer {
+                if !useVisionInputPath, let nativeContainer = self.container as? ModelContainer {
                     // Build the canonical history once. Both the reuse
                     // check and the rebuild path consume the same value
                     // so they cannot drift.
@@ -1225,7 +1261,26 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                     }
 
                 } else {
-                    self.log.info("MLX: Using stateless fallback generation")
+                    // Two callers reach this path:
+                    //   1. Vision turns (`useVisionInputPath`) — the only path
+                    //      that decodes attachments into `UserInput.Image`
+                    //      tensors and feeds them to the model. Deliberate.
+                    //   2. Non-native containers (mock / test) — stateless.
+                    self.log.info(useVisionInputPath
+                        ? "MLX: Using VLM UserInput path (image attachment) for \(conversationID, privacy: .public)"
+                        : "MLX: Using stateless fallback generation")
+
+                    // A vision turn never writes back to `activeSession`. Drop
+                    // any cached text session for this conversation so the next
+                    // text turn rebuilds from the full canonical history — which
+                    // now includes this image exchange as text — instead of
+                    // reusing a prefix that predates it. Without this, the
+                    // reused ChatSession would never observe the vision turn and
+                    // the model would lose it from context.
+                    if useVisionInputPath {
+                        self.sessionLock.withLock { self.activeSession = nil }
+                    }
+
                     var msgList: [[String: String]] = []
                     if !prompt.systemPrompt.isEmpty {
                         msgList.append(["role": "system", "content": prompt.systemPrompt])

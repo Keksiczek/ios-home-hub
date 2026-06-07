@@ -316,9 +316,13 @@ final class ModelRouter {
         if model.backend == .appleFoundationModels { return .fast }
         // Size thresholds (bytes):
         //   < 1.2 GB → fast (covers 360M, 1B, 1.7B, VLM 256/500M)
-        //   < 3.5 GB → balanced (covers 2-3B, Phi 3.5, Qwen2-VL 2B,
-        //                        Gemma 3n E2B)
-        //   ≥ 3.5 GB → smart (Mistral 7B, Llama 3.1 8B, Gemma 3n E4B)
+        //   < 3.5 GB → balanced (covers 2-3B, Phi 3.5 2.15 GB, Qwen2-VL 2B)
+        //   ≥ 3.5 GB → smart (Mistral 7B, Llama 3.1 8B, Gemma 3n E2B
+        //                     4.46 GB single shard, Gemma 3n E4B)
+        // Note: Phi 3.5 and both Gemma 3n variants are `recommendedFor:
+        // [.iPadMSeries]` (single shard > free-account mmap ceiling), so on a
+        // free-account iPhone `isUsable` filters them out and the smart tier
+        // degrades to balanced — the size class here is just the raw sort.
         if model.sizeBytes < 1_200_000_000 { return .fast }
         if model.sizeBytes < 3_500_000_000 { return .balanced }
         return .smart
