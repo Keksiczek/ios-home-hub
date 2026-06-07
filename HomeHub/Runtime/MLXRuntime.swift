@@ -1266,9 +1266,11 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                     //      that decodes attachments into `UserInput.Image`
                     //      tensors and feeds them to the model. Deliberate.
                     //   2. Non-native containers (mock / test) — stateless.
-                    self.log.info(useVisionInputPath
-                        ? "MLX: Using VLM UserInput path (image attachment) for \(conversationID, privacy: .public)"
-                        : "MLX: Using stateless fallback generation")
+                    if useVisionInputPath {
+                        self.log.info("MLX: Using VLM UserInput path (image attachment) for \(conversationID, privacy: .public)")
+                    } else {
+                        self.log.info("MLX: Using stateless fallback generation")
+                    }
 
                     // A vision turn never writes back to `activeSession`. Drop
                     // any cached text session for this conversation so the next
