@@ -147,6 +147,20 @@ public final class DeviceMemoryProvider: Sendable {
         #endif
     }()
 
+    /// Largest single contiguous `mmap` (one `*.safetensors` shard) the iOS
+    /// sandbox permits WITHOUT the `extended-virtual-addressing` entitlement.
+    ///
+    /// Single source of truth for the free-account weight-load ceiling. Used
+    /// by `MLXRuntime`'s per-shard pre-flight to refuse oversized models, and
+    /// by the catalog-consistency test to guarantee no iPhone-recommended MLX
+    /// model ships a shard the free build can't load. ~2 GB is the documented
+    /// limit; 2.1 GB is used as the operative threshold (a model whose single
+    /// shard exceeds this is rejected before weight map-in).
+    ///
+    /// Irrelevant once `kernelEntitlementsEnabled == true` — with the
+    /// entitlement, contiguous mappings are bounded only by physical RAM.
+    public static let sandboxedSingleShardCeilingBytes: Int64 = 2_100_000_000
+
     // MARK: - Memory estimation
 
     /// Estimate usable RAM for user-space processes.

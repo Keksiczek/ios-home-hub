@@ -259,4 +259,47 @@ final class ModelCatalogMLXFirstTests: XCTestCase {
             "Llama 3.2 1B is ≤2B and must stay on the lean path even with a " +
             "raised context.")
     }
+
+    // MARK: - Free-account memory safety (regression guard)
+
+    /// Every MLX model the catalog recommends for iPhone must fit the
+    /// free-account single-shard mmap ceiling on a non-entitled build.
+    ///
+    /// Otherwise the catalog advertises a multi-GB download that the runtime's
+    /// per-shard pre-flight (`MLXRuntime.loadWithProgress`) then refuses — the
+    /// exact "download-then-fail" trap that previously mis-tagged Gemma 3n E2B
+    /// (single 4.46 GB shard) and Phi-3.5 Mini (single 2.15 GB shard) as
+    /// iPhone-safe.
+    ///
+    /// `sizeBytes` is the total weight size; every iPhone-class MLX 4-bit model
+    /// in the curated catalog ships its weights as ONE `model.safetensors`
+    /// shard, so total == largest shard and the comparison is exact. A future
+    /// multi-shard entry with small shards but a large total would trip this
+    /// conservatively — acceptable; the fix at that point is to compare real
+    /// per-shard sizes.
+    func testIPhoneRecommendedMLXModelsFitFreeAccountCeiling() throws {
+        // Only meaningful WITHOUT the extended-virtual-addressing entitlement.
+        // With it, contiguous mmaps are bounded only by RAM and large iPhone
+        // models are legitimate.
+        try XCTSkipIf(
+            DeviceMemoryProvider.kernelEntitlementsEnabled,
+            "Entitled build — the free-account single-shard ceiling does not apply."
+        )
+
+        let ceiling = DeviceMemoryProvider.sandboxedSingleShardCeilingBytes
+        let offenders = catalog.models.filter {
+            $0.backend == .mlx
+                && $0.recommendedFor.contains(.iPhone)
+                && $0.sizeBytes > ceiling
+        }
+        XCTAssertTrue(
+            offenders.isEmpty,
+            "These MLX models are recommended for iPhone but their weights exceed " +
+            "the \(ceiling / 1_000_000) MB free-account single-shard ceiling, so the " +
+            "runtime pre-flight refuses them after a multi-GB download: " +
+            offenders.map { "\($0.id) (\($0.sizeBytes / 1_000_000) MB)" }
+                .joined(separator: ", ") +
+            ". Re-tag them recommendedFor: [.iPadMSeries] (needs entitlement)."
+        )
+    }
 }

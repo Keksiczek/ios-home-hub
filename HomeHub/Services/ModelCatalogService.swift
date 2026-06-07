@@ -485,18 +485,29 @@ enum ModelCatalog {
             format: .mlx
         ),
 
+        // Phi 3.5 Mini — single `model.safetensors` shard of 2.15 GB
+        // (verified against mlx-community/Phi-3.5-mini-instruct-4bit on
+        // 2026-06). That single shard is just OVER the ~2.1 GB contiguous-
+        // mmap ceiling enforced by the free-account per-shard pre-flight in
+        // `MLXRuntime.loadWithProgress`, so on a non-entitled build it is
+        // refused at load. Hence `recommendedFor: [.iPadMSeries]` only — do
+        // NOT list it as an iPhone free-account recommendation, otherwise
+        // the catalog pushes a 2.15 GB download that is then rejected. With
+        // the extended-virtual-addressing entitlement (paid account) it
+        // loads fine on an 8 GB iPhone; revisit the gating when entitlements
+        // ship.
         LocalModel(
             id: "mlx-phi-3.5-mini-it",
             displayName: "Phi 3.5 Mini Instruct (MLX)",
             family: "Phi",
             parameterCount: "3.8B",
             quantization: "4-bit",
-            sizeBytes: 2_250_000_000,               // HF: 2.15 GB
+            sizeBytes: 2_150_000_000,               // HF: single model.safetensors = 2.15 GB (one shard, > 2.1 GB free ceiling)
             contextLength: 4096,                    // MLX grows KV lazily; adjustContextLength clamps to device tier
             downloadURL: URL(static: "https://huggingface.co/mlx-community/Phi-3.5-mini-instruct-4bit"),
             sha256: nil,
             installState: .notInstalled,
-            recommendedFor: [.iPhone, .iPadMSeries],
+            recommendedFor: [.iPadMSeries],         // 2.15 GB single shard > 2.1 GB free ceiling → needs entitlement
             license: "MIT",
             backend: .mlx,
             format: .mlx
@@ -524,26 +535,31 @@ enum ModelCatalog {
             format: .mlx
         ),
 
-        // Gemma 3n E2B — MatFormer's iPhone-friendly variant. Same
-        // architecture as E4B (Per-Layer Embeddings, selective layer
-        // activation) but with the smaller 2B-active routing slice. On
-        // disk ~2.8 GB vs. E4B's 4.5 GB, so it fits inside the ~3.5 GB
-        // sandbox budget on iPhone 14/15 *without* needing the
-        // extended-virtual-addressing entitlement that E4B requires for
-        // contiguous mmap. Reach for this entry first if a user wants
-        // Gemma 3n on iPhone — E4B stays in the iPad-only section.
+        // Gemma 3n E2B — MatFormer variant. The "2B active" routing slice
+        // is a COMPUTE property, not a memory one: the full Per-Layer-
+        // Embedding weights ship as a SINGLE `model.safetensors` shard of
+        // ~4.46 GB (verified against mlx-community/gemma-3n-E2B-it-4bit on
+        // 2026-06). A single 4.46 GB shard exceeds the ~2.1 GB contiguous-
+        // mmap ceiling that stock iOS imposes WITHOUT the
+        // extended-virtual-addressing entitlement, so the free-account
+        // per-shard pre-flight in `MLXRuntime.loadWithProgress` refuses it
+        // before any weight map-in. It therefore needs a paid Apple
+        // Developer entitlement (and an 8 GB device) — same class as E4B,
+        // hence `recommendedFor: [.iPadMSeries]` only. Do NOT mark this an
+        // iPhone free-account recommendation: doing so makes the catalog
+        // push a 4.5 GB download that is then rejected at load.
         LocalModel(
             id: "mlx-gemma-3n-e2b-it",
             displayName: "Gemma 3n E2B (MLX) - MatFormer",
             family: "Gemma3n",
             parameterCount: "5B (2B active)",
             quantization: "4-bit",
-            sizeBytes: 2_900_000_000,           // HF: ~2.8 GB
+            sizeBytes: 4_460_000_000,           // HF: single model.safetensors = 4.46 GB (one shard)
             contextLength: 4096,                // MatFormer trained context; tier still clamps via adjustContextLength
             downloadURL: URL(static: "https://huggingface.co/mlx-community/gemma-3n-E2B-it-4bit"),
             sha256: nil,
             installState: .notInstalled,
-            recommendedFor: [.iPhone, .iPadMSeries],
+            recommendedFor: [.iPadMSeries],     // single 4.46 GB shard → needs extended-VA entitlement; not free-iPhone safe
             license: "Gemma Terms of Use",
             backend: .mlx,
             format: .mlx,
@@ -604,7 +620,7 @@ enum ModelCatalog {
             family: "Gemma3n",
             parameterCount: "8B (4B active)",
             quantization: "4-bit",
-            sizeBytes: 4_800_000_000,           // HF: ~4.5 GB
+            sizeBytes: 5_800_000_000,           // HF: 5.36 GB + 0.46 GB = ~5.8 GB; first shard alone is 5.36 GB
             contextLength: 4096,                // MatFormer architecture: 8B params but 4B active during inference
             // Bug-fix: previous URL pointed at `gemma-3-8b-it-4bit`
             // (regular Gemma 3, NOT 3n). Gemma 3n is the MatFormer

@@ -2695,34 +2695,49 @@ final class ConversationService: ObservableObject {
             return
         }
 
-        // Auto-load the first installed SD model if the runtime has
-        // nothing resident. Cold start of the app + first `/image` of
-        // the day would otherwise fail with `.modelNotLoaded` — that's
-        // a confusing failure for users who don't know that image
-        // generation is a separate runtime from text. We pick the
-        // first installed `.coreMLPackage` model from the catalog
-        // (v1 only ships SD 2.1 base palettized, so the list is
-        // 0 or 1 long; if/when more SD entries land, the user can
-        // pick via Settings → Modely and we just honour their pick).
-        if await imageRuntime.loadedModelID == nil {
-            let installedIDs = installedImageModelIDsProvider()
-            guard let firstID = installedIDs.first else {
-                // No SD model installed at all — surface an actionable
-                // failure instead of the cryptic "resources missing".
-                let actionable = "Pro generování obrázků si nejdřív stáhni model. Otevři Nastavení → Modely a najdi „Stable Diffusion 2.1 Base (Core ML)\"."
-                writeAssistantFailure(
-                    conversationID: conversationID,
-                    assistantIndex: assistantIndex,
-                    message: actionable,
-                    previewIcon: "⚠️ Chybí SD model"
-                )
-                endGenerationLifecycle(for: conversationID, cancellingTask: false)
-                return
-            }
-            // Surface the load — for a first-of-the-session run this
-            // is a multi-second wait (Core ML compiles + mmaps the
-            // weights). Users without the placeholder would assume
-            // the app froze.
+        // Image generation runs on a SEPARATE runtime (Core ML Stable
+        // Diffusion) from the text LLM. Holding both resident at once — a
+        // multi-GB chat model PLUS ~1.5 GB of SD weights, through both the
+        // weight map-in and the 30–90 s diffusion run — exceeds the
+        // non-entitled per-app memory cap on a free/moderate-tier device
+        // (no `increased-memory-limit` entitlement) and jetsams. So we
+        // EVICT the text model before any SD work and restore it once the
+        // image finishes (see `restoreTextModel`).
+        //
+        // Pre-flight SD availability BEFORE evicting the LLM, so a misfired
+        // `/image` with no SD model installed doesn't throw away the user's
+        // chat model for nothing. We pick the first installed Core ML model
+        // (v1 only ships SD 2.1 base palettized, so the list is 0 or 1
+        // long; more entries → the user's pick is honoured upstream).
+        let sdResident = await imageRuntime.loadedModelID != nil
+        let sdModelToLoad: String? = sdResident ? nil : installedImageModelIDsProvider().first
+        if !sdResident && sdModelToLoad == nil {
+            // No SD model installed at all — surface an actionable failure
+            // instead of the cryptic "resources missing". No eviction yet.
+            let actionable = "Pro generování obrázků si nejdřív stáhni model. Otevři Nastavení → Modely a najdi „Stable Diffusion 2.1 Base (Core ML)\"."
+            writeAssistantFailure(
+                conversationID: conversationID,
+                assistantIndex: assistantIndex,
+                message: actionable,
+                previewIcon: "⚠️ Chybí SD model"
+            )
+            endGenerationLifecycle(for: conversationID, cancellingTask: false)
+            return
+        }
+
+        // Evict the text LLM now (captured so it can be restored after the
+        // image completes). `RuntimeManager` is serialised on the main
+        // actor and no text turn is in flight on this path, so unloading is
+        // safe. `unload()` is a no-op when nothing is resident.
+        let textModelToRestore = runtime.activeModel
+        if textModelToRestore != nil {
+            await runtime.unload()
+        }
+
+        if let firstID = sdModelToLoad {
+            // Surface the load — for a first-of-the-session run this is a
+            // multi-second wait (Core ML compiles + mmaps the weights).
+            // Users without the placeholder would assume the app froze.
             if var loadingList = messagesByConversation[conversationID],
                loadingList.indices.contains(assistantIndex) {
                 var msg = loadingList[assistantIndex]
@@ -2739,6 +2754,9 @@ final class ConversationService: ObservableObject {
                     message: (error as? LocalizedError)?.errorDescription ?? error.localizedDescription,
                     previewIcon: "⚠️ Generování obrázku selhalo"
                 )
+                // SD load failed — restore the chat model we just evicted
+                // so the user can keep chatting.
+                await restoreTextModel(textModelToRestore)
                 endGenerationLifecycle(for: conversationID, cancellingTask: false)
                 return
             }
@@ -2826,6 +2844,9 @@ final class ConversationService: ObservableObject {
         // during the await above.
         list = messagesByConversation[conversationID] ?? list
         guard list.indices.contains(assistantIndex) else {
+            // Conversation was cleared mid-generation — still restore the
+            // evicted chat model so the runtime isn't left empty.
+            await restoreTextModel(textModelToRestore)
             endGenerationLifecycle(for: conversationID, cancellingTask: false)
             return
         }
@@ -2863,7 +2884,23 @@ final class ConversationService: ObservableObject {
             try? await store.save(conversation: conversations[idx])
         }
 
+        // Restore the chat model evicted for image generation so the next
+        // text turn doesn't have to cold-load it (and manual-mode users
+        // aren't left with no active model). Runs after the image is
+        // already committed to the UI, so the user sees their result while
+        // the LLM reloads.
+        await restoreTextModel(textModelToRestore)
         endGenerationLifecycle(for: conversationID, cancellingTask: false)
+    }
+
+    /// Best-effort reload of the chat model that was evicted to free
+    /// memory for image generation. Non-throwing (`RuntimeManager.load`
+    /// publishes failure via its `@Published` state); if it fails, the next
+    /// text turn reloads under auto-routing, or prompts the user under
+    /// manual mode.
+    private func restoreTextModel(_ model: LocalModel?) async {
+        guard let model else { return }
+        await runtime.load(model)
     }
 
     /// Writes a user-readable failure into the assistant placeholder

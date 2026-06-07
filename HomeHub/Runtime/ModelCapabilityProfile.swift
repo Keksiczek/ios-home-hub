@@ -112,8 +112,10 @@ struct ModelCapabilityProfile: Sendable, Equatable {
     /// - `llava`
     ///
     /// Pure-text families (`llama`, `phi`, `mistral`, etc.) stay `false`.
-    /// The MLX execution path that actually feeds images to the model
-    /// will arrive in a follow-up — this flag wires the gate.
+    /// When an image is attached on a `supportsVision` model, `MLXRuntime`
+    /// routes the turn through the VLM `UserInput` path
+    /// (`MLXRuntime.shouldUseVisionInputPath`), which feeds the decoded
+    /// image to the model.
     let supportsVision: Bool
 
     // MARK: - Sampling defaults
@@ -427,10 +429,11 @@ extension ModelCapabilityProfile {
     /// SmolVLM — HuggingFace's small Vision-Language Model
     /// (256M / 500M / 2B variants). Multimodal: accepts images +
     /// text. Image input is mandatory for the vision path to fire;
-    /// when no image is attached the chat falls back to a normal
-    /// text run. The runtime currently still forwards text-only —
-    /// `supportsVision: true` is the flag the future MLX-VLM
-    /// path checks before populating image tensors.
+    /// when no image is attached the chat runs as a normal text turn.
+    /// When an image IS attached, `MLXRuntime` routes the turn through
+    /// the VLM `UserInput` path (`shouldUseVisionInputPath`), which
+    /// feeds the decoded image to the model; `supportsVision: true`
+    /// is the gate that selects that path.
     ///
     /// Sampling mirrors SmolLM2 (same base architecture) but with
     /// a slightly looser temperature because the vision-conditioned
