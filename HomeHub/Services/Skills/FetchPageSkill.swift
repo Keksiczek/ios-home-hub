@@ -76,6 +76,11 @@ struct FetchPageSkill: Skill {
         self.timeout = timeout
     }
 
+    /// The entire output is page content authored by a third party. This is the
+    /// primary injection vector: a fetched page can address the model directly
+    /// and instruct it to invoke another tool.
+    var producesUntrustedContent: Bool { true }
+
     func execute(input: String) async throws -> String {
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let url = Self.normaliseURL(trimmed) else {

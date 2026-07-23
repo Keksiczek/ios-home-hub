@@ -629,7 +629,13 @@ extension ModelCapabilityProfile {
         // Vision-capable families first — they share substrings
         // with their text-only siblings ("qwen-vl" contains "qwen",
         // "smolvlm" contains "smollm"-ish) so order matters.
-        if f.contains("qwen-vl") || f.contains("qwen2-vl") { return .qwenVL }
+        // Any Qwen vision-language generation. Was an exact list of
+        // "qwen-vl" / "qwen2-vl", so `Qwen3-VL` — now the most-downloaded VLM
+        // on mlx-community — fell through to the text-only `.qwen` profile with
+        // `supportsVision: false`. `MLXRuntime.shouldUseVisionInputPath` then
+        // refused the VLM path and the attached image was silently dropped,
+        // with the user seeing an answer derived from OCR text only.
+        if f.contains("qwen"), f.contains("vl") { return .qwenVL }
         if f.contains("smolvlm") { return .smolVLM }
         if f.contains("llama")   { return .llama }
         if f.contains("qwen")    { return .qwen }

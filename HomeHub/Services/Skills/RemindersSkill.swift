@@ -40,6 +40,22 @@ struct RemindersSkill: Skill {
         }
     }
 
+    /// Anything that is not an explicit read creates a reminder.
+    ///
+    /// Deliberately a deny-by-default shape: `execute` treats "list" and the
+    /// empty string as reads and *everything else* as a create, so mirroring
+    /// that exactly — rather than pattern-matching create-like phrasings —
+    /// means a new read verb added to `execute` fails closed (over-restricting)
+    /// instead of open.
+    ///
+    /// This is the skill with no precondition in the injection chain: once
+    /// EventKit access has been granted a single time, an attacker-chosen title
+    /// and date can be written with nothing else required.
+    func isStateChanging(input: String) -> Bool {
+        let clean = input.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return !(clean == "list" || clean.isEmpty)
+    }
+
     func execute(input: String) async throws -> String {
         let store = EKEventStore()
 

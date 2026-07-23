@@ -497,3 +497,107 @@ Also set `requiresLargeMmapAddressing: true` on Mistral 7B v0.3 and Llama 3.1 8B
 which lacked it while same-size-class siblings had it. Erring towards `true` on
 an unverified shard layout is the safe direction: a false positive costs one
 advisory line, a false negative costs a 4 GB download to a guaranteed failure.
+
+---
+
+## Session 3 — 2026-07-23 (evening)
+
+Owner confirmed **full Apple Developer access is now active** and asked for the
+model catalog to be refreshed ("app was built several months ago, and we no
+longer have the limits").
+
+### Catalog refresh — verified, not guessed
+
+Every figure below was read from
+`https://huggingface.co/api/models/<repo>/tree/main`, because a wrong repo id is
+a 404 and a wrong `requiresLargeMmapAddressing` is a multi-GB download that ends
+in a refusal. The catalog was a generation behind: Llama 3.1/3.2, Gemma 2,
+Qwen2-VL, Phi-3.5, SmolLM2. Missing entirely: the **Qwen3** line, **Gemma 3**,
+LFM2.5, and the current Qwen3-VL vision models.
+
+| Added | Repo | Weights (verified) | Needs entitlement |
+|---|---|---|---|
+| Qwen3 4B Instruct 2507 | `Qwen3-4B-Instruct-2507-4bit` | 2.263 GB | yes |
+| Qwen3 1.7B | `Qwen3-1.7B-4bit` | 968 MB | no |
+| Qwen3 8B | `Qwen3-8B-4bit` | 4.608 GB | yes |
+| Gemma 3 1B QAT | `gemma-3-1b-it-qat-4bit` | 733 MB | no |
+| Gemma 3 4B QAT (vision) | `gemma-3-4b-it-qat-4bit` | 2.995 GB | yes |
+| LFM2.5 1.2B | `LFM2.5-1.2B-Instruct-4bit` | 659 MB | no |
+| Qwen3-VL 2B | `Qwen3-VL-2B-Instruct-4bit` | 1.782 GB | no |
+| Qwen3-VL 4B | `Qwen3-VL-4B-Instruct-4bit` | 3.094 GB | yes |
+
+All ship a **single** `model.safetensors` (the accompanying
+`model.safetensors.index.json` indexes that one file), so the largest shard is
+the whole weight file — which is what the ~2.1 GB sandboxed mmap ceiling applies
+to. `sizeBytes` is weights + tokenizer assets, i.e. what actually downloads.
+
+Nothing was removed: users may have older models installed.
+
+### Three prerequisites the new names would have broken silently
+
+Adding entries alone would have shipped three quiet failures:
+
+1. **`familyEndOfTurnStops` matched family names by exact equality** — so
+   `"Qwen3"` fell to `default: []` and got **no end-of-turn stops at all**.
+   That is F-208. Now substring-matched, which also means the next generation
+   (Qwen4, Gemma5) keeps working without a code change.
+2. **Qwen VLM detection was an exact list** (`"qwen-vl"`, `"qwen2-vl"`), so
+   `Qwen3-VL` — now the most-downloaded VLM on mlx-community — resolved to the
+   *text-only* profile with `supportsVision: false`.
+   `shouldUseVisionInputPath` would then refuse the VLM path and **silently
+   drop the attached image**, leaving the user with an OCR-only answer.
+3. **`recommendedStarter` depended on array order.** It returned the first
+   iPhone-safe MLX model, so inserting a modern 1.7B near the top silently made
+   onboarding default to a *weak* instruction follower, forcing lean prompt
+   mode. Only the catalog consistency test caught it. Now a predicate
+   (`!isWeakInstructionFollower`) rather than an ordering convention — the
+   invisible contract is written down and enforced.
+
+### F-301 — prompt injection can no longer drive real-world writes
+
+Implemented as an **information-flow rule**, not injection detection.
+
+`Skill` gained two members: `isStateChanging(input:)` (per-invocation, because
+`HomeKitSearch "status"` reads while the same skill with a payload writes) and
+`producesUntrustedContent` (true for `WebSearch` and `FetchPage`). Once a turn
+runs a skill of the second kind, `SkillManager` refuses skills of the first kind
+for the rest of that turn.
+
+Why this framing: detecting the injection in page text is not reliable and never
+will be. Tracking *where the content came from* is reliable, because it is a
+property of our own call graph rather than of the attacker's prose. Reading the
+web stays always allowed; acting on the world after reading the web does not.
+
+Cost to legitimate use is near zero — "add milk to my reminders" involves no web
+content and runs untouched. Only "read this page, then change something" is
+refused, and the user can still do it in two messages. The taint is **turn**-
+scoped, not conversation-scoped, for exactly that reason.
+
+Two details the tests forced:
+
+- **The guard runs before the permission check.** It was initially placed after,
+  so on a device without Reminders access an injected write returned
+  "permission missing" — actively misleading, and behaviour would have differed
+  between a device that had granted access and one that had not. Whether a call
+  is *allowed* does not depend on whether it would have *succeeded*.
+- **`CalendarSkill` is read-only.** The security review listed it as a write
+  path; the code has no `EKEvent(` or `.save(` anywhere. Left unrestricted
+  rather than adding a limit the code does not need.
+
+A full per-action confirmation UI would still be better, and
+`Skill.isStateChanging(input:)` exists as its foundation. This closes the
+demonstrated hole without blocking on a UX decision.
+
+> **Noted, not fixed:** the reminder-*creating* skill is registered as
+> `"RemindersSearch"` and the HomeKit control skill as `"HomeKitSearch"`. Both
+> read as read-only in the Settings tool list, and both are on by default. The
+> names are load-bearing — they are the tag the model emits and are persisted in
+> `AppSettings.enabledTools` — so renaming needs a migration.
+> `ToolInjectionGuardTests.testRegisteredNameIsMisleading` pins the current
+> values so the rename, when it happens, is deliberate.
+
+### Tests added
+
+`HomeHubTests/ToolInjectionGuardTests.swift` — 12 tests: state-changing
+classification for each skill, untrusted-source marking, the registry lookup,
+and the guard itself (refuses a write on a tainted turn, still allows a read).

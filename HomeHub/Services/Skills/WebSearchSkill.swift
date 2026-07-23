@@ -31,6 +31,11 @@ struct WebSearchSkill: Skill {
         self.engine = engine
     }
 
+    /// Result snippets are written by whoever controls the indexed pages, so
+    /// they are attacker-influenceable text that gets fed straight back to the
+    /// model as an observation.
+    var producesUntrustedContent: Bool { true }
+
     func execute(input: String) async throws -> String {
         let query = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else {

@@ -50,5 +50,10 @@ enum ToolExecutionResult: Equatable {
         case timeout
         /// The tool raised an error from its own body.
         case executionFailed
+        /// A state-changing skill was invoked in a turn that had already pulled
+        /// in third-party content (a fetched page, a search snippet), so the
+        /// instruction to run it may have come from that content rather than
+        /// from the user. See `SkillManager.run(_:enabled:timeout:turnHasUntrustedContent:)`.
+        case blockedAfterUntrustedContent
     }
 }

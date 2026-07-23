@@ -1043,15 +1043,45 @@ final class ConversationService: ObservableObject {
     /// previous switch fell through to `default` for "gemma3n" and the
     /// model kept generating past its own turn marker.
     private func familyEndOfTurnStops(for model: LocalModel?) -> [String] {
-        switch model?.family.lowercased() {
-        case "gemma3n", "gemma3", "gemma2", "gemma":
+        // Substring matching, not exact equality.
+        //
+        // The catalog labels families by generation — "Gemma2", "Gemma3n",
+        // "Qwen2-VL", "Qwen3", "Qwen3-VL". An exact-match switch only listed
+        // the bare names, so every versioned label except the handful spelled
+        // out fell through to `default: []` and the model got **no end-of-turn
+        // stops at all**. That is the "unknown family → no stop sequences"
+        // failure: an undertrained checkpoint then runs past its own turn
+        // marker and emits it as visible text.
+        //
+        // Matching on substrings means a new generation (Qwen4, Gemma5) keeps
+        // working without a code change, which is the whole point given how
+        // fast the catalog turns over.
+        guard let family = model?.family.lowercased(), !family.isEmpty else { return [] }
+
+        // Order matters: check the more specific families first, since
+        // "gemma-3n" contains "gemma" and "qwen3-vl" contains "qwen".
+        if family.contains("gemma") {
+            // Every Gemma generation shares `<end_of_turn>`.
             return ["<end_of_turn>"]
-        case "llama":   return ["<|eot_id|>", "<|end_of_text|>"]
-        case "phi":     return ["<|end|>", "<|endoftext|>", "<|im_end|>"]
-        case "qwen":    return ["<|im_end|>", "<|endoftext|>"]
-        case "mistral": return ["</s>"]
-        default:        return []
         }
+        if family.contains("llama") {
+            return ["<|eot_id|>", "<|end_of_text|>"]
+        }
+        if family.contains("phi") {
+            return ["<|end|>", "<|endoftext|>", "<|im_end|>"]
+        }
+        if family.contains("qwen") {
+            // Covers Qwen2 / Qwen2.5 / Qwen3 and their -VL variants, all ChatML.
+            return ["<|im_end|>", "<|endoftext|>"]
+        }
+        if family.contains("mistral") {
+            return ["</s>"]
+        }
+        if family.contains("smollm") || family.contains("smolvlm") {
+            // SmolLM2 / SmolVLM are ChatML-based.
+            return ["<|im_end|>", "<|endoftext|>"]
+        }
+        return []
     }
 
     /// Tool-envelope closes recognised across every family. Used ONLY
@@ -1577,6 +1607,18 @@ final class ConversationService: ObservableObject {
         // (`isFinalAllowedLoop == true`) once it hits 2.
         var consecutiveEmptyObservations = 0
         var forceSynthesisNextLoop = false
+        // Prompt-injection guard. Set once this turn runs a skill whose output
+        // is third-party text (`WebSearch`, `FetchPage`); from then on
+        // `SkillManager` refuses state-changing skills for the rest of the
+        // turn, because the instruction to run them may have come from the
+        // fetched content rather than from the user.
+        //
+        // Scoped to the turn, not the conversation: the taint comes from the
+        // observation sitting in *this* turn's context. A later turn starts
+        // clean, so "read this page" followed by "now add that to my reminders"
+        // still works as two messages — which is also a reasonable place to ask
+        // the user to be explicit.
+        var turnHasUntrustedContent = false
         // Same-call duplicate detector. Models occasionally call the
         // same tool with the same input twice in a row — usually
         // because the previous observation didn't help and the model
@@ -1907,7 +1949,21 @@ final class ConversationService: ObservableObject {
                     // Execute via the structured API — timeout + typed failure
                     // reasons so we can decide whether to loop once more or
                     // bail out.
-                    let result = await SkillManager.shared.run(actionCommand, enabled: enabledTools)
+                    let result = await SkillManager.shared.run(
+                        actionCommand,
+                        enabled: enabledTools,
+                        turnHasUntrustedContent: turnHasUntrustedContent
+                    )
+
+                    // Raise the taint AFTER the call, so the skill that reads
+                    // the web is itself allowed to run — only what follows it
+                    // in this turn is restricted.
+                    if await SkillManager.shared.producesUntrustedContent(actionCommand.skillName) {
+                        if !turnHasUntrustedContent {
+                            HHLog.tool.info("turn tainted by \(actionCommand.skillName, privacy: .public) — state-changing skills refused for the rest of this turn")
+                        }
+                        turnHasUntrustedContent = true
+                    }
 
                     // Dead-end detection: an observation that looks empty
                     // (literally empty, or a "no results" marker from the
