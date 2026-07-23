@@ -53,14 +53,39 @@ lands any change.** Until that happens, changes are described exhaustively in
 
 | Round | Theme | Status |
 |---|---|---|
-| 0 | Recon, baseline build, docs skeleton | in progress |
-| 1 | Wire kernel entitlements end-to-end | pending |
-| 2 | Recalibrate memory budgets for the entitled build | pending |
-| 3 | Answer quality (prompt, sampling, templates) | pending |
-| 4 | Production readiness (security, silent failures, tests, docs) | pending |
+| 0 | Recon, baseline build, docs skeleton | **done** |
+| 1 | Wire kernel entitlements end-to-end | **done** — `141b393` |
+| 2 | Recalibrate memory budgets for the entitled build | **partial** — GPU pool + generous window done; moderate tier open (F-104) |
+| 3 | Answer quality (prompt, sampling, templates) | **partial** — F-202, F-204 done; F-201, F-203 open |
+| 4 | Production readiness (security, silent failures, tests, docs) | **partial** — F-303, F-401/402/403/405, plist + manifest done |
 
 Rounds are not strictly sequential — findings from the parallel review agents
 land continuously and get triaged into `01-FINDINGS.md`.
+
+### Session 1 outcome
+
+4 commits on `production-readiness/2026-07`, all building green, test suite
+unchanged from baseline (613 pass / 32 fail, identical failing set — see F-007).
+
+Closed: F-001, F-002, F-003, F-004, F-102, F-108, F-202, F-204, F-303,
+F-304, F-401, F-402, F-403, F-405, F-101 (partial), F-104 (generous half),
+plus the privacy manifest.
+
+The two headline blockers were both cases of *a correct comment sitting above a
+declaration that did nothing*: the entitlement flag had no wiring path, and
+seven privacy strings never reached the bundle. A third instance
+(`UIBackgroundModes`) was found by the guardrail written to prevent the first two.
+
+### Highest-value work remaining
+
+1. **F-301** — prompt injection can drive unconfirmed HomeKit / Reminders
+   writes. Needs the product decision in Q4 below. Genuinely exploitable.
+2. **F-201** — no unified prompt-size budget. Most likely single root cause of
+   the remaining bad answers.
+3. **F-203** — tool results delivered as a `.user` turn; no `.tool` role exists.
+4. **F-007** — fix the crashing test double first so the suite becomes a
+   trustworthy signal.
+5. **F-101 rest** — cache-tier fields still unguarded; needs a TSan pass.
 
 ---
 
@@ -118,12 +143,41 @@ there, guarded by D1's runtime check so an unentitled build is still safe.
 
 ---
 
-## Open questions for the owner
+## Questions — answered
 
-1. **`git init`?** Strongly recommended before more changes land.
-2. **Distribution target** — App Store / TestFlight, or personal device install
-   only? This changes how strict Round 4 needs to be about privacy strings,
-   the iCloud container, and the free-tier fallback path.
-3. **Which physical device** is the primary target? The memory tiers in
-   Round 2 are calibrated per-device, and knowing the real one (iPhone 16 Pro?
-   iPhone 17 Pro? iPad?) lets us tune rather than guess.
+1. ~~`git init`?~~ **Done.** Branch `production-readiness/2026-07`, remote
+   `github.com/Keksiczek/ios-home-hub`. Local tree was identical to
+   `origin/main` (271a7f6) at baseline.
+2. ~~Distribution target?~~ **App Store**, paid account, all users. So the
+   entitlements ship to everyone; the free-tier path is a safety fallback, not
+   the design centre.
+3. ~~Primary device?~~ **iPhone 16/17 Pro (8 GB)** and **iPad M1**. Both are
+   `generous`-tier candidates, which is what the Round 2 tuning targets.
+
+## Open question — needs a product decision
+
+4. **F-301: should state-changing skills require explicit confirmation?**
+
+   Today a fetched web page can cause a Reminder to be created, or a HomeKit
+   accessory to be toggled, with **no user confirmation** — the model emits a
+   tool call and `SkillManager.run` executes it. `enabledTools` is a
+   session-level Settings allow-list, not a per-call gate. It is also reachable
+   via Siri through `AskHomeHubIntent` without the app ever appearing, and the
+   ephemeral conversation is deleted afterwards, leaving no trace.
+
+   Three options, in order of preference:
+
+   a. **Confirm state-changing skills only.** Read-only skills (`WebSearch`,
+      `FetchPage`, `HomeKitSearch` status, `Calculator`) stay automatic;
+      anything that writes (Reminders create, HomeKit set, Calendar create)
+      shows a one-tap confirmation. `WidgetActionHandler` already works this
+      way, so there is a pattern to follow.
+   b. **Confirm only after untrusted content.** Refuse to auto-execute a tool
+      call emitted in the turn immediately following an `<Observation>` that
+      carried fetched web content. Preserves the agentic feel for pure-chat
+      turns; narrower protection.
+   c. **Accept the risk**, and disable `FetchPage`/`WebSearch` by default so
+      untrusted content only enters when the user opts in.
+
+   This is not something to change silently — it alters the core agentic UX,
+   which is the app's whole point. Deliberately left for the owner.
