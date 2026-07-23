@@ -335,23 +335,24 @@ final class RuntimeManager: ObservableObject {
         // never sees a spurious cancellation.
         let downloadTimeout = Self.downloadStallTimeoutSeconds
         let prepareTimeout = Self.prepareStallTimeoutSeconds
+        let connectTimeout = Self.connectStallTimeoutSeconds
         let stallWatchdog = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 5_000_000_000)
                 guard let self else { return }
                 if Task.isCancelled { return }
                 let (stalled, effectiveTimeout) = await MainActor.run { () -> (Bool, TimeInterval) in
-                    guard let last = self.lastLoadProgressAt else { return (false, prepareTimeout) }
-                    // Per-phase timeout selection. Defaults to the
-                    // shorter "preparing" budget when no phase event
-                    // has landed yet — an early stall (before download
-                    // even starts ticking) should fail fast, not wait
-                    // out the longer download budget.
+                    guard let last = self.lastLoadProgressAt else { return (false, connectTimeout) }
+                    // Per-phase timeout selection. `.none` means no progress
+                    // tick has arrived yet, which on a cold-cache load is the
+                    // HF metadata fetch + connection setup — network work, so
+                    // it gets the generous connect budget rather than the
+                    // local-prep one it used to inherit.
                     let timeout: TimeInterval = {
                         switch self.currentLoadPhase {
                         case .downloading: return downloadTimeout
                         case .preparing:   return prepareTimeout
-                        case .none:        return prepareTimeout
+                        case .none:        return connectTimeout
                         }
                     }()
                     return (Date().timeIntervalSince(last) >= timeout, timeout)
@@ -520,17 +521,51 @@ final class RuntimeManager: ObservableObject {
     ///     stuck compile and a user staring at a spinner forever.
     ///     45 s comfortably covers a healthy compile on every iPhone
     ///     we've tested while catching the truly stuck case.
-    ///   - **Initial / no phase observed yet** (45 s): same as
-    ///     preparing — if we haven't seen a single tick that long
-    ///     after kick-off, something is wrong before download even
-    ///     started.
+    ///   - **Initial / no phase observed yet** (`connectStallTimeoutSeconds`):
+    ///     see below — this window is network work, not local prep, and
+    ///     was previously (wrongly) given the short prepare budget.
     private static let downloadStallTimeoutSeconds: TimeInterval = 90
-    private static let prepareStallTimeoutSeconds: TimeInterval = 45
+
+    /// Budget for the Metal pipeline compile that follows a download.
+    ///
+    /// Raised from 45 s. `MLXRuntime`'s own documentation puts compilation at
+    /// **10–60 s on iPhone**, so a 45 s deadline cancelled compiles the code
+    /// itself describes as normal — and the larger a model is, the more likely
+    /// it trips. That surfaces to the user as `NSURLErrorDomain -999
+    /// "cancelled"`, which reads like a network failure and sends anyone
+    /// debugging it in the wrong direction entirely.
+    ///
+    /// 180 s covers the documented worst case with margin while still catching
+    /// a genuinely wedged compile.
+    private static let prepareStallTimeoutSeconds: TimeInterval = 180
+
+    /// Budget for the window between kicking off a load and the first progress
+    /// tick.
+    ///
+    /// This phase used to inherit the 45 s prepare budget, on the reasoning
+    /// that "if we haven't seen a tick that long after kick-off, something is
+    /// wrong before download even started". That reasoning had the phase
+    /// backwards: before the first tick, a cold-cache MLX load is doing
+    /// **network** work — resolving `huggingface.co/api/models/<repo>`,
+    /// listing the repo's files, and opening the first connection. None of it
+    /// emits progress, and on a slow or congested link it comfortably exceeds
+    /// 45 s.
+    ///
+    /// Observed on device: loads failing with
+    /// `NSURLErrorDomain Code=-999 "cancelled"` whose failing URL is the
+    /// **API metadata endpoint** — i.e. cancelled before a single byte of
+    /// weights had been requested. Every freshly added catalog model is a cold
+    /// download, which is why this became visible all at once.
+    ///
+    /// 150 s is deliberately generous: the cost of waiting is a spinner, the
+    /// cost of cancelling too early is a user who cannot install any model at
+    /// all.
+    private static let connectStallTimeoutSeconds: TimeInterval = 150
     /// Convenience for log messages and the diagnostic strings that
     /// quote a single number — picks the *longer* of the two so the
     /// surfaced bound is the user's worst-case patience.
     private static var loadStallTimeoutSeconds: TimeInterval {
-        max(downloadStallTimeoutSeconds, prepareStallTimeoutSeconds)
+        max(downloadStallTimeoutSeconds, max(prepareStallTimeoutSeconds, connectStallTimeoutSeconds))
     }
 
     /// Wall-clock timestamp of the most recent progress tick from the

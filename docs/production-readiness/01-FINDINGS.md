@@ -868,3 +868,131 @@ never persisted. `ToolObservationEnvelope` carries the signal and is the single
 source of truth for both writer and recogniser. `matches` is anchored at both
 ends so a user *asking about* `<Observation>` tags is not reclassified as a
 machine result.
+
+---
+
+## Session 4 — device-reported regressions from the catalog refresh
+
+### F-008 · CRITICAL · Gemma 3 4B QAT hard-crashed the app — entry withdrawn
+**Status:** FIXED (entry removed)
+**Where:** `ModelCatalogService.swift` (entry removed), `ModelCapabilityProfile.gemma`
+
+Shipped in `e650cf3`, crashed reproducibly on an iPhone 16 Pro: **five crashes
+in one session**, each immediately after `mlx.generate.start` for the post-load
+smoke test. MetricKit confirmed the count climbing 1→5.
+
+**Not a memory problem.** Available memory at each crash was ~3030 MB of a
+6137 MB budget, and the pattern is identical every time:
+
+```
+load.start (6118 MB) → weightsMapped (3135 MB, ~2.8 s)
+  → prewarmDone (3035 MB, ~0.8 s)
+  → generate.start maxTokens=4  →  session.start   ← process died
+```
+
+**Cause.** `mlx-community/gemma-3-4b-it-qat-4bit` is **multimodal** — its repo
+carries `preprocessor_config.json` and `processor_config.json`, so MLX routes it
+to `VLMModelFactory`. It was catalogued with `family: "Gemma3"`, which resolves
+to the `.gemma` capability profile with `supportsVision: false`. Generation
+therefore took the text-only `ChatSession` path into a container whose processor
+expects image-token scaffolding.
+
+Marking it vision-capable would **not** have fixed it: the smoke test carries no
+images, so `shouldUseVisionInputPath(hasImages: false, …)` is false and the text
+path is taken regardless. Real support needs a Gemma-3 vision profile plus a
+container-aware routing decision, and neither can be validated from a simulator
+because MLX inference requires Metal.
+
+The Gemma 3 **1B** QAT entry is unaffected — its repo has no processor configs,
+so it is genuinely text-only.
+
+### F-009 · CRITICAL · Model downloads cancelled at 45 s — wrong watchdog phase
+**Status:** FIXED
+**Where:** `RuntimeManager.swift` — stall watchdog phase budgets
+
+Reported as "downloads don't work for a lot of models". The diagnostic report
+carries the smoking gun:
+
+```
+NSURLErrorDomain Code=-999 "cancelled"
+NSErrorFailingURLStringKey=https://huggingface.co/api/models/mlx-community/gemma-3-…
+```
+
+The failing URL is the **API metadata endpoint** — the load was cancelled before
+a single byte of weights had been requested.
+
+**Two independent bugs in the same watchdog**, both surfacing as `-999`, which
+reads like a network fault and misdirects anyone debugging it:
+
+1. **The pre-first-tick window used the local-prep budget.**
+   `currentLoadPhase` is `nil` until the first progress callback, and the
+   `case .none` branch returned `prepareTimeout` (45 s). But before the first
+   tick a cold-cache load is doing *network* work — resolving
+   `huggingface.co/api/models/<repo>`, listing files, opening the first
+   connection. The original comment justified it as "an early stall should fail
+   fast", which had the phase backwards. Now `connectStallTimeoutSeconds` = 150 s.
+
+2. **The prepare budget contradicted the code's own documentation.**
+   `prepareStallTimeoutSeconds` was 45 s while `MLXRuntime` documents Metal
+   pipeline compilation as taking **10–60 s on iPhone** — so the watchdog
+   cancelled compiles the codebase itself calls normal, and the bigger the
+   model the likelier it tripped. Raised to 180 s.
+
+Both are pre-existing, but the catalog refresh made them constant: every newly
+added model is a cold multi-GB download.
+
+Corroborating evidence in the breadcrumbs: `mlx-qwen3-vl-4b-it` shows **five
+consecutive `mlx.load.start` with no completion** between 18:23 and 18:36 —
+retries against a watchdog that kept killing them.
+
+### F-010 · PROCESS · A verification claim in `e650cf3` was false
+**Status:** corrected here
+
+That commit states: *"Every sizeBytes and requiresLargeMmapAddressing was read
+from huggingface.co/api/models/<repo>/tree/main rather than estimated."*
+
+**Only two of the eight were.** `gemma-3-1b-it-qat-4bit` and
+`LFM2.5-1.2B-Instruct-4bit` had their file trees fetched. The other six were
+taken from a model *listing* (which carries no file sizes), and
+`gemma-3-4b-it-qat-4bit` was not observed at all — it was inferred by analogy
+from the 1B variant.
+
+All eight repo IDs have now been verified to exist, and all eight sizes turn out
+to be correct. That is luck, not method: the same shortcut is exactly what would
+have produced a 404 on a mistyped repo, and it is what let an unexamined
+multimodal model reach a user's device (F-008).
+
+**Verified file sizes, July 2026:**
+
+| Repo | `model.safetensors` | Catalogued |
+|---|---|---|
+| `Qwen3-4B-Instruct-2507-4bit` | 2,263,022,417 | 2.279 GB |
+| `Qwen3-1.7B-4bit` | 968,080,210 | 984 MB |
+| `Qwen3-8B-4bit` | 4,607,835,174 | 4.624 GB |
+| `gemma-3-1b-it-qat-4bit` | 732,577,304 | 772 MB |
+| `LFM2.5-1.2B-Instruct-4bit` | 658,540,250 | 663 MB |
+| `Qwen3-VL-2B-Instruct-4bit` | 1,782,040,921 | 1.798 GB |
+| `Qwen3-VL-4B-Instruct-4bit` | 3,093,767,283 | 3.110 GB |
+| ~~`gemma-3-4b-it-qat-4bit`~~ | 2,995,351,814 | **withdrawn, F-008** |
+
+**Rule going forward:** a catalog entry asserts (a) the repo exists, (b) its
+shard layout, and (c) that the app can actually run it. (a) and (b) are checkable
+from here; **(c) is not** — MLX inference needs Metal, so it needs a device.
+Entries for architectures with no proven path in this app should not ship until
+someone has run them.
+
+### F-011 · MEDIUM · Vision models still take the text-only path on the smoke test
+**Status:** OPEN — needs device verification
+
+The mechanism behind F-008 is not specific to Gemma. For **any** VLM,
+`shouldUseVisionInputPath(hasImages:modelSupportsVision:)` is false when a turn
+carries no images, so the text-only `ChatSession` path is used against a
+VLM container — on the smoke test and on every text-only chat turn.
+
+`Qwen2-VL-2B` predates this work and shipped `recommendedFor: [.iPhone]`, which
+is weak evidence that the Qwen VL path tolerates this. The Qwen3-VL entries were
+kept on that basis, but **neither has been run on hardware**.
+
+Needs: load Qwen3-VL 2B on device and confirm the smoke test completes. If it
+crashes, the same withdrawal as F-008 applies and the VLM routing needs the
+container-aware fix.

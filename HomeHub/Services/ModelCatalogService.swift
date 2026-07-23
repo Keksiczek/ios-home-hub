@@ -566,25 +566,33 @@ enum ModelCatalog {
             format: .mlx
         ),
 
-        // Gemma 3 4B (QAT) — multimodal. Vision comes from the same weights,
-        // so there is no separate VLM download.
-        LocalModel(
-            id: "mlx-gemma-3-4b-it-qat",
-            displayName: "Gemma 3 4B QAT (MLX, vision)",
-            family: "Gemma3",
-            parameterCount: "4B",
-            quantization: "4-bit (QAT)",
-            sizeBytes: 3_035_000_000,           // HF: model.safetensors 2.995 GB + ~39 MB tokenizer
-            contextLength: 4096,
-            downloadURL: URL(static: "https://huggingface.co/mlx-community/gemma-3-4b-it-qat-4bit"),
-            sha256: nil,
-            installState: .notInstalled,
-            recommendedFor: [.iPadMSeries],
-            license: "Gemma Terms of Use",
-            backend: .mlx,
-            format: .mlx,
-            requiresLargeMmapAddressing: true
-        ),
+        // ── Gemma 3 4B QAT — WITHDRAWN, do not re-add without device testing ──
+        //
+        // This entry shipped briefly and **hard-crashed the app** on an
+        // iPhone 16 Pro, reproducibly: five crashes in one session, each
+        // immediately after `mlx.generate.start` for the post-load smoke test,
+        // with ~3 GB of the 6 GB budget still free — so not a jetsam.
+        //
+        // Cause: `mlx-community/gemma-3-4b-it-qat-4bit` is **multimodal** — its
+        // repo carries `preprocessor_config.json` and `processor_config.json`,
+        // so MLX routes it to `VLMModelFactory`. But it was catalogued with
+        // `family: "Gemma3"`, which resolves to the `.gemma` capability profile
+        // and `supportsVision: false`. Generation therefore took the text-only
+        // `ChatSession` path into a container whose processor expects the
+        // image-token scaffolding, and the process died inside MLX.
+        //
+        // Marking it vision-capable would not have helped: the smoke test has
+        // no images, so `shouldUseVisionInputPath(hasImages: false, …)` is
+        // false and the text path is taken regardless. Making Gemma 3 VLM work
+        // needs a real Gemma-3 vision profile plus a container-aware routing
+        // decision — and that cannot be validated from a simulator, because
+        // MLX inference needs Metal.
+        //
+        // The 1B QAT entry above is unaffected: its repo has no processor
+        // configs, so it is a genuine text-only model.
+        //
+        // To restore: build the VLM routing, then verify on hardware that the
+        // smoke test completes. Do not rely on "it compiles".
 
         // LFM2.5 1.2B — Liquid's edge-targeted architecture. Smallest entry
         // with genuinely usable instruction-following; useful on tight devices.

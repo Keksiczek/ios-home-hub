@@ -79,19 +79,49 @@ final class MemoryPolicyTests: XCTestCase {
     /// CannotLoad vetoes when even the raw weights don't fit.
     /// 1.5 GB < 2 GB raw → no chance. `permitsLoad == false` is the
     /// only veto path the load gate honours.
-    func testFeasibilityCannotLoadWhenAvailableBelowRawWeights() {
+    /// `.cannotLoad` fires only below the mmap floor (raw × 0.66), not merely
+    /// below raw weights.
+    ///
+    /// This test used to pass `available: 1.5 GB` and expect `.cannotLoad`,
+    /// encoding the old `weights × 1.35 > available` gate. That gate was
+    /// deliberately removed (documented in `MLXRuntime`): MLX memory-maps weight
+    /// files, so clean file-backed pages don't count fully against the dirty
+    /// budget, and a model whose raw size modestly exceeds the budget still
+    /// loads. For the 2 GB reference the floor is 1.32 GB, so 1.5 GB is
+    /// correctly `.risky` (allowed under the user's explicit opt-in), not a
+    /// hard refusal. The test now checks the real boundary: below the floor.
+    func testFeasibilityCannotLoadBelowMmapFloor() {
+        // 2 GB × 0.66 = 1.32 GB floor. 1.0 GB is below it — genuinely hopeless.
+        let verdict = RuntimeManager.evaluateFeasibility(
+            for: Self.referenceModel,
+            profile: .balanced,
+            available: 1_000_000_000
+        )
+        guard case .cannotLoad(let required, let avail) = verdict else {
+            return XCTFail("Expected .cannotLoad below the mmap floor, got \(String(describing: verdict))")
+        }
+        XCTAssertEqual(required, 2_000_000_000, "cannotLoad reports raw weights as required")
+        XCTAssertEqual(avail, 1_000_000_000)
+        XCTAssertFalse(verdict?.permitsLoad == true,
+                       ".cannotLoad must veto — this is the only block path")
+    }
+
+    /// The band between the mmap floor and the safe margin is `.risky`, not a
+    /// refusal — the case the old test got wrong. 1.5 GB sits above the 1.32 GB
+    /// floor and below the 3 GB safe margin for the 2 GB reference.
+    func testFeasibilityRiskyBetweenFloorAndSafeMargin() {
         let verdict = RuntimeManager.evaluateFeasibility(
             for: Self.referenceModel,
             profile: .balanced,
             available: 1_500_000_000
         )
-        guard case .cannotLoad(let required, let avail) = verdict else {
-            return XCTFail("Expected .cannotLoad, got \(String(describing: verdict))")
+        guard case .risky(let required, let avail) = verdict else {
+            return XCTFail("Expected .risky between floor and safe margin, got \(String(describing: verdict))")
         }
-        XCTAssertEqual(required, 2_000_000_000)
+        XCTAssertEqual(required, 3_000_000_000, "risky reports the safe margin (raw × 1.5) as required")
         XCTAssertEqual(avail, 1_500_000_000)
-        XCTAssertFalse(verdict?.permitsLoad == true,
-                       ".cannotLoad must veto — this is the only block path")
+        XCTAssertTrue(verdict?.permitsLoad == true,
+                      ".risky permits load under the user's explicit opt-in")
     }
 
     /// The conservative profile (factor 1.8) raises the safe-margin

@@ -1660,13 +1660,23 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
         // NSLock is not recursive, so going through the accessor would deadlock.
         let snapshot = sessionLock.withLock { _container }
         guard let container = snapshot else { return nil }
-        // `container.perform { ... }` propagates `rethrows`, and
-        // `ctx.tokenizer.encode(text:)` is non-throwing — keep the
-        // call non-throwing too so the compiler doesn't flag the
-        // wrapping `do/catch` as dead. If the upstream encode ever
-        // gains throwing semantics, re-add the catch.
-        return await container.perform { ctx in
-            ctx.tokenizer.encode(text: text).count
+        // `MLXModelContainer.perform` is `throws` (not `rethrows`) so a stub
+        // container can report that it has no `ModelContext` instead of
+        // trapping. `ctx.tokenizer.encode(text:)` itself does not throw, so the
+        // only failure reachable here is the container declining to run at all.
+        //
+        // `nil` is the documented answer for "no real token count available",
+        // which is exactly what that means. Callers already treat `nil` as
+        // "fall back to the heuristic estimator", so a swallow is correct here
+        // rather than merely convenient — but it is logged, because a container
+        // that cannot tokenise in production would otherwise be invisible.
+        do {
+            return try await container.perform { ctx in
+                ctx.tokenizer.encode(text: text).count
+            }
+        } catch {
+            log.notice("MLX: realTokenCount unavailable — \(error.localizedDescription, privacy: .public)")
+            return nil
         }
     }
 

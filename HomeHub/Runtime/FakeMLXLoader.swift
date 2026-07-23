@@ -26,7 +26,13 @@ final class FakeMLXLoader: MLXLoader, @unchecked Sendable {
     }
     
     var behavior: Behavior = .success
-    
+
+    /// How the container this loader returns should behave when
+    /// `MLXRuntime.generate` reaches it. Defaults to failing immediately;
+    /// set `.blockUntilCancelled` for tests that need a generation to still be
+    /// in flight when they call `unload()`.
+    var containerBehaviour: MockMLXModelContainer.Behaviour = .failImmediately
+
     func load(
         configuration: ModelConfiguration,
         downloader: any Downloader,
@@ -39,7 +45,7 @@ final class FakeMLXLoader: MLXLoader, @unchecked Sendable {
             let progress = Progress(totalUnitCount: 100)
             progress.completedUnitCount = 100
             progressHandler(progress)
-            return MockMLXModelContainer()
+            return MockMLXModelContainer(behaviour: containerBehaviour)
             
         case .failure(let reason):
             throw RuntimeError.initializationFailed(reason)
@@ -58,29 +64,79 @@ final class FakeMLXLoader: MLXLoader, @unchecked Sendable {
                     try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
                 }
             }
-            return MockMLXModelContainer()
+            return MockMLXModelContainer(behaviour: containerBehaviour)
         }
     }
 }
 
-/// A mock MLX container that satisfies the protocol shape but cannot
-/// run inference. It exists so progress / lifecycle tests can drive the
+/// Failure surfaced by `MockMLXModelContainer.perform`.
+enum MockContainerError: Error, CustomStringConvertible {
+    /// The container cannot run inference — it has no Metal device and no
+    /// real `ModelContext` to hand to the caller's closure.
+    case inferenceUnsupported
+
+    var description: String {
+        "MockMLXModelContainer cannot run inference: it has no Metal-backed "
+        + "ModelContext. Lifecycle and error-path tests are supported; token "
+        + "generation is not."
+    }
+}
+
+/// A mock MLX container that satisfies the protocol shape but cannot run
+/// inference. It exists so progress / lifecycle tests can drive the
 /// load → unload state machine without spinning up Metal.
 ///
-/// `perform(_:)` traps on purpose: the only way to reach it is via
-/// `MLXRuntime.generate(...)` against a fake-loaded model, which is a
-/// programming error in the test setup — production code never wires
-/// `FakeMLXLoader` outside the `--use-fake-mlx-loader` argument path.
-/// The trap message is chosen to make that obvious in the failure log.
+/// ## Why `perform` throws instead of trapping
+///
+/// It used to `fatalError`, on the reasoning that reaching it could only be a
+/// test-setup mistake. That reasoning was wrong in one important case:
+/// **cancellation and unload-during-generation are lifecycle concerns, and
+/// testing them requires `generate()` to actually start.** So the trap fired on
+/// legitimate tests.
+///
+/// The cost was worse than a failed assertion. A `fatalError` kills the test
+/// runner, so all four `MLXHardeningTests` were lost to a process restart
+/// rather than reported — six restarts in a full run — and every other result
+/// in the run became less trustworthy. A trap that fires during normal test
+/// execution is a liability, not a safety net.
+///
+/// Throwing keeps the intent (the fake cannot generate tokens, and pretending
+/// otherwise would test nothing) while letting `MLXRuntime`'s error epilogue run
+/// — which is itself worth covering, since it must clear `isGenerating`,
+/// `activeSession` and `activeTask` even when generation fails.
 final class MockMLXModelContainer: MLXModelContainer, @unchecked Sendable {
+    /// How `perform` should behave. Lets a single fake serve both the
+    /// "generation fails cleanly" and "generation is in flight long enough to
+    /// be cancelled" scenarios without a second mock type.
+    enum Behaviour: Sendable {
+        /// Throw `MockContainerError.inferenceUnsupported` immediately.
+        case failImmediately
+        /// Suspend until the surrounding task is cancelled, then throw
+        /// `CancellationError`. Makes "unload during an in-flight generation"
+        /// deterministic instead of a race against how fast the fake returns.
+        case blockUntilCancelled
+    }
+
+    let behaviour: Behaviour
+
+    init(behaviour: Behaviour = .failImmediately) {
+        self.behaviour = behaviour
+    }
+
     func perform<R: Sendable>(
         _ action: @Sendable (ModelContext) async throws -> sending R
-    ) async rethrows -> sending R {
-        fatalError(
-            "MockMLXModelContainer.perform was invoked. This container is for " +
-            "load/unload lifecycle tests only — driving `MLXRuntime.generate` " +
-            "against it indicates the test wired the fake loader into a code " +
-            "path that requires a real Metal-backed container."
-        )
+    ) async throws -> sending R {
+        // `action` is never invoked: there is no way to construct a valid
+        // `ModelContext` without a real model, tokenizer and Metal device,
+        // which is the whole reason this fake exists. Reporting that as a
+        // thrown error rather than a trap is what lets `MLXRuntime`'s failure
+        // epilogue run and be asserted on.
+        if case .blockUntilCancelled = behaviour {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 5_000_000)
+            }
+            throw CancellationError()
+        }
+        throw MockContainerError.inferenceUnsupported
     }
 }
