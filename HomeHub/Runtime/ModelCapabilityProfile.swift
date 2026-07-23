@@ -643,23 +643,61 @@ extension ModelCapabilityProfile {
     /// Dynamically adjust safeHistoryTokenBudget based on device memory tier.
     ///
     /// Scales the base profile's budget to match available device memory:
-    /// - tight (iPhone SE): 50% of base
-    /// - moderate (iPhone 13–15): 100% of base (unmodified)
-    /// - generous (iPhone 16 Pro): 200% of base (maximize conversation length)
+    /// - tight (iPhone SE): 50% of base, floored at 400
+    /// - moderate (iPhone 13–15, or a flagship without entitlements): 150% of base
+    /// - generous (entitled flagship / iPad M-series): 200% of base
+    ///
+    /// The result is then clamped so the whole assembled prompt still fits the
+    /// tier's context window — see `historyCeilingForTier` for why that clamp
+    /// has to exist here rather than being left to the caller.
     private static func dynamicHistoryBudget(
         baseProfile: ModelCapabilityProfile
     ) -> Int {
         let memoryProfile = DeviceMemoryProvider.shared.profile
         let base = baseProfile.safeHistoryTokenBudget
 
+        let scaled: Int
         switch memoryProfile.tier {
         case .tight:
-            return max(400, Int(Double(base) * 0.5))
+            scaled = max(400, Int(Double(base) * 0.5))
         case .moderate:
             // Context doubled from 2048 → 4096; scale budget proportionally.
-            return Int(Double(base) * 1.5)
+            scaled = Int(Double(base) * 1.5)
         case .generous:
-            return Int(Double(base) * 2.0)
+            scaled = Int(Double(base) * 2.0)
         }
+
+        return min(scaled, historyCeilingForTier(
+            contextWindowTokens: memoryProfile.contextWindowTokens,
+            generationReserveTokens: baseProfile.generationReserveTokens
+        ))
+    }
+
+    /// Largest history budget that still leaves room for the system prompt and
+    /// the reply inside the tier's context window.
+    ///
+    /// This clamp exists because nothing downstream enforces the context window
+    /// on the MLX path. `MLXLLM.ChatSession` is constructed without an `n_ctx`
+    /// parameter, unlike `LlamaContextHandle`, so `safeHistoryTokenBudget` is
+    /// the only real bound on how large an assembled prompt can get. Before this
+    /// clamp, the scaled budget plus the reply reserve plus a typical system
+    /// prompt could exceed the very context window
+    /// `ModelCatalogService.adjustContextLength` had clamped the model to, and
+    /// nothing anywhere noticed.
+    ///
+    /// `systemPromptAllowanceTokens` is deliberately generous. The profile
+    /// comments put the full L1–L7 stack at 1500–2500 tokens, so reserving 2000
+    /// keeps a typical prompt inside the window without starving history on the
+    /// lean/weak-model path, where the stack is much shorter.
+    static func historyCeilingForTier(
+        contextWindowTokens: Int,
+        generationReserveTokens: Int,
+        systemPromptAllowanceTokens: Int = 2000
+    ) -> Int {
+        let remaining = contextWindowTokens - generationReserveTokens - systemPromptAllowanceTokens
+        // Never return a ceiling so small that multi-turn context collapses
+        // entirely — below ~400 tokens the assistant effectively forgets the
+        // previous turn, which is worse than a slightly over-budget prompt.
+        return max(400, remaining)
     }
 }

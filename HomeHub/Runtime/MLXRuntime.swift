@@ -75,10 +75,21 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
     private let log = Logger(subsystem: "HomeHub", category: "MLXRuntime")
     let telemetry = RuntimeTelemetry()
 
+    /// Backing storage for `loadedModel`. **Only** touch this directly from
+    /// inside a `sessionLock.withLock { … }` block — `NSLock` is not
+    /// recursive, so going through the `loadedModel` accessor from within a
+    /// held lock would deadlock. Everywhere else, use `loadedModel`.
     private var _loadedModel: LocalModel?
+
+    /// The model whose weights are currently mapped in, or `nil`.
+    ///
+    /// Lock-guarded. It previously had no synchronisation at all while being
+    /// written from the detached load task (`loadWithProgress`) and read from
+    /// `generate()`'s independent task — so the two could disagree, leaving the
+    /// UI reporting a model as loaded while `container` was already nil.
     var loadedModel: LocalModel? {
-        get { _loadedModel }
-        set { _loadedModel = newValue }
+        get { sessionLock.withLock { _loadedModel } }
+        set { sessionLock.withLock { _loadedModel = newValue } }
     }
 
     /// `LocalLLMRuntime` conformance. Returns the conversation whose
@@ -98,7 +109,25 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
     var internalActiveSessionConversationID: UUID? { activeSessionConversationID }
     #endif
 
-    private var container: (any MLXModelContainer)?
+    /// Backing storage for `container`. Same rule as `_loadedModel`: touch
+    /// directly only from inside a held `sessionLock`.
+    private var _container: (any MLXModelContainer)?
+
+    /// The loaded MLX model container, or `nil`.
+    ///
+    /// Lock-guarded. The success-path assignment in `loadWithProgress` and the
+    /// reads inside `generate()`'s task were previously unguarded, even though
+    /// the class documentation claimed otherwise. That is a genuine data race:
+    /// a memory-pressure event arriving during a load (which takes 10–60 s for
+    /// Metal pipeline compilation, while the hard-pressure path waits only
+    /// 1.5 s before proceeding) can nil this field concurrently with the load
+    /// task writing it. A torn read of the existential's witness-table pointer
+    /// crashes inside `container.perform`.
+    private var container: (any MLXModelContainer)? {
+        get { sessionLock.withLock { _container } }
+        set { sessionLock.withLock { _container = newValue } }
+    }
+
     private var activeTask: Task<Void, Never>?
     private var activeGenerationID: UUID?
     /// Single authoritative "busy" flag. Protected by sessionLock.
@@ -727,18 +756,18 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
             // future MLX revisions — keep the runtime observably empty so
             // a subsequent generate() doesn't see a half-constructed state.
             sessionLock.withLock {
-                self.container = nil
+                self._container = nil
                 self.activeSession = nil
+                self._loadedModel = nil
             }
-            self.loadedModel = nil
             self.log.info("MLX: Load cancelled for '\(repoId, privacy: .public)'")
             throw CancellationError()
         } catch {
             sessionLock.withLock {
-                self.container = nil
+                self._container = nil
                 self.activeSession = nil
+                self._loadedModel = nil
             }
-            self.loadedModel = nil
             let descriptiveError = error.mlxDescriptiveMessage
             self.log.error("MLX: Failed to load model '\(repoId, privacy: .public)': \(descriptiveError, privacy: .public)")
 
@@ -823,13 +852,18 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
     }
 
     func unload() async {
-        // Snapshot what we're releasing for the structured log line.
-        let droppedModelID = loadedModel?.id ?? "(none)"
-        let hadSession: Bool = sessionLock.withLock { activeSession != nil }
-        let hadContainer: Bool = sessionLock.withLock { container != nil }
+        // Snapshot and tear down in ONE critical section. Previously the
+        // "what did we drop?" reads, the teardown, and `loadedModel = nil`
+        // were four separate lock acquisitions, so a concurrent load could
+        // interleave between them and leave `loadedModel` set with a nil
+        // container (or vice versa). Doing it atomically means an observer
+        // never sees a half-unloaded runtime.
         let safeMode = HardwareCapabilities.shared.safeAttentionMode
+        let (droppedModelID, hadSession, hadContainer): (String, Bool, Bool) = sessionLock.withLock {
+            let modelID = _loadedModel?.id ?? "(none)"
+            let session = activeSession != nil
+            let hadContainer = _container != nil
 
-        sessionLock.withLock {
             activeTask?.cancel()
             activeTask = nil
             activeGenerationID = nil
@@ -840,10 +874,12 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
             // second lets ARC free the model weights and KV cache buffers
             // in one wave instead of leaving them anchored by the session.
             activeSession = nil
-            container = nil
+            _container = nil
+            _loadedModel = nil
             _lastGenerationError = nil
+
+            return (modelID, session, hadContainer)
         }
-        loadedModel = nil
 
         // Release the load-time tight cache cap. A future load will
         // recompute its own; until then the idle baseline is correct.
@@ -1616,7 +1652,9 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
     /// (budget calibration, diagnostics).
     func realTokenCount(of text: String) async -> Int? {
         guard !text.isEmpty else { return 0 }
-        let snapshot = sessionLock.withLock { container }
+        // `_container` (not `container`) — we already hold the lock here, and
+        // NSLock is not recursive, so going through the accessor would deadlock.
+        let snapshot = sessionLock.withLock { _container }
         guard let container = snapshot else { return nil }
         // `container.perform { ... }` propagates `rethrows`, and
         // `ctx.tokenizer.encode(text:)` is non-throwing — keep the

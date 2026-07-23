@@ -16,6 +16,7 @@
 		0324625B07ABFA06342D9BE7 /* ConversationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE8824F44274F1BFCA74AB43 /* ConversationService.swift */; };
 		0412246B791E13AC4F6B3679 /* HHTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14F56F13E17D9A38363D6734 /* HHTheme.swift */; };
 		0AC4AF60B75D230C54CFE6FD /* LoadProgressThrottleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 26A8844885601746CF081920 /* LoadProgressThrottleTests.swift */; };
+		0C740F0C73EBB529D13CB5B5 /* MLXVisionInputPathTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8140DD20BB9381BAC4EACFA2 /* MLXVisionInputPathTests.swift */; };
 		0CB136DBBBCACB4CFF8D0988 /* SwiftDataStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEF86EF53AC6FD924A5DCED4 /* SwiftDataStoreTests.swift */; };
 		0CD310D2359471B25699B88B /* RuntimeManagerLifecycleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF3B4090AFA2F0C3D244E359 /* RuntimeManagerLifecycleTests.swift */; };
 		0CE5FDCB7C954D0B26727BFD /* SummarizationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = C531BB7640CC6C8CC144B16F /* SummarizationService.swift */; };
@@ -401,6 +402,7 @@
 		7E0C0CBC0663CD6F3E7EB586 /* HomeKitSkill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeKitSkill.swift; sourceTree = "<group>"; };
 		7F62558DF30DAEBF0FAE53D0 /* DocumentEmbedder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentEmbedder.swift; sourceTree = "<group>"; };
 		80907DFA568CA36B49A48D00 /* UserMemoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserMemoryView.swift; sourceTree = "<group>"; };
+		8140DD20BB9381BAC4EACFA2 /* MLXVisionInputPathTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MLXVisionInputPathTests.swift; sourceTree = "<group>"; };
 		82A2E4A3B6B3790456B2C1F0 /* SummarizationServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SummarizationServiceTests.swift; sourceTree = "<group>"; };
 		89062DD40E73F06FE2CA9AFB /* OnboardingAssistantStyleView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingAssistantStyleView.swift; sourceTree = "<group>"; };
 		8936EBEB9DCAC133B99EF26C /* LocalModelService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalModelService.swift; sourceTree = "<group>"; };
@@ -933,6 +935,7 @@
 				FAD68AC867F11BD32F9AA663 /* MLXHardeningTests.swift */,
 				3C249D3C58DAE5D178D3E1C0 /* MLXIntegrationTests.swift */,
 				ADD4E25F5DFF5967F1506916 /* MLXRuntimeManagerTests.swift */,
+				8140DD20BB9381BAC4EACFA2 /* MLXVisionInputPathTests.swift */,
 				E6C56EBE1665161CD6E39B67 /* ModelCapabilityProfileTests.swift */,
 				1E8F0A241288CD9D9A9BAC04 /* ModelCatalogMLXFirstTests.swift */,
 				149D5CEB395DB0533A6D2706 /* ModelImportTests.swift */,
@@ -1055,15 +1058,19 @@
 				LastUpgradeCheck = 1540;
 				TargetAttributes = {
 					0CD9FB03CB4A437F090A41D5 = {
+						DevelopmentTeam = 8Y755TXDN8;
 						ProvisioningStyle = Automatic;
 					};
 					0F61A399A9FC5475945573AB = {
+						DevelopmentTeam = 8Y755TXDN8;
 						ProvisioningStyle = Automatic;
 					};
 					27DF3E3541C53527ABBE7AE8 = {
+						DevelopmentTeam = 8Y755TXDN8;
 						ProvisioningStyle = Automatic;
 					};
 					BCE3B88C507A9E6C6664FA6D = {
+						DevelopmentTeam = 8Y755TXDN8;
 						ProvisioningStyle = Automatic;
 					};
 				};
@@ -1327,6 +1334,7 @@
 				5EDFED45DB90D4206D584F88 /* MLXHardeningTests.swift in Sources */,
 				422D4454521F209BB14FC9C1 /* MLXIntegrationTests.swift in Sources */,
 				7AF2D364C0144AB77338FB86 /* MLXRuntimeManagerTests.swift in Sources */,
+				0C740F0C73EBB529D13CB5B5 /* MLXVisionInputPathTests.swift in Sources */,
 				946F63C65AF3B032880F4CD7 /* MarkdownContentTests.swift in Sources */,
 				0076860D20E30488E3A81BF4 /* MemoryExtractionTests.swift in Sources */,
 				B0CDB87E10C37EF44AAD73C4 /* MemoryPersistenceTests.swift in Sources */,
@@ -1454,6 +1462,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = 8Y755TXDN8;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
@@ -1486,6 +1495,13 @@
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				INFOPLIST_KEY_BGTaskSchedulerPermittedIdentifiers = cz.keksiczek.homehub.ingest;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
+				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "Plný přístup ke kalendáři umožní asistentovi číst i zapisovat události, když ho o to požádáš.";
+				INFOPLIST_KEY_NSCalendarsUsageDescription = "Přístup ke kalendáři umožní asistentovi číst a vytvářet události, když ho o to požádáš.";
+				INFOPLIST_KEY_NSHomeKitUsageDescription = "Přístup k HomeKitu potřebujeme, aby asistent mohl na tvůj pokyn ovládat chytrá zařízení v domácnosti.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Mikrofon používáme jen pro hlasovou konverzaci s asistentem. Nahrávka se zpracuje přímo v zařízení a nikam se neodesílá.";
+				INFOPLIST_KEY_NSRemindersFullAccessUsageDescription = "Plný přístup k připomínkám umožní asistentovi číst i zapisovat připomínky, když ho o to požádáš.";
+				INFOPLIST_KEY_NSRemindersUsageDescription = "Přístup k připomínkám umožní asistentovi číst a vytvářet připomínky, když ho o to požádáš.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Rozpoznávání řeči převádí tvůj hlas na text pro asistenta. Probíhá on-device, mimo zařízení nic neodchází.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -1495,15 +1511,9 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				NSCalendarsFullAccessUsageDescription = "Pro plnou práci s kalendářem (čtení i zápis událostí) přes asistenta na iOS 17+.";
-				NSCalendarsUsageDescription = "Pro čtení a vytváření událostí v kalendáři přes asistenta.";
-				NSHomeKitUsageDescription = "Pro ovládání chytrých zařízení v domácnosti přes asistenta.";
-				NSMicrophoneUsageDescription = "Potřebujeme mikrofon pro možnost hlasové konverzace offline.";
-				NSRemindersFullAccessUsageDescription = "Pro plnou práci s připomínkami (čtení i zápis) přes asistenta na iOS 17+.";
-				NSRemindersUsageDescription = "Pro čtení a vytváření připomínek přes asistenta.";
-				NSSpeechRecognitionUsageDescription = "Nativní rozpoznávání hovoru pro diktování přes Apple infrastrukturu beze slov mimo zařízení.";
 				PRODUCT_BUNDLE_IDENTIFIER = cz.keksiczek.homehub;
 				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) HOMEHUB_HAS_KERNEL_ENTITLEMENTS";
 				SWIFT_OBJC_BRIDGING_HEADER = "HomeHub/Runtime/Bridge/HomeHub-Bridging-Header.h";
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -1572,6 +1582,13 @@
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				INFOPLIST_KEY_BGTaskSchedulerPermittedIdentifiers = cz.keksiczek.homehub.ingest;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
+				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "Plný přístup ke kalendáři umožní asistentovi číst i zapisovat události, když ho o to požádáš.";
+				INFOPLIST_KEY_NSCalendarsUsageDescription = "Přístup ke kalendáři umožní asistentovi číst a vytvářet události, když ho o to požádáš.";
+				INFOPLIST_KEY_NSHomeKitUsageDescription = "Přístup k HomeKitu potřebujeme, aby asistent mohl na tvůj pokyn ovládat chytrá zařízení v domácnosti.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Mikrofon používáme jen pro hlasovou konverzaci s asistentem. Nahrávka se zpracuje přímo v zařízení a nikam se neodesílá.";
+				INFOPLIST_KEY_NSRemindersFullAccessUsageDescription = "Plný přístup k připomínkám umožní asistentovi číst i zapisovat připomínky, když ho o to požádáš.";
+				INFOPLIST_KEY_NSRemindersUsageDescription = "Přístup k připomínkám umožní asistentovi číst a vytvářet připomínky, když ho o to požádáš.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Rozpoznávání řeči převádí tvůj hlas na text pro asistenta. Probíhá on-device, mimo zařízení nic neodchází.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -1581,15 +1598,9 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				NSCalendarsFullAccessUsageDescription = "Pro plnou práci s kalendářem (čtení i zápis událostí) přes asistenta na iOS 17+.";
-				NSCalendarsUsageDescription = "Pro čtení a vytváření událostí v kalendáři přes asistenta.";
-				NSHomeKitUsageDescription = "Pro ovládání chytrých zařízení v domácnosti přes asistenta.";
-				NSMicrophoneUsageDescription = "Potřebujeme mikrofon pro možnost hlasové konverzace offline.";
-				NSRemindersFullAccessUsageDescription = "Pro plnou práci s připomínkami (čtení i zápis) přes asistenta na iOS 17+.";
-				NSRemindersUsageDescription = "Pro čtení a vytváření připomínek přes asistenta.";
-				NSSpeechRecognitionUsageDescription = "Nativní rozpoznávání hovoru pro diktování přes Apple infrastrukturu beze slov mimo zařízení.";
 				PRODUCT_BUNDLE_IDENTIFIER = cz.keksiczek.homehub;
 				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) HOMEHUB_HAS_KERNEL_ENTITLEMENTS";
 				SWIFT_OBJC_BRIDGING_HEADER = "HomeHub/Runtime/Bridge/HomeHub-Bridging-Header.h";
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -1631,6 +1642,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = 8Y755TXDN8;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
