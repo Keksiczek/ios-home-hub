@@ -534,6 +534,10 @@ pair `state = .failed` with `.error` logging and humanised messages.
 ### F-3xx · Security & privacy
 
 #### F-301 · CRITICAL · Model output executes real-world side effects with no user confirmation
+**Status: FIXED (session 3)** — information-flow guard: a turn that ingests
+third-party content (WebSearch / FetchPage) refuses state-changing skills for
+the rest of that turn. See `02-PROGRESS.md` session 3. A per-action confirmation
+UI remains desirable; `Skill.isStateChanging(input:)` is its foundation.
 **Status:** OPEN — **needs a product decision, see `00-PLAN.md` Q4**
 **Where:** `ConversationService.swift:1797, 1824, 1340, 1859-1866`; `AppSettings.swift:213-216`;
 `Skills/RemindersSkill.swift:105-143`; `Skills/HomeKitSkill.swift:60-65, 94-124`;

@@ -95,18 +95,35 @@ flags), **F-212** (bullet-point mimicry), **F-213** (unreachable generous tier).
 
 Full suite: 625 pass / 32 fail, failing set identical to baseline.
 
+### Session 3 outcome (2026-07-23, evening)
+
+Full Apple Developer access confirmed active. Commit `e650cf3`.
+
+Model catalog refreshed against the **live Hugging Face API** — it was a
+generation behind, missing the entire Qwen3 line, Gemma 3, LFM2.5 and current
+Qwen3-VL vision models. Eight entries added with verified sizes and shard
+layouts. Adding them surfaced three latent bugs that would have made the new
+models silently misbehave (exact-match family switches for stop sequences and
+VLM detection, plus `recommendedStarter` depending on array order).
+
+**F-301 closed** via an information-flow guard rather than injection detection.
+
+Full suite: 638 pass / 32 fail, failing set identical to baseline.
+
 ### Highest-value work remaining
 
-1. **F-301** — prompt injection can drive unconfirmed HomeKit / Reminders
-   writes. Needs the product decision in Q4 below. Genuinely exploitable.
-2. **F-007** — fix the crashing test double first (`FakeMLXLoader.swift:79`) so
+1. **F-007** — fix the crashing test double first (`FakeMLXLoader.swift:79`) so
    the suite becomes a trustworthy signal, then the stale assertions.
-3. **F-101 rest** — `baselineCacheLimitBytes` / `currentCacheTier` still
+2. **F-101 rest** — `baselineCacheLimitBytes` / `currentCacheTier` still
    unguarded across three concurrent contexts; needs a TSan pass.
+3. **F-302** — Lock Screen widget leaks replies + personal memory facts, with no
+   setting to disable or redact.
 4. **F-205** — summarizer input uncapped, skips the context guard, success
    judged by `!isEmpty`.
 5. **F-206** — Phi-3 rendered as ChatML in the fallback template path.
 6. **F-406..F-410** — remaining silent-failure sites.
+7. **Skill naming** — `RemindersSearch` / `HomeKitSearch` both write despite
+   their names, and are on by default. Needs an `enabledTools` migration.
 
 ---
 
