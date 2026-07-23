@@ -66,17 +66,66 @@ final class UserMemoryStore: ObservableObject {
     private let defaults: UserDefaults
     private let key: String
 
+    /// Set when stored data existed but could not be decoded.
+    ///
+    /// Purely diagnostic — the actual protection is the quarantine copy taken
+    /// in `init`, which survives regardless of what happens to the live key.
+    /// This latch just lets `persist()` log the transition from "we lost your
+    /// memory" to "you re-entered it", so the Console trail explains itself.
+    private var loadFailed = false
+
+    /// Suffix for the quarantine copy taken when a decode fails.
+    private static let quarantineSuffix = ".corrupt"
+
     init(defaults: UserDefaults = .standard, key: String = "homehub.userMemory.v1") {
         self.defaults = defaults
         self.key = key
-        if
-            let data = defaults.data(forKey: key),
-            let decoded = try? JSONDecoder().decode(UserMemory.self, from: data)
-        {
-            self.memory = decoded
-        } else {
+
+        guard let data = defaults.data(forKey: key) else {
+            // Genuinely nothing stored — first launch. Not a failure.
             self.memory = .empty
+            return
         }
+
+        do {
+            self.memory = try JSONDecoder().decode(UserMemory.self, from: data)
+        } catch {
+            // Previously this was `try?` falling through to `.empty` with no
+            // log, no backup and no signal. Because `memory` is injected into
+            // every system prompt via `promptBlock()`, the visible symptom was
+            // the assistant abruptly forgetting the user's name, location,
+            // notes and preferences — and the very next `persist()` overwrote
+            // the undecodable blob, destroying any chance of recovery.
+            //
+            // Now: keep a quarantine copy, refuse to overwrite the original,
+            // and say so loudly. A future decoder or migration can still get
+            // the data back.
+            self.memory = .empty
+            self.loadFailed = true
+            // Only quarantine once. A second failed launch must not overwrite
+            // the first (good) quarantine copy with whatever is stored now.
+            if defaults.data(forKey: key + Self.quarantineSuffix) == nil {
+                defaults.set(data, forKey: key + Self.quarantineSuffix)
+            }
+            HHLog.memory.error("""
+            UserMemory decode failed (\(data.count, privacy: .public) bytes): \
+            \(error.localizedDescription, privacy: .public). Starting empty; the original \
+            bytes are preserved under key "\(key + Self.quarantineSuffix, privacy: .public)" \
+            so a future decoder or migration can recover them.
+            """)
+        }
+    }
+
+    /// Clear the failed-load latch after the user has deliberately re-entered
+    /// their memory, re-enabling persistence.
+    ///
+    /// Without this, a store that failed to decode once would never write again
+    /// for the lifetime of the install. Any explicit user edit is unambiguous
+    /// intent to replace whatever was there, so the mutation helpers call this.
+    private func clearLoadFailureLatch() {
+        guard loadFailed else { return }
+        loadFailed = false
+        HHLog.memory.notice("UserMemory: user edited memory after a failed load — resuming persistence")
     }
 
     // MARK: - Mutations
@@ -183,6 +232,11 @@ final class UserMemoryStore: ObservableObject {
     // MARK: - Internals
 
     private func persist() {
+        // Any call to persist() originates from a user-initiated mutation, so
+        // it is unambiguous intent to replace what was stored. Releasing the
+        // latch here keeps a single failed decode from permanently disabling
+        // persistence for the rest of the install.
+        clearLoadFailureLatch()
         do {
             let data = try JSONEncoder().encode(memory)
             defaults.set(data, forKey: key)

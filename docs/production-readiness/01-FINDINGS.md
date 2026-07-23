@@ -687,3 +687,66 @@ F-001 (my own analysis) and F-301's C1 (security agent, via
 independently. F-304 is the same bug class in a different key. That pattern —
 "a correctly-reasoned comment sitting above a declaration that does nothing" —
 is worth a guardrail, not just three point fixes. See `scripts/check-infoplist-keys.sh`.
+
+---
+
+## Round 1 — discovered while fixing
+
+### F-007 · HIGH · 32 unit tests are red on the untouched baseline
+**Status:** OPEN
+**Where:** `HomeHubTests/ModelCapabilityProfileTests.swift`, `MemoryPolicyTests.swift`,
+`MemoryServiceTests.swift`, `MLXHardeningTests.swift`, `HomeHub/Runtime/FakeMLXLoader.swift:79`
+
+613 pass, 32 fail on commit `e4db4b2` with no changes applied. Established by
+running the full suite in a separate git worktree at the baseline commit and
+diffing sorted failing-test names against the current tree — **the sets are
+identical**, so nothing in this session regressed the suite, and set-comparison
+remains a valid regression signal even while the suite is red.
+
+Three independent causes:
+
+1. **Stale assertions vs. device-tier scaling (8 tests).**
+   `ModelCapabilityProfileTests` hardcodes `safeHistoryTokenBudget` (gemma 1200,
+   default 1000) but `dynamicHistoryBudget` scales by device tier, which on a
+   simulator follows the *host Mac's* RAM. These tests are machine-dependent —
+   they would fail differently on another Mac. Written before tier scaling
+   landed and never updated.
+2. **Stale assertion vs. a deliberate behaviour change (1 test).**
+   `testFeasibilityCannotLoadWhenAvailableBelowRawWeights` expects `.cannotLoad`,
+   gets `.risky`. `MLXRuntime.swift:586-598` documents exactly why the old
+   `weights × 1.35 > available` gate was wrong (mmap-backed weights are
+   file-backed/clean and don't count fully against the dirty budget). The
+   product change was right; the test was not updated.
+3. **A test double that crashes the runner.** `FakeMLXLoader.swift:79` calls
+   `fatalError("MockMLXModelContainer.perform was invoked …")`. Several tests
+   drive `MLXRuntime.generate` against the lifecycle-only mock, killing the
+   process — 7 runner restarts in a full run. This also makes every other result
+   in the run less trustworthy, so it is the one to fix first.
+
+**Why not fixed here:** these are stale assertions and a broken test double, not
+product defects. Repairing them inside a change that also alters memory tiers
+would make both harder to review, and the crashing mock needs a decision about
+whether those tests should use a generate-capable fake.
+
+**Caution for the next round:** a green-looking `EXIT=0` from a shell pipeline
+may be the status of a trailing command, not of `xcodebuild`. Read the
+`** TEST FAILED **` / `** TEST SUCCEEDED **` line from the log. This was misread
+once in this session and corrected.
+
+### F-104 (revised) · MEDIUM · Moderate tier remains over budget on paper
+**Status:** OPEN
+
+Generous is fixed (window raised to 8192, so 2800 + 1024 + ~2000 = 5824 fits).
+Moderate still projects 2100 + 1024 + ~2000 ≈ 5124 against a 4096 window.
+
+An arithmetic clamp was implemented and **reverted after measurement**: it cut
+Gemma's moderate-tier history budget from 1800 → 1072 (−40 %) and the tight
+tier's from 600 → 400. Those tiers' numbers are tested and shipped; the clamp's
+2000-token system-prompt allowance was a guess. Trading tested behaviour for an
+untested formula is the wrong direction — and a 40 % silent loss of
+conversational memory is the very symptom this work targets.
+
+`ModelCapabilityProfile.reportContextBudgetIfOverrun` now emits the projection
+at `.debug` under subsystem `HomeHub`, category `PromptBudget`. Collect that on
+a real device alongside `PromptBudgetReport`'s measured stable / volatile /
+history counts, then set the budgets from data rather than arithmetic.

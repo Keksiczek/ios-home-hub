@@ -97,6 +97,21 @@ actor KnowledgeBaseStore {
             try removeIfExists("vectors-\(documentID.uuidString).bin")
             return
         }
+        // A zero dimension is not "no vectors" — it is N vectors that all failed
+        // to embed. Writing it produces a structurally valid file that can never
+        // match anything, because `KnowledgeBaseRetrieval.cosine` requires equal
+        // lengths and the query vector is never empty. `IngestPipeline` now
+        // rejects this earlier and marks the document `.failed`; this guard is
+        // the backstop so no other caller can persist a permanently-dead index.
+        guard dim > 0 else {
+            throw NSError(
+                domain: "KnowledgeBaseStore",
+                code: -2,
+                userInfo: [NSLocalizedDescriptionKey:
+                    "Refusing to persist \(vectors.count) zero-dimension vectors for document "
+                    + "\(documentID) — the index would be silently unsearchable."]
+            )
+        }
         // Sanity: every vector has the same dimension. A mismatch
         // means an upstream bug, not user data — fail loud.
         for v in vectors where v.count != dim {

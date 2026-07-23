@@ -366,6 +366,37 @@ actor IngestPipeline {
                 )
             }
 
+            // The uniformity check above catches PARTIAL corruption but is blind
+            // to UNIFORM failure, which is the case that actually happens.
+            //
+            // `DocumentEmbedder` maps an embedding failure to `[]`
+            // (`embeddingVector(for:) ?? []`), so if the embedder is unavailable
+            // for the whole run — NLContextualEmbedding assets not yet
+            // downloaded, or an unsupported device, both documented and real —
+            // then *every* chunk embeds to an empty vector. `expected` becomes 0,
+            // nothing mismatches, no throw fires, and the document is marked
+            // `.indexed`.
+            //
+            // Downstream, `KnowledgeBaseRetrieval.cosine` guards on
+            // `a.count == b.count`, so a zero-dimension vector scores 0.0 against
+            // every query, forever. The user sees "Indexed", and the model answers
+            // every future question as if the document does not exist — with no
+            // error state anywhere to explain why.
+            //
+            // (`DocumentEmbedder`'s own doc comment claims the pipeline "treats
+            // those as indexing failures and surfaces them on the document
+            // record". This is the code that makes that true.)
+            guard let dimension = allVectors.first?.count, dimension > 0 else {
+                let emptyCount = allVectors.filter(\.isEmpty).count
+                throw NSError(
+                    domain: "IngestPipeline",
+                    code: -5,
+                    userInfo: [NSLocalizedDescriptionKey:
+                        "Embedding model nevrátil žádné vektory (\(emptyCount)/\(allVectors.count) chunků prázdných). "
+                        + "Dokument nelze prohledávat. Zkus to znovu, až se doplní jazykové modely zařízení."]
+                )
+            }
+
             try await documentStore.saveVectors(allVectors, documentID: document.id)
             document.embeddingDimension = allVectors.first?.count
 

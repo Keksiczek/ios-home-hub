@@ -410,6 +410,25 @@ struct FetchPageSkill: Skill {
                   let scheme = resolved.scheme?.lowercased(),
                   scheme == "http" || scheme == "https"
             else { continue }
+            // Apply the SAME host blocklist the primary fetch uses.
+            //
+            // Checking only the scheme was an SSRF hole. This URL is surfaced
+            // to `ToolObservation.heroImageURL` and rendered by
+            // `ToolResultChip.heroThumbnail` with a plain `AsyncImage(url:)` —
+            // no blocklist, no redirect guard, and no user tap. The GET fires
+            // the moment the tool-result chip appears on screen.
+            //
+            // So a fetched page could set
+            //   <meta property="og:image" content="http://192.168.1.1/admin/reboot">
+            // and the device would issue that request against the user's own
+            // LAN automatically. Blind (no response channel back to the page
+            // author), but this is a smart-home app — LAN reachability is
+            // exactly the interesting target, and the correct blocklist was
+            // already sitting a few hundred lines up in this same file.
+            if let host = resolved.host, isBlockedHost(host) {
+                HHLog.tool.warning("FetchPage: og:image points at blocked host \(host, privacy: .public) — dropping")
+                continue
+            }
             return resolved
         }
         return nil

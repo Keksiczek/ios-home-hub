@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Static capability and parameter profile for a model family.
 ///
@@ -647,9 +648,6 @@ extension ModelCapabilityProfile {
     /// - moderate (iPhone 13–15, or a flagship without entitlements): 150% of base
     /// - generous (entitled flagship / iPad M-series): 200% of base
     ///
-    /// The result is then clamped so the whole assembled prompt still fits the
-    /// tier's context window — see `historyCeilingForTier` for why that clamp
-    /// has to exist here rather than being left to the caller.
     private static func dynamicHistoryBudget(
         baseProfile: ModelCapabilityProfile
     ) -> Int {
@@ -667,37 +665,58 @@ extension ModelCapabilityProfile {
             scaled = Int(Double(base) * 2.0)
         }
 
-        return min(scaled, historyCeilingForTier(
-            contextWindowTokens: memoryProfile.contextWindowTokens,
-            generationReserveTokens: baseProfile.generationReserveTokens
-        ))
+        reportContextBudgetIfOverrun(
+            historyTokens: scaled,
+            baseProfile: baseProfile,
+            memoryProfile: memoryProfile
+        )
+        return scaled
     }
 
-    /// Largest history budget that still leaves room for the system prompt and
-    /// the reply inside the tier's context window.
+    /// Log — but do **not** silently correct — a history budget that cannot fit
+    /// its tier's context window alongside the reply reserve and a typical
+    /// system prompt.
     ///
-    /// This clamp exists because nothing downstream enforces the context window
-    /// on the MLX path. `MLXLLM.ChatSession` is constructed without an `n_ctx`
+    /// The overrun is real. Nothing downstream enforces the context window on
+    /// the MLX path: `MLXLLM.ChatSession` is constructed without an `n_ctx`
     /// parameter, unlike `LlamaContextHandle`, so `safeHistoryTokenBudget` is
-    /// the only real bound on how large an assembled prompt can get. Before this
-    /// clamp, the scaled budget plus the reply reserve plus a typical system
-    /// prompt could exceed the very context window
-    /// `ModelCatalogService.adjustContextLength` had clamped the model to, and
-    /// nothing anywhere noticed.
+    /// the only actual bound on assembled prompt size.
     ///
-    /// `systemPromptAllowanceTokens` is deliberately generous. The profile
-    /// comments put the full L1–L7 stack at 1500–2500 tokens, so reserving 2000
-    /// keeps a typical prompt inside the window without starving history on the
-    /// lean/weak-model path, where the stack is much shorter.
-    static func historyCeilingForTier(
-        contextWindowTokens: Int,
-        generationReserveTokens: Int,
-        systemPromptAllowanceTokens: Int = 2000
-    ) -> Int {
-        let remaining = contextWindowTokens - generationReserveTokens - systemPromptAllowanceTokens
-        // Never return a ceiling so small that multi-turn context collapses
-        // entirely — below ~400 tokens the assistant effectively forgets the
-        // previous turn, which is worse than a slightly over-budget prompt.
-        return max(400, remaining)
+    /// **Why this reports instead of clamping.** A clamp was implemented first
+    /// and measured: on the moderate tier it cut the Gemma history budget from
+    /// 1800 to 1072 tokens, a 40 % reduction. That is a large, silent loss of
+    /// conversational memory on every 6 GB device — the precise symptom
+    /// ("assistant ignores what I said earlier") this work exists to fix. The
+    /// tier's shipped numbers are tested; a clamp derived from a guessed
+    /// system-prompt allowance is not, and trading tested behaviour for an
+    /// untested formula is the wrong direction.
+    ///
+    /// The generous tier's own inconsistency — which is what prompted this —
+    /// was fixed properly, by raising `contextWindowTokens` to 8192 so the
+    /// declared window matches what the budgeting already permits.
+    ///
+    /// Moderate remains over-budget on paper (llama: 2100 history + 1024
+    /// reserve + ~2000 system ≈ 5124 against a 4096 window) and has been for
+    /// some time. Resolving that properly needs on-device measurement of real
+    /// assembled-prompt sizes, not arithmetic. Tracked as F-104 in
+    /// docs/production-readiness/01-FINDINGS.md.
+    private static func reportContextBudgetIfOverrun(
+        historyTokens: Int,
+        baseProfile: ModelCapabilityProfile,
+        memoryProfile: DeviceMemoryProfile
+    ) {
+        // Upper end of the documented L1–L7 system-prompt stack.
+        let typicalSystemPromptTokens = 2000
+        let projected = historyTokens + baseProfile.generationReserveTokens + typicalSystemPromptTokens
+        guard projected > memoryProfile.contextWindowTokens else { return }
+        budgetLog.debug("""
+        Context budget overrun (\(baseProfile.family, privacy: .public), tier \
+        \(memoryProfile.tier.label, privacy: .public)): history \(historyTokens, privacy: .public) \
+        + reserve \(baseProfile.generationReserveTokens, privacy: .public) + system ~\
+        \(typicalSystemPromptTokens, privacy: .public) = \(projected, privacy: .public) tokens \
+        vs window \(memoryProfile.contextWindowTokens, privacy: .public). Not clamped — see F-104.
+        """)
     }
+
+    private static let budgetLog = Logger(subsystem: "HomeHub", category: "PromptBudget")
 }

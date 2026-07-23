@@ -306,6 +306,35 @@ final class PromptAssemblyService {
             """)
         }
 
+        // L0a''. Explain the <context> envelope (STABLE — same wording every
+        // turn, so it costs one cache entry, not one per turn).
+        //
+        // `MLXRuntime.generate` prepends the volatile half of this prompt to
+        // the current user turn wrapped in <context>…</context>, so that
+        // per-turn churn (date, recall, facts, episodes) reaches the model
+        // without invalidating the cached KV prefix. That design is right, but
+        // until now nothing told the model what the tag meant — app-supplied
+        // background arrived looking exactly as if the user had typed it,
+        // immediately before their real question, on every multi-turn message.
+        //
+        // This codebase already documents the same failure shape one layer
+        // down: verbatim recall is dropped for weak models because it is "the
+        // single largest source of prompt-injection-style confusion we've seen
+        // on Gemma 3n" (see appendRecall below), with the model echoing
+        // recalled fragments instead of answering. An unlabelled block glued to
+        // the front of the question is that same trap, fired far more often.
+        //
+        // Kept to three lines deliberately: it is load-bearing for correctness
+        // on every turn, and weak models are exactly the ones that both need it
+        // most and can least afford the tokens.
+        stableChunks.append("""
+        Some user messages begin with a <context>…</context> block. That block \
+        is background information supplied by the app, NOT something the user \
+        wrote or asked about. Use it to inform your answer when relevant. Never \
+        quote it, never repeat it back, never answer it — reply only to the \
+        text that follows the closing </context> tag.
+        """)
+
         // L0b. Tone + style hints (STABLE — only changes when the user
         // edits their `preferredResponseStyle` in Settings).
         stableChunks.append("""
