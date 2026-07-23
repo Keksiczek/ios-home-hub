@@ -76,16 +76,37 @@ declaration that did nothing*: the entitlement flag had no wiring path, and
 seven privacy strings never reached the bundle. A third instance
 (`UIBackgroundModes`) was found by the guardrail written to prevent the first two.
 
+### Session 2 outcome (2026-07-23, afternoon)
+
+Owner supplied device diagnostics and confirmed the **Apple Developer Program
+membership is now active**. Two commits: `f0ecfcc`, `92a6c17`.
+
+Device data falsified two Session-1 assumptions — the entitlement ratio test
+(unentitled iPhone 16 Pro reports 74.9 % of physical RAM, so the 0.48 threshold
+gave a false "granted") and the tier thresholds (generous was unreachable on any
+8 GB device regardless of entitlements). Both corrected: tiers now key off the
+**measured** process limit, and the entitlement flag is used only for the mmap
+ceiling, which is the one thing measurement cannot see.
+
+Closed since: **F-201** (prompt budget with priority shedding), **F-203**
+(`.tool` role, plumbed to MLX's native `Chat.Message.Role.tool`), **F-103**
+(entitlement-aware catalog gating + two missing `requiresLargeMmapAddressing`
+flags), **F-212** (bullet-point mimicry), **F-213** (unreachable generous tier).
+
+Full suite: 625 pass / 32 fail, failing set identical to baseline.
+
 ### Highest-value work remaining
 
 1. **F-301** — prompt injection can drive unconfirmed HomeKit / Reminders
    writes. Needs the product decision in Q4 below. Genuinely exploitable.
-2. **F-201** — no unified prompt-size budget. Most likely single root cause of
-   the remaining bad answers.
-3. **F-203** — tool results delivered as a `.user` turn; no `.tool` role exists.
-4. **F-007** — fix the crashing test double first so the suite becomes a
-   trustworthy signal.
-5. **F-101 rest** — cache-tier fields still unguarded; needs a TSan pass.
+2. **F-007** — fix the crashing test double first (`FakeMLXLoader.swift:79`) so
+   the suite becomes a trustworthy signal, then the stale assertions.
+3. **F-101 rest** — `baselineCacheLimitBytes` / `currentCacheTier` still
+   unguarded across three concurrent contexts; needs a TSan pass.
+4. **F-205** — summarizer input uncapped, skips the context guard, success
+   judged by `!isEmpty`.
+5. **F-206** — Phi-3 rendered as ChatML in the fallback template path.
+6. **F-406..F-410** — remaining silent-failure sites.
 
 ---
 
