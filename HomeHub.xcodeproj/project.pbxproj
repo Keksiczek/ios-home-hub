@@ -189,6 +189,7 @@
 		BB4DABB9DB1988621A9AAD2B /* ChatDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD74366D444F383B878ADE17 /* ChatDetailView.swift */; };
 		BD82D505C1ED53727C57548F /* MLXLLM in Frameworks */ = {isa = PBXBuildFile; productRef = 3644E5838BEC3A2E12593D42 /* MLXLLM */; };
 		BFA8B3A11AEA1055D6EAE332 /* TokenEstimatorCacheTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23F85BE1E19778D837C293DC /* TokenEstimatorCacheTests.swift */; };
+		C2739482E0399B75DA94FC3A /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 9BE14A17C620C75643C89F12 /* PrivacyInfo.xcprivacy */; };
 		C3255CC2686294D3AC8EB739 /* NLExtractionPass.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DA90D3CD0DAC38466D0F263 /* NLExtractionPass.swift */; };
 		C3AC682A8EBD1BCB997D5A06 /* UserMemoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2DE8C44856B796D2702D6001 /* UserMemoryStore.swift */; };
 		C43FB02E414CBE68FE08A857 /* ConversationRuntimeSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51C028E2DB46A4B748E32CD6 /* ConversationRuntimeSession.swift */; };
@@ -322,6 +323,7 @@
 		26A8844885601746CF081920 /* LoadProgressThrottleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoadProgressThrottleTests.swift; sourceTree = "<group>"; };
 		287FC089939B42C75F581C3D /* CalculatorSkill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalculatorSkill.swift; sourceTree = "<group>"; };
 		291904E21323E8F8CFF20A5A /* HomeHub.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = HomeHub.entitlements; sourceTree = "<group>"; };
+		297856558B145DE237D04917 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		2997D1B83AB30BF53418D586 /* OnboardingFlowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingFlowView.swift; sourceTree = "<group>"; };
 		2A8505D0E222EDD4A76D7F79 /* DocumentChunker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentChunker.swift; sourceTree = "<group>"; };
 		2D3068CA7795D7498ADCE550 /* MainTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainTabView.swift; sourceTree = "<group>"; };
@@ -426,6 +428,7 @@
 		9ACB0973427987485E38CF9D /* URL+StaticLiteral.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "URL+StaticLiteral.swift"; sourceTree = "<group>"; };
 		9BB206CAB60E7C11402EE63B /* DeepLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeepLink.swift; sourceTree = "<group>"; };
 		9BE00F466486DEAC0E2650F3 /* ImagePromptCommandTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImagePromptCommandTests.swift; sourceTree = "<group>"; };
+		9BE14A17C620C75643C89F12 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		9DDAC1ADDCAA036F24953348 /* PromptTokenBudgeterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PromptTokenBudgeterTests.swift; sourceTree = "<group>"; };
 		A0331937FD8BE5947933D67C /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
 		A134E1B2C695D7EB07C8179F /* IngestJobStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IngestJobStore.swift; sourceTree = "<group>"; };
@@ -791,6 +794,8 @@
 			children = (
 				8ACB7AD6B67FD0E795922245 /* Assets.xcassets */,
 				291904E21323E8F8CFF20A5A /* HomeHub.entitlements */,
+				297856558B145DE237D04917 /* Info.plist */,
+				9BE14A17C620C75643C89F12 /* PrivacyInfo.xcprivacy */,
 				4508AE6DF7AD1E3250725AC6 /* App */,
 				0D1A13E6A6DE62350D62D666 /* DesignSystem */,
 				006999C4981733E529F2C0D0 /* Features */,
@@ -1110,6 +1115,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				9D5B684F9F258E2111DFA7E7 /* Assets.xcassets in Resources */,
+				C2739482E0399B75DA94FC3A /* PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1493,6 +1499,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = HomeHub/HomeHub.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
+				INFOPLIST_FILE = HomeHub/Info.plist;
 				INFOPLIST_KEY_BGTaskSchedulerPermittedIdentifiers = cz.keksiczek.homehub.ingest;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "Plný přístup ke kalendáři umožní asistentovi číst i zapisovat události, když ho o to požádáš.";
@@ -1504,6 +1511,7 @@
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Rozpoznávání řeči převádí tvůj hlas na text pro asistenta. Probíhá on-device, mimo zařízení nic neodchází.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UIBackgroundModes = processing;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
@@ -1580,6 +1588,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = HomeHub/HomeHub.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
+				INFOPLIST_FILE = HomeHub/Info.plist;
 				INFOPLIST_KEY_BGTaskSchedulerPermittedIdentifiers = cz.keksiczek.homehub.ingest;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "Plný přístup ke kalendáři umožní asistentovi číst i zapisovat události, když ho o to požádáš.";
@@ -1591,6 +1600,7 @@
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Rozpoznávání řeči převádí tvůj hlas na text pro asistenta. Probíhá on-device, mimo zařízení nic neodchází.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UIBackgroundModes = processing;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";

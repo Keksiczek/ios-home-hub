@@ -528,3 +528,162 @@ configs) · `FakeMLXLoader.swift:79` (test-only mock) · `SkillManager.swift:186
 **Cited as internal reference standards:** `ModelDownloadService.swift`'s install
 validation pipeline and `RuntimeManager.swift`'s error handling — both consistently
 pair `state = .failed` with `.error` logging and humanised messages.
+
+---
+
+### F-3xx · Security & privacy
+
+#### F-301 · CRITICAL · Model output executes real-world side effects with no user confirmation
+**Status:** OPEN — **needs a product decision, see `00-PLAN.md` Q4**
+**Where:** `ConversationService.swift:1797, 1824, 1340, 1859-1866`; `AppSettings.swift:213-216`;
+`Skills/RemindersSkill.swift:105-143`; `Skills/HomeKitSkill.swift:60-65, 94-124`;
+`App/HomeHubIntents.swift:55-78, 126-160`
+
+The full prompt-injection chain, and it closes:
+
+1. `WebSearch`, `FetchPage`, `HomeKit`, `Reminders`, `Calendar` are **all
+   enabled by default** (`AppSettings.swift:213-216`).
+2. `FetchPageSkill` pulls attacker-influenceable page content into the
+   conversation as an `<Observation>` (`ConversationService.swift:1859-1866`),
+   fed straight back into the next generation turn.
+3. The model's very next reply is scanned for a tool call and **auto-executed**:
+   `parseAction` (`:1797`) → `SkillManager.run(...)` (`:1824`). `enabledTools`
+   (`:1340`) is a session-level Settings allow-list, **not** a per-call
+   confirmation. There is no UI step between "model emits `<tool_call>`" and
+   "skill executes".
+4. `RemindersSkill.createReminder` writes an **attacker-chosen title and date**
+   into the user's real Reminders. Zero preconditions once EventKit access has
+   ever been granted.
+5. `HomeKitSkill.applyChanges` matches accessory names case-insensitively
+   (`:103`), so it needs a name — but the page can simply instruct the model to
+   call `HomeKitSearch` with `"status"` first (`:60-65`), which enumerates every
+   accessory, then act on the result **inside the same unconfirmed loop**.
+6. Reachable **without the chat UI ever appearing**: `AskHomeHubIntent`
+   (`HomeHubIntents.swift:126-160`) does not set `openAppWhenRun`, runs the same
+   `sendAndWait` → `performSend` pipeline including the tool loop, and
+   `runEphemeral` (`:55-78`) deletes the conversation afterwards. A malicious or
+   compromised Shortcut can drive the whole chain via Siri with no on-screen trace.
+
+Mitigation that exists: the first call hits the standard iOS permission prompt.
+After that one grant — near-certain for an app whose premise is HomeKit control —
+every subsequent call, including an injected one, is silent.
+
+Contrast `WidgetActionHandler` (`:54-73`), which *does* require an explicit tap on
+a SwiftUI `Toggle`/`Slider` before acting. The direct tool-call path does not.
+
+**Proposed fix:** require explicit confirmation for state-changing skills, and/or
+refuse to auto-execute a tool call emitted in the turn immediately after an
+`<Observation>` carrying fetched web content. Read-only skills stay automatic.
+
+#### F-302 · HIGH · Lock Screen widget leaks replies and personal memory facts
+**Status:** OPEN
+**Where:** `HomeHubWidget/HomeHubWidget.swift:278-282, 220-247, 188-198`;
+`WidgetBridge.swift:59-64`; `ConversationService.swift:1944-1948`
+
+`supportedFamilies` includes `.accessoryRectangular` — the **Lock Screen** family —
+and `HomeHubAccessoryView` renders `entry.lastMessage` directly. That is refreshed
+after every conversation turn (capped at 200 chars) and every memory change.
+The `systemSmall`/`systemMedium` variants additionally render the top 5
+`WidgetMemoryFact.content` entries **untruncated** — facts categorised
+`.personal`, `.relationships`, `.work`.
+
+There is **no setting to disable or redact widget content** (grep for "widget"
+across `AppSettings.swift` / `SettingsView.swift` returns nothing). This
+contradicts the onboarding promise that memory is local and consent-gated
+(`OnboardingMemoryConsentView.swift:11, 43`) — and `memoryEnabled` /
+`autoExtractMemory` both default to `true`, so tapping through onboarding is
+enough to get auto-extracted personal facts onto a lock-screen-visible surface.
+
+#### F-303 · HIGH · `og:image` auto-load bypasses the SSRF blocklist
+**Status:** OPEN
+**Where:** `Skills/FetchPageSkill.swift:387-416` vs `:213-248`; `ToolResultChip.swift:313-339`
+
+`FetchPageSkill`'s primary request is genuinely well hardened — private/loopback/
+link-local/metadata blocklist (`isBlockedHost`, `:213-248`), scheme rejection
+(`:256-289`), and a redirect-time re-check (`RedirectGuardDelegate`, `:522-541`)
+so a public URL cannot 302 into a private subnet.
+
+`extractOGImage` (`:387-416`) validates **only the scheme**, never the host. The
+resolved URL is surfaced as `Image: <url>` (`:170`), parsed by
+`ToolObservation.heroImageURL`, and rendered by `ToolResultChip.heroThumbnail`
+with a plain `AsyncImage(url:)` — **no blocklist, no redirect guard, no tap
+required**. The request fires the moment the chip appears.
+
+So a fetched page can set `<meta property="og:image" content="http://192.168.1.1/admin/reboot">`
+and the device issues that GET against the user's own LAN automatically. Bounded
+(blind request, no return channel) but this is a smart-home app, so LAN reach is
+exactly the interesting target — and the correct blocklist already exists in the
+same file, just isn't applied here.
+
+#### F-304 · MEDIUM · `BGProcessingTask` can never be scheduled — missing `UIBackgroundModes`
+**Status:** OPEN
+**Where:** `IngestScheduler.swift:86, 96-99`; `project.yml` (key absent)
+
+`INFOPLIST_KEY_UIBackgroundModes` is nowhere in the project, but `IngestScheduler`
+submits a `BGProcessingTaskRequest`, which requires `UIBackgroundModes` to contain
+`processing`. `submit(request)` throws `BGTaskSchedulerErrorDomain` code 1 every
+time. It is caught and logged, so it degrades gracefully — but the Knowledge Base
+background ingest **silently never runs**. Same class of bug as F-001.
+
+Note `INFOPLIST_KEY_BGTaskSchedulerPermittedIdentifiers` *is* correctly set — so
+half the requirement was met and the missing half was never noticed, because the
+failure is a caught log line.
+
+#### F-305 · MEDIUM · SSRF blocklist is hostname-based, not resolved-IP based
+**Where:** `FetchPageSkill.swift:244-248`. DNS rebinding bypasses it. Requires
+attacker-controlled DNS; residual risk to track rather than a demonstrated break.
+The file's own comment (`:206-212`) already accepts the related octal/hex IP
+literal risk.
+
+#### F-306 · MEDIUM · No explicit `NSFileProtection` class on conversation / memory storage
+**Where:** `FileStore.swift:74-78` (`.atomic` only), `SwiftDataStore.swift:203-225`,
+`ShareExtension/ShareItemExtractor.swift:257`. Relies on the platform default rather
+than requesting `.complete` / `.completeUnlessOpen`. Defense in depth, but this is an
+app whose selling point is a private on-device assistant with a memory feature.
+
+#### F-307 · MEDIUM · No pinned-hash integrity check on downloaded weights
+**Where:** `ModelDownloadService.swift:847-909`. Structural validation is thorough
+(magic header, non-zero size, size-vs-manifest, GGUF metadata parse) but no trusted
+SHA-256 comparison — a `checksumMismatch` case exists in `DownloadError` and is never
+produced. HTTPS with no ATS exceptions anywhere, so exploiting requires breaking TLS.
+Supply-chain hygiene.
+
+#### F-308 · LOW · `homehub://` scheme is unregistered, so external deep links never arrive
+**Where:** `HomeHubApp.swift:61-65` implements `.onOpenURL`; `DeepLink.swift:89-117`
+parses safely; no `CFBundleURLTypes` anywhere. Not a vulnerability — the opposite —
+but the code comments describe it as a live Shortcuts entry point, so it is probably
+not intended. `project.yml:276-288` documents the deferral, so this is known.
+
+**Audited and found correct — do not "fix":**
+- **Token handling.** `HFTokenStore` uses the Keychain (not UserDefaults), logs only
+  character counts (`:75`), never sets `kSecAttrSynchronizable`.
+  `kSecAttrAccessibleAfterFirstUnlock` is a documented, reasonable trade-off.
+- **Diagnostics redaction.** `DiagnosticReport.swift:12-15, 43-63` deliberately
+  excludes conversation content, memory facts, profile and token — only
+  `hasToken` / `lastVerifiedAtUnix` / `status`. `WebContentExtractor` marks URLs
+  `.private` throughout.
+- **Model output cannot execute HTML/JS or navigate unconfirmed.** Rendering goes
+  through `AttributedString(markdown:)` in `.inlineOnlyPreservingWhitespace`
+  (`MarkdownContentView.swift:585-601`). No `WKWebView` anywhere. Citation and
+  Markdown links require an explicit tap; the extraction regexes accept only
+  `http(s)://`, so no `javascript:` / custom-scheme injection.
+- **`CalculatorSkill`** — character allow-list, length cap, balanced-paren check.
+  Good boundary validation.
+- **ATS** — no `NSAppTransportSecurity` / `NSAllowsArbitraryLoads` anywhere.
+- **iCloud sync** is properly opt-in (`iCloudSyncEnabled` defaults false) and disclosed.
+- **"Add from URL"** has no host allowlist but is strictly user-initiated, never
+  agent-triggered — not SSRF.
+
+**Noted, not a code bug:** the DuckDuckGo privacy boundary (`AppSettings.swift:199-203`)
+is enforced by a system-prompt instruction, not by code. A small model can still
+leak user detail into a query. Worth stating in the privacy policy.
+
+---
+
+## Cross-cutting: three independent reviewers converged on the same root cause
+
+F-001 (my own analysis) and F-301's C1 (security agent, via
+`xcodebuild -showBuildSettings`) found the missing `INFOPLIST_KEY_` prefix
+independently. F-304 is the same bug class in a different key. That pattern —
+"a correctly-reasoned comment sitting above a declaration that does nothing" —
+is worth a guardrail, not just three point fixes. See `scripts/check-infoplist-keys.sh`.

@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  Privacy manifest — required for App Store submission.
+
+	  HomeHub runs entirely on-device: conversations, memory facts, the user
+	  profile and the knowledge base never leave the phone unless the user
+	  explicitly enables iCloud sync (off by default, AppSettings.iCloudSyncEnabled),
+	  which uses their own private CloudKit/Documents container. Nothing is sent
+	  to a HomeHub-operated server, because there isn't one.
+
+	  Outbound network traffic is limited to:
+	    * Hugging Face — model weight downloads the user initiates.
+	    * DuckDuckGo — only when the user enables the WebSearch skill.
+	    * Arbitrary URLs — only via the FetchPage skill, on the user's request.
+	  None of these receive analytics or identifiers from us.
+	-->
+
+	<!-- No tracking, and no data shared with data brokers or ad networks. -->
+	<key>NSPrivacyTracking</key>
+	<false/>
+	<key>NSPrivacyTrackingDomains</key>
+	<array/>
+
+	<!--
+	  No data is collected. "Collect" in Apple's sense means transmitting data
+	  off-device to servers we control or contract with. On-device storage does
+	  not count, and there is no HomeHub backend.
+	-->
+	<key>NSPrivacyCollectedDataTypes</key>
+	<array/>
+
+	<key>NSPrivacyAccessedAPITypes</key>
+	<array>
+		<!--
+		  UserDefaults — app settings, onboarding state, the user-memory blob,
+		  the model download manifest. All scoped to this app and its App Group
+		  (group.cz.keksiczek.homehub.shared), shared only with our own widget
+		  and share extension.
+		-->
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryUserDefaults</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>CA92.1</string>
+			</array>
+		</dict>
+
+		<!--
+		  File timestamps — read via FileManager.attributesOfItem on model
+		  weights and knowledge-base documents inside our own container, to
+		  validate downloads and decide what needs re-indexing.
+		  (ModelDownloadService, LocalModelService, LlamaCppRuntime.)
+		-->
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryFileTimestamp</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>DDA9.1</string>
+			</array>
+		</dict>
+
+		<!--
+		  Disk space — two distinct uses, hence two reasons:
+		    85F4.1  ModelsView shows remaining free space next to model sizes.
+		    E174.1  ModelDownloadService refuses a multi-GB download that would
+		            not fit, rather than failing part-way through.
+		-->
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryDiskSpace</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>85F4.1</string>
+				<string>E174.1</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>

@@ -197,6 +197,40 @@ targets:
         # See docs/production-readiness/03-ENTITLEMENTS.md.
         com.apple.developer.kernel.increased-memory-limit: true
         com.apple.developer.kernel.extended-virtual-addressing: true
+    # ── Partial Info.plist for keys the INFOPLIST_KEY_ mechanism cannot set ──
+    #
+    # `GENERATE_INFOPLIST_FILE: YES` stays on and keeps handling everything
+    # below. Xcode merges the generated keys INTO this file rather than
+    # replacing it, so the two mechanisms coexist — an earlier comment in this
+    # file assumed a real plist "drops all the INFOPLIST_KEY_* auto-injection",
+    # which has not been true since Xcode 13 and is why these two keys went
+    # missing instead of being fixed.
+    #
+    # Why they need a real file: INFOPLIST_KEY_ only maps a fixed allowlist of
+    # keys, not every key of a supported type. `UISupportedInterfaceOrientations`
+    # (array of strings) is on the list and works; `UIBackgroundModes` and
+    # `BGTaskSchedulerPermittedIdentifiers` are not, so
+    # `INFOPLIST_KEY_UIBackgroundModes = processing` is accepted by xcodebuild,
+    # visible in `-showBuildSettings`, and silently absent from the bundle.
+    #
+    # Consequence before this fix: BGTaskScheduler.submit() threw
+    # BGTaskSchedulerErrorDomain code 1 on every call, so the Knowledge Base
+    # background ingest never ran. The throw is caught and logged
+    # (KnowledgeBase/IngestScheduler.swift:96-99), so nothing surfaced.
+    #
+    # `scripts/check-infoplist-keys.sh` asserts against the BUILT plist, which
+    # is the only place this class of bug is observable.
+    info:
+      path: HomeHub/Info.plist
+      properties:
+        # BGProcessingTask requires BOTH of these. `fetch` is deliberately
+        # omitted — IngestScheduler sets requiresNetworkConnectivity = false
+        # because embeddings are computed on-device.
+        UIBackgroundModes:
+          - processing
+        # Must match IngestScheduler.backgroundTaskIdentifier exactly.
+        BGTaskSchedulerPermittedIdentifiers:
+          - cz.keksiczek.homehub.ingest
     sources:
       - path: HomeHub
         # `*.md` documentation files are sprinkled across feature
@@ -338,6 +372,20 @@ targets:
         # launch with `Error Domain=BGTaskSchedulerErrorDomain Code=1`.
         # The string MUST match `IngestScheduler.backgroundTaskIdentifier`.
         INFOPLIST_KEY_BGTaskSchedulerPermittedIdentifiers: cz.keksiczek.homehub.ingest
+        # `BGTaskSchedulerPermittedIdentifiers` above is only half of what
+        # BGProcessingTask needs — `UIBackgroundModes` must also contain
+        # `processing`, or `BGTaskScheduler.submit(_:)` throws
+        # BGTaskSchedulerErrorDomain code 1 on every call. It was missing, and
+        # because `IngestScheduler.scheduleIfNeeded()` catches and logs the
+        # throw (KnowledgeBase/IngestScheduler.swift:96-99), the Knowledge Base
+        # background ingest silently never ran — the failure only ever appeared
+        # as one line in Console.
+        #
+        # `fetch` is deliberately NOT included: the pipeline sets
+        # `requiresNetworkConnectivity = false` because embeddings are computed
+        # on-device, so there is no background-fetch work to declare and asking
+        # for a capability the app doesn't use invites review questions.
+        INFOPLIST_KEY_UIBackgroundModes: processing
         # The bridging header is intentionally kept even when llama.cpp is OFF:
         # it sits behind `#ifdef HOMEHUB_LLAMA_RUNTIME` so the C preprocessor
         # produces an empty translation unit by default. Removing the path
