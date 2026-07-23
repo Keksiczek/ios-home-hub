@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Turns a `PromptContextPackage` into the `RuntimePrompt` the runtime
 /// actually sees. Mode-aware: the `promptMode` field on the package
@@ -44,15 +45,61 @@ final class PromptAssemblyService {
         self.reporter = reporter
     }
 
+    /// One shed-able block of volatile context, tagged with how badly the
+    /// answer degrades without it.
+    ///
+    /// Volatile layers are the right thing to shed under budget pressure:
+    /// they are per-turn retrieval, so dropping one costs recall but never
+    /// correctness, and — unlike trimming the stable half — it does not
+    /// invalidate the cached KV prefix.
+    struct ContextLayer {
+        /// Shedding order. Lower rank is dropped first.
+        ///
+        /// Ranked by what the user actually loses. Losing the conversation
+        /// summary breaks continuity across the whole thread, so it outranks
+        /// facts; losing a file excerpt costs one document's detail on this
+        /// turn only, so it goes first.
+        enum Priority: Int, Comparable {
+            case fileExcerpts = 0
+            case episodes     = 1
+            case verbatimRecall = 2
+            case facts        = 3
+            case summary      = 4
+            /// Date/time and other rail content the model cannot function
+            /// without. Never shed.
+            case essential    = 5
+
+            static func < (a: Priority, b: Priority) -> Bool { a.rawValue < b.rawValue }
+        }
+        let priority: Priority
+        let name: String
+        let text: String
+    }
+
     func build(from package: PromptContextPackage) -> RuntimePrompt {
         let mode = package.promptMode
-        // Split-aware assembly. Chat mode returns (stable, volatile);
+        let profileForBudget = package.modelCapabilityProfile ?? .default
+        let budgeterForFit = PromptTokenBudgeter(profile: profileForBudget)
+
+        // Split-aware assembly. Chat mode returns (stable, volatile layers);
         // other modes are single-shot — no KV-cache reuse possible
         // anyway — so their whole prompt is treated as stable.
         let (stableSystem, volatileSystem): (String, String) = {
             switch mode {
             case .chat:
-                return assembleChatPromptSplit(from: package)
+                let (stable, layers) = assembleChatPromptSplit(from: package)
+                let historyEstimate = package.recentMessages.reduce(0) {
+                    $0 + budgeterForFit.tokensForMessage(content: $1.content)
+                }
+                let fitted = Self.fitVolatileLayers(
+                    layers,
+                    stableTokens: budgeterForFit.tokens(in: stable),
+                    historyTokens: historyEstimate,
+                    userInputTokens: budgeterForFit.tokens(in: package.userInput),
+                    profile: profileForBudget,
+                    budgeter: budgeterForFit
+                )
+                return (stable, fitted)
             case .toolFollowup, .summarization, .memoryExtraction:
                 return (assembleSystemPrompt(for: mode, from: package), "")
             }
@@ -77,7 +124,18 @@ final class PromptAssemblyService {
 
         var runtimeMessages: [RuntimeMessage] = trimResult.kept.compactMap { m in
             switch m.role {
-            case .user:      return RuntimeMessage(role: .user, content: m.content)
+            case .user:
+                // Promote tool observations to the `.tool` role. The agentic
+                // loop appends them as `.user` because `Message.Role` is
+                // persisted and this turn never is; the envelope carries the
+                // signal instead. Sending a tool result as a user turn is
+                // out-of-distribution for every model trained with a real
+                // tool-calling protocol, and is the documented cause of small
+                // models replying with a single word after an `<Observation>`.
+                if ToolObservationEnvelope.matches(m.content) {
+                    return RuntimeMessage(role: .tool, content: m.content)
+                }
+                return RuntimeMessage(role: .user, content: m.content)
             case .assistant: return RuntimeMessage(role: .assistant, content: m.content)
             case .system:    return nil
             }
@@ -208,8 +266,15 @@ final class PromptAssemblyService {
     /// single string for callers that don't yet consume the split
     /// form. New code should prefer `assembleChatPromptSplit` so the
     /// stable prefix can be cache-pinned downstream.
+    ///
+    /// Note this path applies **no budget shedding** — it has no history or
+    /// reply-reserve figures to budget against. `build(from:)` is the only
+    /// production caller of the chat assembly and it does fit the layers; this
+    /// wrapper exists for tests and previews that want the whole prompt as one
+    /// string.
     private func assembleChatPrompt(from package: PromptContextPackage) -> String {
-        let (stable, volatile) = assembleChatPromptSplit(from: package)
+        let (stable, layers) = assembleChatPromptSplit(from: package)
+        let volatile = layers.map(\.text).joined(separator: "\n\n")
         if volatile.isEmpty { return stable }
         if stable.isEmpty { return volatile }
         return stable + "\n\n" + volatile
@@ -244,11 +309,116 @@ final class PromptAssemblyService {
     /// usually stable (e.g. `availableTools`). Better to miss a
     /// potential cache hit than to invalidate the cache because a
     /// "stable" block changed unexpectedly.
+    /// Drop the lowest-priority volatile layers until the whole assembled
+    /// prompt fits the model's usable context window.
+    ///
+    /// ## Why this exists
+    ///
+    /// Before this, **only history was budgeted.** `PromptTokenBudgeter.trimHistory`
+    /// enforced `safeHistoryTokenBudget`, and nothing anywhere checked the
+    /// system prompt — `build` measured stable and volatile token counts purely
+    /// to publish a diagnostic report, then sent whatever had accumulated.
+    ///
+    /// That gap is load-bearing. `ModelCapabilityProfile.gemma3n`'s own comment
+    /// records that quality degrades past ~1700 effective tokens while its
+    /// trained context is 32k+, and the profile notes put the full L1–L7 stack
+    /// at 1500–2500 tokens on its own. Add retrieval and history and the
+    /// assembled prompt routinely passed the point the code itself identifies
+    /// as the degradation threshold — silently, on every turn.
+    ///
+    /// ## Why shedding by priority rather than the old on/off switch
+    ///
+    /// Layer inclusion used to be gated on a single `isWeakInstructionFollower`
+    /// boolean: weak models lost recall, episodes and file excerpts outright,
+    /// strong models kept everything. That is a proxy for "will this fit?", and
+    /// a poor one in both directions — a weak model with a two-line prompt was
+    /// stripped for no reason, and a strong model on a long thread blew past its
+    /// window with nothing to stop it.
+    ///
+    /// The weak-model heuristics are still applied at assembly time (they encode
+    /// real behavioural knowledge — e.g. verbatim recall genuinely confuses
+    /// Gemma 3n), but they now decide *what to offer*, while this function
+    /// decides *what actually fits*.
+    ///
+    /// Volatile layers are the correct thing to shed: dropping one costs recall
+    /// but never correctness, and it leaves the cached KV prefix — which is
+    /// built from the stable half — completely untouched.
+    static func fitVolatileLayers(
+        _ layers: [ContextLayer],
+        stableTokens: Int,
+        historyTokens: Int,
+        userInputTokens: Int,
+        profile: ModelCapabilityProfile,
+        budgeter: PromptTokenBudgeter
+    ) -> String {
+        guard !layers.isEmpty else { return "" }
+
+        let window = DeviceMemoryProvider.shared.profile.contextWindowTokens
+        let committed = stableTokens + historyTokens + userInputTokens + profile.generationReserveTokens
+        let available = window - committed
+
+        let measured = layers.map { (layer: $0, tokens: budgeter.tokens(in: $0.text)) }
+        let requested = measured.reduce(0) { $0 + $1.tokens }
+
+        guard requested > available else {
+            return measured.map(\.layer.text).joined(separator: "\n\n")
+        }
+
+        // Shed lowest priority first, **one layer at a time**.
+        //
+        // Removal is by index, not by name. A single category can contribute
+        // several layers (`appendFacts` emits one chunk per fact block), so
+        // removing "all layers called facts" while subtracting only one
+        // layer's tokens would corrupt the running total and shed far more
+        // than the budget actually required.
+        //
+        // `essential` is never dropped even when that leaves the prompt over
+        // budget: a prompt missing the date rail answers time-relative
+        // questions wrongly, which is worse than a slightly oversized prompt,
+        // and the overrun still gets logged below.
+        let shedOrder = measured.indices
+            .filter { measured[$0].layer.priority != .essential }
+            .sorted { measured[$0].layer.priority < measured[$1].layer.priority }
+
+        var droppedIndices = Set<Int>()
+        var dropped: [String] = []
+        var total = requested
+        for index in shedOrder {
+            guard total > available else { break }
+            droppedIndices.insert(index)
+            dropped.append("\(measured[index].layer.name)(\(measured[index].tokens))")
+            total -= measured[index].tokens
+        }
+        let survivors = measured.indices
+            .filter { !droppedIndices.contains($0) }
+            .map { measured[$0] }
+
+        if dropped.isEmpty {
+            budgetLog.notice("""
+            Prompt over budget by \(requested - available, privacy: .public) tokens and \
+            nothing shed-able remains (window \(window, privacy: .public), committed \
+            \(committed, privacy: .public)).
+            """)
+        } else {
+            budgetLog.info("""
+            Prompt budget: shed \(dropped.joined(separator: " "), privacy: .public) — \
+            volatile \(requested, privacy: .public) → \(total, privacy: .public) tokens \
+            (available \(available, privacy: .public) of window \(window, privacy: .public); \
+            stable \(stableTokens, privacy: .public), history \(historyTokens, privacy: .public), \
+            reserve \(profile.generationReserveTokens, privacy: .public))
+            """)
+        }
+
+        return survivors.map(\.layer.text).joined(separator: "\n\n")
+    }
+
+    private static let budgetLog = Logger(subsystem: "HomeHub", category: "PromptBudget")
+
     private func assembleChatPromptSplit(
         from package: PromptContextPackage
-    ) -> (stable: String, volatile: String) {
+    ) -> (stable: String, volatile: [ContextLayer]) {
         var stableChunks: [String] = []
-        var volatileChunks: [String] = []
+        var volatileChunks: [ContextLayer] = []
 
         // Weak instruction-follower (Gemma 3n, Phi-3 Mini, unknown
         // small models): emit a leaner prompt. Long multi-section
@@ -400,14 +570,25 @@ final class PromptAssemblyService {
             isWeakInstructionFollower: isWeak
         )
         stableChunks.append(PromptBuilder.contextRailStable(railCtx))
-        volatileChunks.append(PromptBuilder.contextRailVolatile(railCtx))
+        // Essential: carries the current date/time. A model that does not know
+        // what day it is answers time-relative questions wrongly, so this is
+        // never shed regardless of budget pressure.
+        volatileChunks.append(ContextLayer(
+            priority: .essential,
+            name: "rail",
+            text: PromptBuilder.contextRailVolatile(railCtx)
+        ))
 
         // L0.5: Summary of older messages (VOLATILE).
         if let summary = package.conversationSummary {
-            volatileChunks.append("""
-            Earlier in this conversation (condensed summary — may be incomplete):
-            \(summary)
-            """)
+            volatileChunks.append(ContextLayer(
+                priority: .summary,
+                name: "summary",
+                text: """
+                Earlier in this conversation (condensed summary — may be incomplete):
+                \(summary)
+                """
+            ))
         }
 
         // L0.6: Verbatim recall of specific earlier turns (VOLATILE).
@@ -422,17 +603,29 @@ final class PromptAssemblyService {
             // anything beyond that is rarely on-topic and just
             // burns context budget.
             let recall = package.conversationRecall.prefix(3)
-            volatileChunks.append("""
-            Relevant earlier turns from this conversation (recalled by similarity to the current question — quote verbatim if asked, otherwise treat as background context):
-            \(recall.joined(separator: "\n\n"))
-            """)
+            volatileChunks.append(ContextLayer(
+                priority: .verbatimRecall,
+                name: "recall",
+                text: """
+                Relevant earlier turns from this conversation (recalled by similarity to the current question — quote verbatim if asked, otherwise treat as background context):
+                \(recall.joined(separator: "\n\n"))
+                """
+            ))
         }
 
         // L1. Durable facts (VOLATILE — semantic retrieval per turn).
         // Cap is tighter for weak models so the prompt stays under
         // the ~600-token "lean" target.
+        // The append* helpers write plain strings (the toolFollowup path shares
+        // them), so each is collected into a scratch array and wrapped with its
+        // shedding priority. Keeping their signatures unchanged means the two
+        // assembly paths cannot drift.
         if package.settings.guardrailsConfig.factsEnabled {
-            appendFacts(from: package, to: &volatileChunks, limit: isWeak ? 3 : 8)
+            var scratch: [String] = []
+            appendFacts(from: package, to: &scratch, limit: isWeak ? 3 : 8)
+            volatileChunks += scratch.map {
+                ContextLayer(priority: .facts, name: "facts", text: $0)
+            }
         }
 
         // L2. Episodic summaries (VOLATILE).
@@ -440,14 +633,22 @@ final class PromptAssemblyService {
         // higher-level than facts and weak models can't reliably
         // disambiguate them from the current turn.
         if package.settings.guardrailsConfig.episodesEnabled && !isWeak {
-            appendEpisodes(from: package, to: &volatileChunks)
+            var scratch: [String] = []
+            appendEpisodes(from: package, to: &scratch)
+            volatileChunks += scratch.map {
+                ContextLayer(priority: .episodes, name: "episodes", text: $0)
+            }
         }
 
         // L3. Source excerpts (VOLATILE — depends on attached files).
         // Big block. Weak models can't follow "use this excerpt only
         // when answering" instruction reliably, so we drop it.
         if package.settings.guardrailsConfig.fileExcerptsEnabled && !isWeak {
-            appendFileExcerpts(from: package, to: &volatileChunks)
+            var scratch: [String] = []
+            appendFileExcerpts(from: package, to: &scratch)
+            volatileChunks += scratch.map {
+                ContextLayer(priority: .fileExcerpts, name: "excerpts", text: $0)
+            }
         }
 
         // L4. Agentic tool instructions (STABLE — `SkillManager.renderInstructions`
@@ -471,7 +672,7 @@ final class PromptAssemblyService {
 
         return (
             stable: stableChunks.joined(separator: "\n\n"),
-            volatile: volatileChunks.joined(separator: "\n\n")
+            volatile: volatileChunks
         )
     }
 

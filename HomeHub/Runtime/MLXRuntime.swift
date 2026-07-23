@@ -1328,6 +1328,10 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                         case .system: "system"
                         case .user: "user"
                         case .assistant: "assistant"
+                        // Matches `Chat.Message.Role.tool`'s raw value, so the
+                        // VLM/stateless path renders the same role name the
+                        // native ChatSession path does.
+                        case .tool: "tool"
                         }
                         msgList.append(["role": roleString, "content": msg.content])
                     }
@@ -1799,6 +1803,7 @@ enum MLXChatInput {
         case .system:    return (last.content, .system)
         case .user:      return (last.content, .user)
         case .assistant: return (last.content, .assistant)
+        case .tool:      return (last.content, .tool)
         }
     }
 
@@ -1812,6 +1817,11 @@ enum MLXChatInput {
         case .system:    return .system(msg.content)
         case .user:      return .user(msg.content)
         case .assistant: return .assistant(msg.content)
+        case .tool:
+            // `Chat.Message` has a native `.tool` role, so this reaches the
+            // model's own Jinja chat_template and is rendered in whatever wire
+            // format that specific checkpoint was actually trained on.
+            return .tool(msg.content)
         }
     }
 

@@ -179,7 +179,23 @@ public final class DeviceMemoryProvider: Sendable {
             }
         }
         guard result == KERN_SUCCESS else { return 0 }
-        return UInt64(info.phys_footprint) + UInt64(os_proc_available_memory())
+
+        // `os_proc_available_memory()` returns 0 when it cannot answer — most
+        // notably on the **iOS Simulator**, where the process is not under a
+        // jetsam limit at all. Verified in the simulator-hosted test suite:
+        // every `OOMTelemetryService` breadcrumb logs `avail=0MB`, while the
+        // same build on an iPhone 16 Pro logs 6137 MB.
+        //
+        // Treating 0 as a real reading is not merely inaccurate, it inverts the
+        // result: the sum collapses to `phys_footprint` alone — a few hundred
+        // megabytes — which classifies as the *tightest* tier on the machine
+        // with the most memory. That produced a 1024-token context window in
+        // the simulator and shed every context layer out of the prompt.
+        //
+        // 0 means "unknown", so report unknown and let the caller fall back.
+        let available = os_proc_available_memory()
+        guard available > 0 else { return 0 }
+        return UInt64(info.phys_footprint) + UInt64(available)
     }
 
     /// Whether the build may load models whose largest single shard exceeds the
@@ -264,8 +280,15 @@ public final class DeviceMemoryProvider: Sendable {
     private static func usableRAM(physicalRAM: UInt64) -> UInt64 {
         let measured = processMemoryLimitBytes()
         guard measured > 0 else {
-            log.notice("task_info unavailable — falling back to 0.75 × physical RAM estimate")
-            return UInt64(Double(physicalRAM) * 0.75)
+            // Simulator, or any environment where the kernel declines to report
+            // a limit. Fall back to the historical estimate rather than
+            // guessing from a partial reading.
+            let estimate = UInt64(Double(physicalRAM) * 0.75)
+            log.notice("""
+            Process memory limit unavailable (os_proc_available_memory reported 0) — \
+            using 0.75 × physical RAM estimate: \(estimate / 1_048_576) MB
+            """)
+            return estimate
         }
         return measured
     }

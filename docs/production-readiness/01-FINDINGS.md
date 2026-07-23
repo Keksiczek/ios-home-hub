@@ -750,3 +750,117 @@ conversational memory is the very symptom this work targets.
 at `.debug` under subsystem `HomeHub`, category `PromptBudget`. Collect that on
 a real device alongside `PromptBudgetReport`'s measured stable / volatile /
 history counts, then set the budgets from data rather than arithmetic.
+
+---
+
+## Session 2 — device-data corrections and architectural work
+
+### F-212 · HIGH · Small models mirror the prompt's bullet formatting
+**Status:** FIXED
+**Where:** `PromptBuilder.swift` (`toolPolicyBlock`, `styleBlock`), `PromptAssemblyService.swift`
+
+Owner report: Gemma 2 2B answers as three bullet points regardless of the
+question. Reproduced from the supplied diagnostics rather than guessed.
+
+Cause is **format mimicry**, not one bad instruction. `toolPolicyBlock` emits
+4–6 lines all beginning `- ` when WebSearch is enabled, and the diagnostics show
+`totalPromptTokens: 1570` — so on a 2B model the bullet list is a large share of
+everything it sees. Small checkpoints reproduce the dominant surface structure
+of their context.
+
+A contributing factor: the non-weak Balanced style block said *"Use bullet lists
+for enumerations, prose for everything else"*, which reads as balanced guidance
+to a large model and as a standing instruction to a small one.
+
+**Fixed** by (a) a formatting rail for weak models that names the cause — small
+models follow rules that come with a reason far more reliably than bare
+prohibitions — and (b) inverting the Balanced block so prose is the default.
+
+### F-102 (revised) · The entitlement ratio test was falsified
+**Status:** FIXED — inference removed
+
+Session 1 added `kernelEntitlementsGranted`, inferring the grant from
+`processLimit / physicalRAM ≥ 0.48` on the assumption that an unentitled app is
+held to 33–40 % of physical RAM.
+
+**Device data disproves it.** iPhone 16 Pro (iPhone17,1), iOS 26.5.2, **no
+kernel entitlements**: `os_proc_available_memory()` reports **6137 MB at launch,
+74.9 % of 8 GB**. The threshold would have reported "granted" on an unentitled
+device — unlocking generous budgets with no headroom behind them, which is the
+direction that causes jetsam kills.
+
+The 33–40 % figure appears to be from older iOS versions. Rather than re-tune a
+threshold against a single data point, the inference was removed entirely and
+the two concerns separated:
+
+| Entitlement | Governs | Detectable how |
+|---|---|---|
+| `extended-virtual-addressing` | single contiguous mmap ceiling | declared flag only — invisible to memory measurement |
+| `increased-memory-limit` | usable memory | `os_proc_available_memory()`, exactly |
+
+### F-213 · HIGH · The generous tier was unreachable on 8 GB devices
+**Status:** FIXED
+**Where:** `DeviceMemoryProvider.classifyMemoryTier`
+
+Thresholds (`≤3.5 GB` tight, `≤7.0 GB` moderate) were applied to
+`physicalRAM × 0.75`. On an 8 GB iPhone that is 6.44 GB → `moderate`. Reaching
+generous required > 9.3 GB physical, i.e. 12/16 GB iPads only — while the tier's
+own comment names "iPhone 16 Pro / iPad Pro M2+" as its target.
+
+So **Session 1's entitlement fix alone would not have delivered the generous
+tier to the owner's hardware.** F-002's write-up attributed the demotion solely
+to the entitlement gate; the physical-RAM threshold demoted it independently.
+
+Now keyed off the measured limit: `< 3.0` tight, `3.0–5.5` moderate, `≥ 5.5`
+generous. The device measures ≈ 6.3 GB → correctly `generous`.
+
+Also removed: the `generous → moderate` demotion when entitlements were absent.
+It used the tier as a proxy for the mmap ceiling and punished devices that
+genuinely had the headroom. The mmap ceiling is enforced where it belongs, in
+`MLXRuntime`'s per-shard pre-flight.
+
+### F-201 · CRITICAL · No unified prompt-size budget
+**Status:** FIXED
+**Where:** `PromptAssemblyService.fitVolatileLayers`, `ContextLayer`
+
+Only history was budgeted; the system prompt was measured for diagnostics and
+then sent whatever its size. Layer inclusion was gated on a single
+`isWeakInstructionFollower` boolean — a proxy for "will this fit?" that was
+wrong in both directions.
+
+Replaced with priority-ordered shedding against a real budget:
+
+```
+stable + history + userInput + generationReserve + volatile ≤ contextWindow
+```
+
+Order: `fileExcerpts → episodes → verbatimRecall → facts → summary`.
+`essential` (date/time rail) is never shed. Only volatile layers are touched, so
+the cached KV prefix is unaffected.
+
+> **A test caught a bug in the first implementation.** Removal was by layer
+> *name*, but one category can emit several layers (`appendFacts` produces a
+> chunk per fact block). Removing "all layers called facts" while subtracting
+> one layer's tokens corrupted the running total and over-shed. Now removal is
+> by index, one layer at a time. Covered by
+> `PromptBudgetSheddingTests.testShedsInStrictPriorityOrderNotInputOrder`.
+
+### F-203 · CRITICAL · Tool results now use a real `.tool` role
+**Status:** FIXED
+**Where:** `LocalLLMRuntime.RuntimeMessage.Role`, `MLXRuntime.MLXChatInput`,
+`ChatTemplate`, `Message.ToolObservationEnvelope`, `ConversationService`,
+`PromptAssemblyService`
+
+`MLXLMCommon.Chat.Message.Role` turns out to have a native `tool` case, so this
+was fixable properly rather than worked around. Tool results now reach the
+model's own Jinja chat_template as a tool turn, rendered in whatever wire format
+the checkpoint was trained on. The fallback `ChatTemplate` maps per family:
+ChatML `tool`, Llama 3 `ipython`, Gemma → labelled user turn (it has no tool
+role).
+
+`Message.Role` — the **persisted** enum — is deliberately unchanged: adding a
+case would force a storage migration on every device to represent a turn that is
+never persisted. `ToolObservationEnvelope` carries the signal and is the single
+source of truth for both writer and recogniser. `matches` is anchored at both
+ends so a user *asking about* `<Observation>` tags is not reclassified as a
+machine result.

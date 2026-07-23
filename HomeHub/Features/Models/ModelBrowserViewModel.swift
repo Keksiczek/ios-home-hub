@@ -369,7 +369,11 @@ final class ModelBrowserViewModel: ObservableObject {
         case .all:
             break
         case .iPhoneSafe:
-            resolvedModels = resolvedModels.filter { $0.recommendedFor.contains(.iPhone) }
+            // Effective, not static: an entitled build on a generous-tier
+            // device can run the large models the catalog lists as iPad-only,
+            // so filtering them out of "iPhone safe" would hide exactly the
+            // models the kernel entitlements make available.
+            resolvedModels = resolvedModels.filter { $0.effectiveRecommendedFor.contains(.iPhone) }
         }
 
         for model in resolvedModels {

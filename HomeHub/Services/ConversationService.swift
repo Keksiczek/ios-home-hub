@@ -1942,8 +1942,14 @@ final class ConversationService: ObservableObject {
                     actionMsgCopy.content = originalContent
                     actionMsgCopy.status = .complete
 
+                    // Carried as a `.user` Message because `Message.Role` is a
+                    // persisted enum and this turn is never persisted — the
+                    // envelope is what marks it. `PromptAssemblyService`
+                    // recognises it and promotes it to `RuntimeMessage.Role.tool`
+                    // so it reaches the model in the shape its chat template
+                    // expects. See `ToolObservationEnvelope`.
                     let obsMsg = Message.user(
-                        "<Observation>\n\(result.observationText)\n</Observation>",
+                        ToolObservationEnvelope.wrap(result.observationText),
                         in: conversationID
                     )
 

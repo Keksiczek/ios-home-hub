@@ -141,6 +141,11 @@ should change it there or override on the command line:
 xcodebuild -project HomeHub.xcodeproj -scheme HomeHub DEVELOPMENT_TEAM=YOURTEAMID
 ```
 
+> **Status 2026-07-23: the Apple Developer Program membership is active.** The
+> entitlements will be granted once the capabilities are added to the App ID —
+> see the step below. Until Xcode has regenerated the provisioning profile, the
+> build still runs correctly with the mmap ceiling in force.
+
 ### One-time Apple Developer portal step
 
 The entitlements are only granted if the App ID has the capabilities enabled.
@@ -210,17 +215,42 @@ looking correct in `project.yml`, in the pbxproj, and in
 
 ---
 
+## Catalog gating (F-103) — done
+
+The static `recommendedFor: [.iPadMSeries]` on Gemma 3n E2B/E4B, Mistral 7B,
+Llama 3.1 8B, Qwen2-VL 7B and Phi 3.5 Mini is a compile-time literal, so it
+could never know whether the running build was entitled. Several of those
+entries carried comments saying to revisit the gating "when entitlements ship".
+
+`LocalModel.effectiveRecommendedFor` now resolves it at runtime, adding
+`.iPhone` only when **both** hold:
+
+1. the build declares the kernel entitlements — without
+   `extended-virtual-addressing` a >2 GB shard cannot be mapped at all, so
+   recommending the model would send the user through a multi-GB download to a
+   guaranteed failure; and
+2. the device measures into the `generous` tier — the real headroom question,
+   measured rather than assumed.
+
+It only ever *widens* the list, so nothing previously recommended stops being
+so. Consumed by `ModelsView.isRiskyOnPhone` and the browser's "iPhone safe"
+filter. Purely advisory: the binding checks remain `MLXRuntime`'s per-shard
+mmap pre-flight and `RuntimeManager.evaluateFeasibility`.
+
+Also set `requiresLargeMmapAddressing: true` on **Mistral 7B v0.3** (4.1 GB) and
+**Llama 3.1 8B** (4.5 GB), which were missing it while same-size-class siblings
+had it — so a non-entitled user got no warning and found out only after
+downloading ~4 GB.
+
+> Erring towards `true` on an unverified shard layout is the safe direction: a
+> false positive costs one advisory line, a false negative costs a 4 GB
+> download. To confirm, check whether the repo has a
+> `model.safetensors.index.json` (absent ⇒ single shard) and clear the flag if
+> either turns out to be sharded.
+
 ## Still to do
 
-Now that the entitled path is real, several places still assume it is not.
-Tracked in `01-FINDINGS.md` as **F-103**:
-
-- `ModelCatalogService` hardcodes `recommendedFor: [.iPadMSeries]` for Gemma 3n
-  E2B/E4B, Mistral 7B, Llama 3.1 8B, Qwen2-VL 7B and Phi 3.5 Mini. Several of
-  those entries carry comments saying to revisit the gating when entitlements
-  ship. They have shipped.
-- Mistral 7B v0.3 (4.1 GB) and Llama 3.1 8B (4.5 GB) do not set
-  `requiresLargeMmapAddressing`, unlike their same-size-class siblings. Verify
-  the actual shard layout of the `mlx-community` repos and set the flag if the
-  largest shard exceeds 2.1 GB — otherwise a non-entitled user downloads 4+ GB
-  before hitting the runtime refusal with no prior warning.
+Nothing blocking. Remaining entitlement-adjacent items are in `01-FINDINGS.md`:
+the per-shard ceiling constant (`sandboxedSingleShardCeilingBytes`) is still a
+single source of truth and correct; `MLXRuntime`'s pre-flight already no-ops
+once entitled.

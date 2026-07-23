@@ -661,7 +661,20 @@ enum ModelCatalog {
             recommendedFor: [.iPadMSeries],
             license: "Apache 2.0",
             backend: .mlx,
-            format: .mlx
+            format: .mlx,
+            // A 3.9 GB 4-bit repo of this vintage ships its weights as one
+            // `model.safetensors`, which cannot be mapped without
+            // extended-virtual-addressing. The flag was set on the same-size
+            // Gemma 3n E4B and Qwen2-VL entries but missed here, so a
+            // non-entitled user got no warning and discovered the problem only
+            // after downloading ~4 GB and hitting the runtime refusal.
+            //
+            // Erring towards `true` on an unverified shard layout is the safe
+            // direction: a false positive costs one advisory line, a false
+            // negative costs a 4 GB download. Confirm against the repo's
+            // `model.safetensors.index.json` (absent ⇒ single shard) and clear
+            // this if it turns out to be sharded.
+            requiresLargeMmapAddressing: true
         ),
 
         LocalModel(
@@ -678,7 +691,11 @@ enum ModelCatalog {
             recommendedFor: [.iPadMSeries],
             license: "Llama 3.1 Community License",
             backend: .mlx,
-            format: .mlx
+            format: .mlx,
+            // Same reasoning as Mistral 7B above — 4.3 GB in what is very
+            // likely a single shard, and the flag was missing while its
+            // same-size-class siblings had it.
+            requiresLargeMmapAddressing: true
         ),
 
         // MARK: Vision-Language Models (multimodal — image + text)

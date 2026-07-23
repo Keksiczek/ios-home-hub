@@ -271,7 +271,27 @@ struct RuntimePrompt: Sendable {
 }
 
 struct RuntimeMessage: Sendable {
-    enum Role: Sendable { case system, user, assistant }
+    /// Conversation roles the runtime understands.
+    ///
+    /// `.tool` carries the result of a skill invocation back to the model.
+    /// It exists because delivering that result as `.user` is structurally
+    /// out-of-distribution for every model trained with a real tool-calling
+    /// protocol — Llama 3.1 uses an `ipython` turn, Qwen/ChatML a `tool` turn,
+    /// Mistral `[TOOL_RESULTS]`. Sending `"<Observation>…</Observation>"` as if
+    /// the *user* typed it is a shape none of them ever saw in training, and the
+    /// codebase already recorded the symptom: "toolFollowup is the one place
+    /// where small models routinely produce a single word or a bare noun after
+    /// seeing the `<Observation>` tag" (`PromptAssemblyService`). The
+    /// minimum-length guard added there treats that symptom; this fixes the
+    /// cause.
+    ///
+    /// `MLXLMCommon.Chat.Message.Role` has a native `tool` case, so on the MLX
+    /// path this reaches the model's own Jinja `chat_template`, which renders
+    /// whatever wire format that specific checkpoint was trained on. The
+    /// hand-rolled `ChatTemplate` renderer (llama.cpp / fallback) maps it
+    /// per-family, falling back to a labelled user turn for families that have
+    /// no tool role at all (Gemma).
+    enum Role: Sendable { case system, user, assistant, tool }
     let role: Role
     let content: String
     /// Image attachments paired with this message. Only populated

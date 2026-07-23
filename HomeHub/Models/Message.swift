@@ -342,3 +342,44 @@ struct Message: Identifiable, Codable, Equatable, Hashable {
         }
     }
 }
+
+// MARK: - Tool observation envelope
+
+/// Wire markers for a tool result being fed back to the model.
+///
+/// Single source of truth for the envelope, so the site that *writes* an
+/// observation (`ConversationService`'s agentic loop) and the site that
+/// *recognises* one (`PromptAssemblyService`, when mapping to
+/// `RuntimeMessage.Role`) cannot drift apart.
+///
+/// ## Why recognition is needed at all
+///
+/// A tool result must reach the model as a `.tool` turn — that is the shape
+/// models with a real tool-calling protocol were trained on, and delivering it
+/// as `.user` is out-of-distribution for all of them. But the app's own
+/// `Message.Role` is a *persisted* enum (user / assistant / system), and adding
+/// a case to it would mean a storage migration for every existing conversation
+/// on every device, to represent a turn that is never persisted in the first
+/// place — the loop appends it to an in-memory package only.
+///
+/// So the envelope carries the signal instead. It is unambiguous (the app is
+/// the only writer of this exact wrapper) and costs no migration.
+enum ToolObservationEnvelope {
+    static let open = "<Observation>"
+    static let close = "</Observation>"
+
+    /// Wrap a raw tool result for insertion into the conversation.
+    static func wrap(_ observationText: String) -> String {
+        "\(open)\n\(observationText)\n\(close)"
+    }
+
+    /// True when `content` is an observation this app produced.
+    ///
+    /// Deliberately strict — anchored at both ends after trimming — so a user
+    /// who merely *mentions* `<Observation>` in a question does not get their
+    /// turn silently reclassified as a tool result.
+    static func matches(_ content: String) -> Bool {
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.hasPrefix(open) && trimmed.hasSuffix(close)
+    }
+}

@@ -123,6 +123,13 @@ Threshold 0.48 sits in the gap between the measured bands: unentitled ≈ 33–4
 of physical RAM, entitled ≈ 55–75 %. Simulator is excluded (it inherits the host
 Mac's limits) and falls back to the declared flag.
 
+> ⚠️ **Superseded in Session 2 — this ratio test was wrong and was removed.**
+> Device data from an iPhone 16 Pro on iOS 26.5.2 shows an *unentitled* app
+> getting 74.9 % of physical RAM, so the 0.48 threshold produced a false
+> "granted". The 33–40 % figure was from older iOS versions. Tier selection now
+> reads the measured limit directly instead of inferring the entitlement.
+> See the Session 2 entry below.
+
 **F-102 — `HardwareCapabilities` capped A18/M-series at 256 MB** while the
 comment on that very line read "no SoC-side cap". Since call sites take
 `min(memoryBudget, hardwareBudget)`, `min(512, 256)` defeated the generous
@@ -318,3 +325,175 @@ against the user's own LAN automatically. Now runs through the same
 - Three of the four review agents independently converged on the missing
   `INFOPLIST_KEY_` prefix. When multiple reviewers find the same thing, prefer
   a guardrail over a point fix — that is what caught the third instance.
+
+---
+
+## Session 2 — 2026-07-23 (afternoon)
+
+Owner supplied device diagnostics from an **iPhone 16 Pro (iPhone17,1,
+iOS 26.5.2)** running Gemma 2 2B, plus a reproducible complaint: *"pořád píše
+tři bullet pointy"*. Both turned into corrections of Session 1 work.
+
+### Two Session-1 assumptions falsified by device data
+
+**The entitlement ratio test was wrong, in the dangerous direction.**
+`kernelEntitlementsGranted` inferred the grant from
+`processLimit / physicalRAM`, assuming unentitled ≈ 33–40 %. The device
+reports **6137 MB available at launch — 74.9 % of its 8 GB, with no kernel
+entitlements**. The 0.48 threshold would have said "granted" on an unentitled
+build: generous budgets unlocked with no headroom behind them, i.e. exactly the
+jetsam kill this work exists to prevent.
+
+Removed. The two concerns it conflated are now separate:
+
+| Entitlement | Governs | How we know |
+|---|---|---|
+| `extended-virtual-addressing` | single contiguous mmap ceiling (~2 GB) | declared build flag only — a virtual-addressing limit is invisible to any memory measurement |
+| `increased-memory-limit` | how much memory we may use | `os_proc_available_memory()`, measured directly |
+
+**The generous tier was unreachable on the target hardware.** Thresholds were
+applied to `physicalRAM × 0.75`. On an 8 GB iPhone that is 6.44 GB → `moderate`.
+Generous needed > 9.3 GB physical, i.e. 12/16 GB iPads only — while the tier's
+own comment names "iPhone 16 Pro / iPad Pro M2+" as its target. So Session 1's
+entitlement fix alone would **not** have given the owner the generous tier.
+
+Tiers now key off the measured limit, sized by what each must hold:
+
+| Tier | Measured limit | Fits |
+|---|---|---|
+| `.tight` | < 3.0 GB | 2B 4-bit |
+| `.moderate` | 3.0 – 5.5 GB | 3B–4B 4-bit |
+| `.generous` | ≥ 5.5 GB | 7B–8B 4-bit + full KV |
+
+The device measures ≈ 6.3 GB → correctly reaches `generous`.
+
+### The three-bullet-points bug (F-212)
+
+Reproduced from the diagnostics rather than guessed. Cause is **format
+mimicry**, not one bad instruction: `PromptBuilder.toolPolicyBlock` emits 4–6
+lines all starting with `- ` when WebSearch is on, and at
+`totalPromptTokens: 1570` that is a large share of what a 2B model sees. Small
+checkpoints reproduce the dominant surface structure of their context.
+
+Two fixes: a formatting rail for weak models that **names the cause** (small
+models follow rules with a reason far better than bare prohibitions), and
+inverting the non-weak Balanced block, which said "Use bullet lists for
+enumerations" — balanced guidance to a large model, a standing order to a
+small one.
+
+### Architectural: F-201 — prompt budget with priority shedding
+
+Replaced the binary `isWeakInstructionFollower` on/off gating of context layers
+with an explicit budget.
+
+Before, **only history was budgeted**. `build` measured stable and volatile
+token counts purely to publish a diagnostic report, then sent whatever had
+accumulated. Layer inclusion was decided by one boolean — a proxy for "will
+this fit?", wrong in both directions: a weak model with a two-line prompt was
+stripped for no reason, and a strong model on a long thread blew past its
+window unchecked.
+
+Now `PromptAssemblyService.ContextLayer` tags each volatile block with a
+shedding priority, and `fitVolatileLayers` drops lowest-priority layers until
+
+```
+stable + history + userInput + generationReserve + volatile ≤ contextWindow
+```
+
+Shedding order: `fileExcerpts → episodes → verbatimRecall → facts → summary`.
+`essential` (the date/time rail) is never shed — an oversized prompt is
+recoverable, a model that does not know what day it is answers wrongly.
+
+The weak-model heuristics remain (they encode real behavioural knowledge —
+verbatim recall genuinely confuses Gemma 3n) but now decide *what to offer*,
+while the budget decides *what fits*. Only volatile layers are shed, so the
+cached KV prefix — built from the stable half — is untouched.
+
+> **A test caught a real bug in the first implementation.** Removal was by
+> layer *name*, but a category can emit several layers (`appendFacts` produces
+> one chunk per fact block). Removing "all layers called facts" while
+> subtracting one layer's tokens corrupted the running total and shed far more
+> than the budget required. Now removal is by index, one layer at a time.
+
+### Architectural: F-203 — tool results get a real `.tool` role
+
+`RuntimeMessage.Role` was `system | user | assistant`, so tool observations
+were delivered as **user** turns reading `"<Observation>…</Observation>"` —
+out-of-distribution for every model trained with a real tool protocol
+(Llama 3.1 `ipython`, Qwen/ChatML `tool`, Mistral `[TOOL_RESULTS]`). The
+codebase already recorded the symptom: *"toolFollowup is the one place where
+small models routinely produce a single word or a bare noun after seeing the
+`<Observation>` tag"*. The minimum-length guard added there treated the
+symptom.
+
+`MLXLMCommon.Chat.Message.Role` has a native `tool` case, so this could be
+fixed properly rather than worked around:
+
+- `RuntimeMessage.Role` gains `.tool`.
+- `MLXChatInput.toNative` maps it to `Chat.Message.tool(_:)`, so it reaches
+  the model's **own Jinja chat_template** and is rendered in whatever wire
+  format that checkpoint was actually trained on.
+- `ChatTemplate` (llama.cpp / fallback) maps per family: ChatML `tool`,
+  Llama 3 `ipython`, and for Gemma — which has no tool role — a user turn
+  prefixed with an explicit `[Tool result — automated output, not written by
+  the user]` label.
+
+`Message.Role` (the **persisted** enum) is deliberately unchanged. Adding a
+case would force a storage migration on every device to represent a turn that
+is never persisted. `ToolObservationEnvelope` carries the signal instead, as
+the single source of truth for both the writer and the recogniser. Its
+`matches` is anchored at both ends so a user *asking about* `<Observation>`
+tags is not silently reclassified as a machine-generated result — covered by
+test.
+
+### Tests added
+
+`HomeHubTests/PromptBudgetSheddingTests.swift` — 8 tests, all passing:
+shedding order, essential-never-shed, priority order independent of input
+order, empty input, and four envelope-recognition cases.
+
+### A bug I introduced, and how it surfaced (worth reading)
+
+The measured-limit change broke **10 tests** that had been passing. Root cause:
+
+`os_proc_available_memory()` returns **0 on the iOS Simulator** — the process is
+not under a jetsam limit there at all. My `processMemoryLimitBytes()` guarded
+against `task_info` failing but treated a 0 availability as a real reading, so
+the sum collapsed to `phys_footprint` alone (a few hundred MB). That classified
+the machine with the *most* memory into the *tightest* tier, giving a
+1024-token context window, which made the new budget negative and shed every
+context layer out of the prompt.
+
+Evidence was sitting in the logs the whole time — every simulator breadcrumb
+reads `avail=0MB`, while the same build on the iPhone logs `avail=6137MB`.
+
+Fixed by treating 0 as "unknown" and falling back to the 0.75 × physical
+estimate. All 10 tests returned to their baseline state.
+
+Two lessons recorded because they generalise:
+
+- **A guard on the API call is not a guard on the value.** `KERN_SUCCESS` from
+  `task_info` said nothing about whether `os_proc_available_memory()` had an
+  answer.
+- **The failure was inverted, not just inaccurate.** Under-reporting memory did
+  not make the app slightly conservative; it made the tier *classification* pick
+  the opposite extreme. Anything that derives a category from a measurement
+  should be checked against a bad reading, not only a missing one.
+
+---
+
+### F-103 — catalog gating is entitlement-aware
+
+`recommendedFor` is a compile-time literal, so it could never know whether the
+running build was entitled. `LocalModel.effectiveRecommendedFor` resolves it at
+runtime, adding `.iPhone` only when the build declares the entitlements **and**
+the device measures into the `generous` tier. It only ever widens the list.
+
+Consumed by `ModelsView.isRiskyOnPhone` and the browser's "iPhone safe" filter.
+Advisory only — the binding checks stay in `MLXRuntime`'s per-shard pre-flight
+and `RuntimeManager.evaluateFeasibility`.
+
+Also set `requiresLargeMmapAddressing: true` on Mistral 7B v0.3 and Llama 3.1 8B,
+which lacked it while same-size-class siblings had it. Erring towards `true` on
+an unverified shard layout is the safe direction: a false positive costs one
+advisory line, a false negative costs a 4 GB download to a guaranteed failure.
