@@ -384,8 +384,48 @@ final class ConversationService: ObservableObject {
         evictColdEntriesIfNeeded()
     }
 
+    /// Run a store write, logging any failure instead of discarding it.
+    ///
+    /// Mirrors `MemoryService.persist(_:_:)`, which already solved this exact
+    /// problem on the memory side. Conversation persistence had ~20 call sites
+    /// using bare `try?` with no logging anywhere, so a failed write left no
+    /// trace at all — the UI looked correct for the rest of the session and the
+    /// user discovered the loss on next launch, with nothing to correlate it to.
+    ///
+    /// `description` is eagerly evaluated (not an autoclosure) for the same
+    /// reason as in `MemoryService`: OSLog's message machinery uses an escaping
+    /// autoclosure, and capturing a non-escaping one across the `await` here
+    /// trips Swift 6 strict concurrency. The strings are tiny.
+    ///
+    /// - Returns: `true` when the write succeeded, so callers that need to react
+    ///   to failure (rather than merely record it) can.
+    @discardableResult
+    private func persist(_ description: String, _ work: () async throws -> Void) async -> Bool {
+        do {
+            try await work()
+            return true
+        } catch {
+            HHLog.chat.error("\(description, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+            return false
+        }
+    }
+
     func loadMessages(for conversationID: UUID) async {
-        if var loaded = try? await store.loadMessages(conversationID: conversationID) {
+        // Deliberately a do/catch rather than `try?`. This read previously
+        // swallowed its error with no logging whatsoever — unlike
+        // `loadConversations` a few lines up, which does log. When it threw,
+        // the `if let` body simply never ran, `messagesByConversation` kept
+        // whatever it had (usually nil), and the user saw an empty chat with no
+        // error, no retry affordance and no Console breadcrumb to diagnose the
+        // "my messages disappeared" report.
+        let loadedOrNil: [Message]?
+        do {
+            loadedOrNil = try await store.loadMessages(conversationID: conversationID)
+        } catch {
+            HHLog.chat.error("loadMessages failed for \(conversationID, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            loadedOrNil = nil
+        }
+        if var loaded = loadedOrNil {
             // A crash while streaming leaves messages with .streaming status on disk.
             // Mark them `.failed` — not `.cancelled` — because the user didn't
             // intentionally stop the stream; the process died. This lets the UI
@@ -965,12 +1005,34 @@ final class ConversationService: ObservableObject {
     /// These are checked at the text level in addition to the EOS token check
     /// inside the active runtime, providing double-stop protection for models that use
     /// a turn-ending token distinct from their vocabulary EOS.
-    /// Stop sequences passed to the runtime. Includes both end-of-turn
-    /// markers AND tool-envelope close tags — the latter so weaker
-    /// models stop immediately after finishing the tool call instead
-    /// of continuing into hallucinated prose.
-    private func stopSequences(for model: LocalModel?) -> [String] {
-        familyEndOfTurnStops(for: model) + Self.universalToolStops
+    /// Stop sequences passed to the runtime.
+    ///
+    /// End-of-turn markers always apply. Tool-envelope close tags apply **only
+    /// when the turn actually has tools available** — they exist so a weaker
+    /// model stops right after emitting a tool call instead of rambling on, and
+    /// a turn with no tools cannot produce a tool call to stop after.
+    ///
+    /// Why the gate matters: a stop-sequence hit and a natural ending are
+    /// indistinguishable downstream. `MLXRuntime` reports both as
+    /// `finishReason == .stop` (only `hitMaxTokens` yields `.length`), and the
+    /// "Pokračovat" continuation button is gated on `.length`
+    /// (`Message.wasTruncatedByLength`). So a reply cut short by one of these
+    /// tags is truncated with **no visible signal and no way to continue it**.
+    ///
+    /// That is not hypothetical: `</tool_call>` is ordinary text the moment the
+    /// user asks this app how its own tool calling works, or asks for an
+    /// example of an XML-ish envelope. Previously the tags were registered on
+    /// every single generation regardless of context, so that reply was
+    /// silently decapitated.
+    ///
+    /// Remaining gap (tracked as F-204 in docs/production-readiness): even
+    /// gated, a tools-enabled turn can still hit this. The complete fix is a
+    /// distinct `FinishReason` for stop-sequence matches so the UI can offer
+    /// continuation, which means touching the shared `RuntimeEvent` enum and
+    /// both backends.
+    private func stopSequences(for model: LocalModel?, toolsEnabled: Bool) -> [String] {
+        let base = familyEndOfTurnStops(for: model)
+        return toolsEnabled ? base + Self.universalToolStops : base
     }
 
     /// Per-family end-of-turn markers ONLY. Used both as runtime stops
@@ -981,15 +1043,45 @@ final class ConversationService: ObservableObject {
     /// previous switch fell through to `default` for "gemma3n" and the
     /// model kept generating past its own turn marker.
     private func familyEndOfTurnStops(for model: LocalModel?) -> [String] {
-        switch model?.family.lowercased() {
-        case "gemma3n", "gemma3", "gemma2", "gemma":
+        // Substring matching, not exact equality.
+        //
+        // The catalog labels families by generation — "Gemma2", "Gemma3n",
+        // "Qwen2-VL", "Qwen3", "Qwen3-VL". An exact-match switch only listed
+        // the bare names, so every versioned label except the handful spelled
+        // out fell through to `default: []` and the model got **no end-of-turn
+        // stops at all**. That is the "unknown family → no stop sequences"
+        // failure: an undertrained checkpoint then runs past its own turn
+        // marker and emits it as visible text.
+        //
+        // Matching on substrings means a new generation (Qwen4, Gemma5) keeps
+        // working without a code change, which is the whole point given how
+        // fast the catalog turns over.
+        guard let family = model?.family.lowercased(), !family.isEmpty else { return [] }
+
+        // Order matters: check the more specific families first, since
+        // "gemma-3n" contains "gemma" and "qwen3-vl" contains "qwen".
+        if family.contains("gemma") {
+            // Every Gemma generation shares `<end_of_turn>`.
             return ["<end_of_turn>"]
-        case "llama":   return ["<|eot_id|>", "<|end_of_text|>"]
-        case "phi":     return ["<|end|>", "<|endoftext|>", "<|im_end|>"]
-        case "qwen":    return ["<|im_end|>", "<|endoftext|>"]
-        case "mistral": return ["</s>"]
-        default:        return []
         }
+        if family.contains("llama") {
+            return ["<|eot_id|>", "<|end_of_text|>"]
+        }
+        if family.contains("phi") {
+            return ["<|end|>", "<|endoftext|>", "<|im_end|>"]
+        }
+        if family.contains("qwen") {
+            // Covers Qwen2 / Qwen2.5 / Qwen3 and their -VL variants, all ChatML.
+            return ["<|im_end|>", "<|endoftext|>"]
+        }
+        if family.contains("mistral") {
+            return ["</s>"]
+        }
+        if family.contains("smollm") || family.contains("smolvlm") {
+            // SmolLM2 / SmolVLM are ChatML-based.
+            return ["<|im_end|>", "<|endoftext|>"]
+        }
+        return []
     }
 
     /// Tool-envelope closes recognised across every family. Used ONLY
@@ -1472,7 +1564,7 @@ final class ConversationService: ObservableObject {
             modelCapabilityProfile: capabilityProfile,
             promptMode: .chat
         )
-        let stops = stopSequences(for: activeModelSnapshot)
+        let stops = stopSequences(for: activeModelSnapshot, toolsEnabled: !enabledTools.isEmpty)
         // `parameters` is re-picked at the top of every agentic-loop
         // iteration (see the loop body) so the chat → toolFollowup
         // mode transition gets the right sampling profile each time.
@@ -1515,6 +1607,18 @@ final class ConversationService: ObservableObject {
         // (`isFinalAllowedLoop == true`) once it hits 2.
         var consecutiveEmptyObservations = 0
         var forceSynthesisNextLoop = false
+        // Prompt-injection guard. Set once this turn runs a skill whose output
+        // is third-party text (`WebSearch`, `FetchPage`); from then on
+        // `SkillManager` refuses state-changing skills for the rest of the
+        // turn, because the instruction to run them may have come from the
+        // fetched content rather than from the user.
+        //
+        // Scoped to the turn, not the conversation: the taint comes from the
+        // observation sitting in *this* turn's context. A later turn starts
+        // clean, so "read this page" followed by "now add that to my reminders"
+        // still works as two messages — which is also a reasonable place to ask
+        // the user to be explicit.
+        var turnHasUntrustedContent = false
         // Same-call duplicate detector. Models occasionally call the
         // same tool with the same input twice in a row — usually
         // because the previous observation didn't help and the model
@@ -1727,7 +1831,31 @@ final class ConversationService: ObservableObject {
                             }
                         }()
                         messagesByConversation[conversationID]?[assistantIndex] = assistantMessage
-                        try? await store.save(message: assistantMessage)
+                        // The single most consequential write in the app, and it
+                        // used to be a bare `try?`.
+                        //
+                        // The heartbeat save has already persisted this message
+                        // with `.streaming` status. `loadMessages` rewrites any
+                        // leftover `.streaming` message to `.failed` on the next
+                        // launch (correctly — it means the process died mid-stream).
+                        // So if THIS write is the one that fails, a turn that
+                        // completed successfully comes back permanently
+                        // mislabelled as a failure, having silently lost its text.
+                        //
+                        // Disk-full and jetsam windows are exactly when both the
+                        // failure and the user's tolerance for it are highest, so
+                        // one retry is worth the few milliseconds before giving up.
+                        let saved = await persist("save assistant message \(assistantMessage.id)") {
+                            try await store.save(message: assistantMessage)
+                        }
+                        if !saved {
+                            let retried = await persist("retry save assistant message \(assistantMessage.id)") {
+                                try await store.save(message: assistantMessage)
+                            }
+                            if !retried {
+                                HHLog.chat.error("assistant reply for \(conversationID, privacy: .public) is NOT persisted — it will be lost on relaunch and may reappear as .failed")
+                            }
+                        }
 
                         // UX: Soft haptic to signify turn completion
                         if reason == .stop || reason == .length {
@@ -1821,7 +1949,21 @@ final class ConversationService: ObservableObject {
                     // Execute via the structured API — timeout + typed failure
                     // reasons so we can decide whether to loop once more or
                     // bail out.
-                    let result = await SkillManager.shared.run(actionCommand, enabled: enabledTools)
+                    let result = await SkillManager.shared.run(
+                        actionCommand,
+                        enabled: enabledTools,
+                        turnHasUntrustedContent: turnHasUntrustedContent
+                    )
+
+                    // Raise the taint AFTER the call, so the skill that reads
+                    // the web is itself allowed to run — only what follows it
+                    // in this turn is restricted.
+                    if await SkillManager.shared.producesUntrustedContent(actionCommand.skillName) {
+                        if !turnHasUntrustedContent {
+                            HHLog.tool.info("turn tainted by \(actionCommand.skillName, privacy: .public) — state-changing skills refused for the rest of this turn")
+                        }
+                        turnHasUntrustedContent = true
+                    }
 
                     // Dead-end detection: an observation that looks empty
                     // (literally empty, or a "no results" marker from the
@@ -1856,8 +1998,14 @@ final class ConversationService: ObservableObject {
                     actionMsgCopy.content = originalContent
                     actionMsgCopy.status = .complete
 
+                    // Carried as a `.user` Message because `Message.Role` is a
+                    // persisted enum and this turn is never persisted — the
+                    // envelope is what marks it. `PromptAssemblyService`
+                    // recognises it and promotes it to `RuntimeMessage.Role.tool`
+                    // so it reaches the model in the shape its chat template
+                    // expects. See `ToolObservationEnvelope`.
                     let obsMsg = Message.user(
-                        "<Observation>\n\(result.observationText)\n</Observation>",
+                        ToolObservationEnvelope.wrap(result.observationText),
                         in: conversationID
                     )
 

@@ -55,13 +55,20 @@ final class MemoryServiceTests: XCTestCase {
         let store = InMemoryStore.empty()
         let settings = SettingsService(store: store)
         let runtime = ExtractionStubRuntime()
-        try? await runtime.load(model: stubModel)
         runtime.responseText = responseJSON
-        // `MemoryExtractionService` was refactored to take the
-        // `RuntimeManager` facade rather than a raw `LocalLLMRuntime`
-        // so it can observe load/unload state. Wrap the stub here
-        // so the test setup matches production wiring.
+        // `MemoryExtractionService` gates structured extraction on
+        // `RuntimeManager.activeModel != nil` (see its `consider`), and
+        // `activeModel` is only set by `RuntimeManager.load(_:)` — not by
+        // calling `load` on the underlying runtime directly.
+        //
+        // The old setup loaded the stub directly (`runtime.load(model:)`), so
+        // the facade's `activeModel` stayed nil, structured extraction was
+        // skipped, and every structured-extraction test silently fell back to
+        // the heuristic path and produced zero candidates — then crashed on the
+        // `candidates[0]` that followed the failed count assertion. Loading
+        // through the manager is what production does.
         let runtimeManager = RuntimeManager(runtime: runtime)
+        await runtimeManager.load(stubModel)
         let extractor = MemoryExtractionService(runtime: runtimeManager)
         let service = MemoryService(store: store, settings: settings, extractor: extractor)
         return (service, store)
@@ -110,9 +117,13 @@ final class MemoryServiceTests: XCTestCase {
         await service.consider(message: message)
 
         XCTAssertEqual(service.candidates.count, 1)
-        XCTAssertEqual(service.candidates[0].kind, .episode)
-
-        let candidate = service.candidates[0]
+        // Guard the index so a count regression reports as a clean assertion
+        // failure instead of an "Index out of range" trap that restarts the
+        // whole test runner (which is what made this failure so costly).
+        guard let candidate = service.candidates.first else {
+            return XCTFail("expected one episode candidate, got \(service.candidates.count)")
+        }
+        XCTAssertEqual(candidate.kind, .episode)
         await service.accept(candidate)
 
         XCTAssertTrue(service.facts.isEmpty)

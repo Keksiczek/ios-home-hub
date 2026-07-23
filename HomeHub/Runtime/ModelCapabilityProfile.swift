@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Static capability and parameter profile for a model family.
 ///
@@ -628,7 +629,13 @@ extension ModelCapabilityProfile {
         // Vision-capable families first — they share substrings
         // with their text-only siblings ("qwen-vl" contains "qwen",
         // "smolvlm" contains "smollm"-ish) so order matters.
-        if f.contains("qwen-vl") || f.contains("qwen2-vl") { return .qwenVL }
+        // Any Qwen vision-language generation. Was an exact list of
+        // "qwen-vl" / "qwen2-vl", so `Qwen3-VL` — now the most-downloaded VLM
+        // on mlx-community — fell through to the text-only `.qwen` profile with
+        // `supportsVision: false`. `MLXRuntime.shouldUseVisionInputPath` then
+        // refused the VLM path and the attached image was silently dropped,
+        // with the user seeing an answer derived from OCR text only.
+        if f.contains("qwen"), f.contains("vl") { return .qwenVL }
         if f.contains("smolvlm") { return .smolVLM }
         if f.contains("llama")   { return .llama }
         if f.contains("qwen")    { return .qwen }
@@ -643,23 +650,79 @@ extension ModelCapabilityProfile {
     /// Dynamically adjust safeHistoryTokenBudget based on device memory tier.
     ///
     /// Scales the base profile's budget to match available device memory:
-    /// - tight (iPhone SE): 50% of base
-    /// - moderate (iPhone 13–15): 100% of base (unmodified)
-    /// - generous (iPhone 16 Pro): 200% of base (maximize conversation length)
+    /// - tight (iPhone SE): 50% of base, floored at 400
+    /// - moderate (iPhone 13–15, or a flagship without entitlements): 150% of base
+    /// - generous (entitled flagship / iPad M-series): 200% of base
+    ///
     private static func dynamicHistoryBudget(
         baseProfile: ModelCapabilityProfile
     ) -> Int {
         let memoryProfile = DeviceMemoryProvider.shared.profile
         let base = baseProfile.safeHistoryTokenBudget
 
+        let scaled: Int
         switch memoryProfile.tier {
         case .tight:
-            return max(400, Int(Double(base) * 0.5))
+            scaled = max(400, Int(Double(base) * 0.5))
         case .moderate:
             // Context doubled from 2048 → 4096; scale budget proportionally.
-            return Int(Double(base) * 1.5)
+            scaled = Int(Double(base) * 1.5)
         case .generous:
-            return Int(Double(base) * 2.0)
+            scaled = Int(Double(base) * 2.0)
         }
+
+        reportContextBudgetIfOverrun(
+            historyTokens: scaled,
+            baseProfile: baseProfile,
+            memoryProfile: memoryProfile
+        )
+        return scaled
     }
+
+    /// Log — but do **not** silently correct — a history budget that cannot fit
+    /// its tier's context window alongside the reply reserve and a typical
+    /// system prompt.
+    ///
+    /// The overrun is real. Nothing downstream enforces the context window on
+    /// the MLX path: `MLXLLM.ChatSession` is constructed without an `n_ctx`
+    /// parameter, unlike `LlamaContextHandle`, so `safeHistoryTokenBudget` is
+    /// the only actual bound on assembled prompt size.
+    ///
+    /// **Why this reports instead of clamping.** A clamp was implemented first
+    /// and measured: on the moderate tier it cut the Gemma history budget from
+    /// 1800 to 1072 tokens, a 40 % reduction. That is a large, silent loss of
+    /// conversational memory on every 6 GB device — the precise symptom
+    /// ("assistant ignores what I said earlier") this work exists to fix. The
+    /// tier's shipped numbers are tested; a clamp derived from a guessed
+    /// system-prompt allowance is not, and trading tested behaviour for an
+    /// untested formula is the wrong direction.
+    ///
+    /// The generous tier's own inconsistency — which is what prompted this —
+    /// was fixed properly, by raising `contextWindowTokens` to 8192 so the
+    /// declared window matches what the budgeting already permits.
+    ///
+    /// Moderate remains over-budget on paper (llama: 2100 history + 1024
+    /// reserve + ~2000 system ≈ 5124 against a 4096 window) and has been for
+    /// some time. Resolving that properly needs on-device measurement of real
+    /// assembled-prompt sizes, not arithmetic. Tracked as F-104 in
+    /// docs/production-readiness/01-FINDINGS.md.
+    private static func reportContextBudgetIfOverrun(
+        historyTokens: Int,
+        baseProfile: ModelCapabilityProfile,
+        memoryProfile: DeviceMemoryProfile
+    ) {
+        // Upper end of the documented L1–L7 system-prompt stack.
+        let typicalSystemPromptTokens = 2000
+        let projected = historyTokens + baseProfile.generationReserveTokens + typicalSystemPromptTokens
+        guard projected > memoryProfile.contextWindowTokens else { return }
+        budgetLog.debug("""
+        Context budget overrun (\(baseProfile.family, privacy: .public), tier \
+        \(memoryProfile.tier.label, privacy: .public)): history \(historyTokens, privacy: .public) \
+        + reserve \(baseProfile.generationReserveTokens, privacy: .public) + system ~\
+        \(typicalSystemPromptTokens, privacy: .public) = \(projected, privacy: .public) tokens \
+        vs window \(memoryProfile.contextWindowTokens, privacy: .public). Not clamped — see F-104.
+        """)
+    }
+
+    private static let budgetLog = Logger(subsystem: "HomeHub", category: "PromptBudget")
 }

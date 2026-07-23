@@ -10,11 +10,31 @@
 
 SCHEME   = HomeHub
 PROJECT  = HomeHub.xcodeproj
-DEST     = platform=iOS Simulator,name=iPhone 16
+
+# Simulator destination.
+#
+# Pinning a device name (this used to say "iPhone 16") breaks the moment Xcode
+# updates its bundled runtimes — Xcode 26.2 ships iPhone 17 / 17 Pro / Air / 16e
+# and no plain "iPhone 16", so every `make build` and `make test` failed before
+# compiling a single file. `generic/platform=iOS Simulator` builds against the
+# simulator SDK without naming a device, so it keeps working across Xcode
+# releases.
+#
+# `make test` still needs a concrete device to boot, so it resolves the newest
+# available iPhone at run time — see TEST_DEST below. Override either explicitly:
+#   make build DEST='platform=iOS Simulator,name=iPhone 17 Pro'
+DEST     = generic/platform=iOS Simulator
+
+# Newest available iPhone simulator, resolved at invocation time. Falls back to
+# the generic destination if none is installed (CI images without runtimes).
+TEST_DEST = $(shell xcrun simctl list devices available 2>/dev/null \
+              | grep -oE 'iPhone [0-9]+[a-zA-Z ]*' | sort -Vr | head -1 \
+              | sed 's/^/platform=iOS Simulator,name=/' \
+              | sed 's/ *$$//')
 
 # ── Primary targets ───────────────────────────────────────────────────────────
 
-.PHONY: setup generate resolve validate check ci build build-device test clean sync-resolved verify-transformers help
+.PHONY: setup generate resolve validate check check-plist ci build build-device test clean sync-resolved verify-transformers help
 
 ## Full first-time or post-merge setup (generate project + fetch packages).
 setup: generate resolve
@@ -52,12 +72,15 @@ build-device:
 	  -destination 'generic/platform=iOS' \
 	  CODE_SIGNING_ALLOWED=NO
 
-## Run unit tests in the iOS simulator (same destination as `make build`).
+## Run unit tests in the iOS simulator.
+## Uses TEST_DEST (newest installed iPhone) because tests need a bootable
+## device, unlike `make build` which only needs the simulator SDK.
 test:
+	@echo "Testing on: $(TEST_DEST)"
 	xcodebuild test \
 	  -project $(PROJECT) \
 	  -scheme  $(SCHEME) \
-	  -destination '$(DEST)'
+	  -destination '$(TEST_DEST)'
 
 ## Verify swift-transformers product boundary (no Hub/Tokenizers as product names).
 ## Runs automatically as part of `make check` / `make ci`.
@@ -68,6 +91,13 @@ verify-transformers:
 ## Run before `make generate` to catch silent YAML override bugs early.
 validate:
 	@python3 scripts/validate-project-spec.py
+
+## Assert the built app's Info.plist actually carries every key the app needs.
+## Requires a prior `make build` — it inspects the BUILT bundle, because that
+## is the only place a mis-declared Info.plist key is observable. See the
+## script header for the two bugs that motivated it.
+check-plist:
+	@bash scripts/check-infoplist-keys.sh
 
 ## Smoke-check for common portability problems (hardcoded paths, missing files).
 ## Runs the swift-transformers boundary guardrail first, then spec validation.
@@ -97,6 +127,7 @@ help:
 	@echo "  resolve             — fetch / verify SPM packages"
 	@echo "  verify-transformers — check swift-transformers product boundary"
 	@echo "  validate            — check project.yml for duplicate keys / bad refs"
+	@echo "  check-plist         — assert built Info.plist has every required key (run after build)"
 	@echo "  build               — compile on iPhone 16 simulator (no signing; matches CI)"
 	@echo "  build-device        — compile for generic iOS device (needs signing or override)"
 	@echo "  test                — run unit tests on iPhone 16 simulator"

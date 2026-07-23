@@ -85,13 +85,37 @@ public final class HardwareCapabilities: @unchecked Sendable {
     ///
     /// Callers should take `min(deviceMemoryProfile.mlxGPUCacheLimitBytes,
     /// safeGPUCacheLimitBytes)` rather than using either value directly.
+    ///
+    /// ## Why the top tier is entitlement-aware
+    ///
+    /// This clamp exists to protect against *silicon* pathology, not to ration
+    /// memory — that is `DeviceMemoryProvider`'s job, and the `min(...)` at the
+    /// call sites is what keeps the two orthogonal. But A18 and M-series have no
+    /// known regression (the comment on that line used to read "no SoC-side cap"
+    /// while returning a 256 MB cap), so the value was silently acting as a
+    /// memory budget for the two chips that need it least.
+    ///
+    /// The consequence was that the entitled `generous` tier's 512 MB pool could
+    /// never take effect: `min(512, 256) == 256` on exactly the iPhone 16/17 Pro
+    /// and iPad M-series hardware the tier was written for. Raising the entitled
+    /// ceiling to 768 MB keeps this a genuine SoC guard rather than the binding
+    /// constraint, and leaves `DeviceMemoryProvider` as the single authority on
+    /// how much memory is actually affordable.
+    ///
+    /// Unentitled builds keep the old 256 MB value — without the raised jetsam
+    /// threshold, a larger Metal pool is exactly the wrong trade.
     public var safeGPUCacheLimitBytes: UInt64 {
         switch soc {
         case .aSeriesPre14:     return  16 * 1024 * 1024     // 16 MB — absolute floor
         case .a14:              return  25 * 1024 * 1024     // 25 MB — match tight tier
         case .a15:              return  50 * 1024 * 1024
         case .a16, .a17Pro:     return  96 * 1024 * 1024
-        case .a18, .mSeries:    return 256 * 1024 * 1024     // no SoC-side cap
+        case .a18, .mSeries:
+            // Headroom above the generous tier's 512 MB so this stays a guard,
+            // not a budget. No known Metal buffer pathology on either family.
+            return DeviceMemoryProvider.kernelEntitlementsEnabled
+                ? 768 * 1024 * 1024
+                : 256 * 1024 * 1024
         case .unknown:          return  50 * 1024 * 1024     // moderate fallback
         }
     }

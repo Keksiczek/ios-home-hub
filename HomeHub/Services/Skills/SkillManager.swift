@@ -148,10 +148,52 @@ actor SkillManager {
     ///   - timeout: Per-call budget. Default is generous (10 s) because
     ///     tools like WebSearch can legitimately take a few seconds;
     ///     Calculator / DeviceInfo finish in microseconds anyway.
+    /// Execute a tool call.
+    ///
+    /// - Parameter turnHasUntrustedContent: `true` once this turn has already
+    ///   run a skill whose output is third-party text (`WebSearch`,
+    ///   `FetchPage`). State-changing skills are refused while it holds.
+    ///
+    /// ## Why an information-flow rule rather than injection detection
+    ///
+    /// The agentic loop feeds a fetched page back to the model as an
+    /// observation and then auto-executes whatever tool call the model emits
+    /// next, with no confirmation step. That closes a real chain: a page can
+    /// address the model directly, tell it to call `HomeKitSearch` with
+    /// `"status"` to enumerate accessory names, and then act on one — or simply
+    /// create a Reminder with attacker-chosen text, which needs no
+    /// reconnaissance at all. It is reachable without the UI ever appearing,
+    /// via `AskHomeHubIntent` from Siri, which deletes its conversation
+    /// afterwards and leaves no trace.
+    ///
+    /// Trying to *detect* the injection in the page text is not reliable and
+    /// never will be. Tracking where the content came from is reliable, because
+    /// it is a property of our own call graph rather than of the attacker's
+    /// prose. So: reading the web is always allowed, and acting on the world
+    /// after reading the web is not.
+    ///
+    /// The rule costs almost nothing legitimate. "Add milk to my reminders"
+    /// involves no web content and runs untouched; only "read this page, then
+    /// change something" is refused, and the user can still do it in two turns.
+    ///
+    /// A full per-action confirmation UI would be strictly better and is still
+    /// worth building — `Skill.isStateChanging(input:)` exists so it has a
+    /// foundation. This closes the demonstrated hole in the meantime, without
+    /// blocking on a UX decision.
+    /// Whether the named skill's output is third-party text.
+    ///
+    /// Exposed so the agentic loop can raise its taint flag without reaching
+    /// into the registry, and so the answer stays a property of the skill
+    /// rather than a hardcoded name list at the call site.
+    func producesUntrustedContent(_ skillName: String) -> Bool {
+        skills[skillName.lowercased()]?.producesUntrustedContent ?? false
+    }
+
     func run(
         _ command: ActionCommand,
         enabled: Set<String>? = nil,
-        timeout: Duration = .seconds(10)
+        timeout: Duration = .seconds(10),
+        turnHasUntrustedContent: Bool = false
     ) async -> ToolExecutionResult {
         let key = command.skillName.lowercased()
         guard let skill = skills[key] else {
@@ -168,6 +210,27 @@ actor SkillManager {
                 reason: .disabled
             )
         }
+        // Policy before capability.
+        //
+        // This gate is evaluated ahead of the permission and availability
+        // checks on purpose. Whether the call is *allowed* does not depend on
+        // whether it would have *succeeded*, and ordering it first means the
+        // user and the log get the real reason: a permission-denied message for
+        // an injected HomeKit write would be actively misleading, and the
+        // behaviour would silently differ between a device that had granted
+        // access and one that had not.
+        if turnHasUntrustedContent, skill.isStateChanging(input: command.input) {
+            HHLog.tool.error(
+                "BLOCKED state-changing skill '\(skill.name, privacy: .public)' — this turn already ingested third-party content, so the instruction may not have come from the user"
+            )
+            return .error(
+                message: "Nemůžu provést akci, která mění nastavení nebo data, "
+                       + "když jsem v tomto tahu četl obsah z internetu — instrukce mohla "
+                       + "pocházet ze stránky, ne od tebe. Napiš mi to prosím zvlášť a udělám to.",
+                reason: .blockedAfterUntrustedContent
+            )
+        }
+
         let avail = await MainActor.run { skill.availability }
         if case .permission(let prompt) = avail {
             HHLog.tool.info("skill '\(skill.name, privacy: .public)' needs permission: \(prompt, privacy: .public)")

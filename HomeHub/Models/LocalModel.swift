@@ -323,6 +323,45 @@ enum DeviceClass: String, Codable, Hashable {
     case iPadMSeries
 }
 
+// MARK: - Effective device recommendation
+
+extension LocalModel {
+    /// Device classes this model is recommended for **on this build and this
+    /// device**, as opposed to the static `recommendedFor` array.
+    ///
+    /// `recommendedFor` is a compile-time literal in `ModelCatalogService`, so
+    /// it cannot know anything about the running build. Several large models —
+    /// Gemma 3n E2B/E4B, Mistral 7B, Llama 3.1 8B, Qwen2-VL 7B, Phi 3.5 Mini —
+    /// are listed as `[.iPadMSeries]` only, and their catalog comments say to
+    /// revisit that "when entitlements ship". They have shipped.
+    ///
+    /// Two conditions must both hold before an iPhone is added:
+    ///
+    ///   1. **The build declares the kernel entitlements.** Without
+    ///      `extended-virtual-addressing` a single `*.safetensors` shard over
+    ///      ~2 GB cannot be mapped at all, no matter how much RAM is free —
+    ///      recommending such a model would send the user through a multi-GB
+    ///      download to a guaranteed failure.
+    ///   2. **The device measures into the `generous` tier.** That is the real
+    ///      headroom question, and it is measured rather than assumed — see
+    ///      `DeviceMemoryProvider.classifyMemoryTier`.
+    ///
+    /// Note this only ever *widens* the recommendation. A model already marked
+    /// `.iPhone` is returned untouched, so nothing that used to be recommended
+    /// stops being so.
+    ///
+    /// This is advisory copy only. The binding checks live elsewhere and are
+    /// unaffected: `MLXRuntime`'s per-shard mmap pre-flight and
+    /// `RuntimeManager.evaluateFeasibility`.
+    var effectiveRecommendedFor: [DeviceClass] {
+        guard !recommendedFor.contains(.iPhone) else { return recommendedFor }
+        guard DeviceMemoryProvider.kernelEntitlementsEnabled,
+              DeviceMemoryProvider.shared.profile.tier == .generous
+        else { return recommendedFor }
+        return recommendedFor + [.iPhone]
+    }
+}
+
 // MARK: - Build-time runtime availability
 
 extension LocalModel {

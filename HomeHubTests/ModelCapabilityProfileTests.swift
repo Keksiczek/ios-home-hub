@@ -16,55 +16,72 @@ final class ModelCapabilityProfileTests: XCTestCase {
 
     // MARK: - resolve(family:) — happy paths
 
+    // These assert on `.family`, not on the whole struct via `==`.
+    //
+    // `resolve(family:)` scales `safeHistoryTokenBudget` by the device memory
+    // tier (`dynamicHistoryBudget`), and on the Simulator that tier follows the
+    // host Mac's RAM — so a full-struct equality against the *base* profile is
+    // machine-dependent and was failing on any host whose tier multiplier is
+    // not 1.0. The intent of these tests is "this family string maps to this
+    // family profile", which `.family` captures exactly and tier-independently.
+    // The budget scaling itself is covered separately below.
+
     func testResolveLlama() {
-        XCTAssertEqual(ModelCapabilityProfile.resolve(family: "llama"), .llama)
+        XCTAssertEqual(ModelCapabilityProfile.resolve(family: "llama").family, "llama")
     }
 
     func testResolveLlamaWithVersionSuffix() {
         // Common real-world family strings from the model catalog
         for family in ["llama3", "llama-3.2-3b", "meta-llama", "Llama-3", "LLAMA"] {
             let profile = ModelCapabilityProfile.resolve(family: family)
-            XCTAssertEqual(profile, .llama, "'\(family)' should resolve to .llama")
+            XCTAssertEqual(profile.family, "llama", "'\(family)' should resolve to .llama")
         }
     }
 
     func testResolveQwen() {
-        XCTAssertEqual(ModelCapabilityProfile.resolve(family: "qwen"), .qwen)
-        XCTAssertEqual(ModelCapabilityProfile.resolve(family: "Qwen2.5"), .qwen)
-        XCTAssertEqual(ModelCapabilityProfile.resolve(family: "qwen1.5-7b"), .qwen)
+        for family in ["qwen", "Qwen2.5", "qwen1.5-7b"] {
+            XCTAssertEqual(ModelCapabilityProfile.resolve(family: family).family, "qwen",
+                           "'\(family)' should resolve to .qwen")
+        }
     }
 
     func testResolveMistral() {
-        XCTAssertEqual(ModelCapabilityProfile.resolve(family: "mistral"), .mistral)
-        XCTAssertEqual(ModelCapabilityProfile.resolve(family: "Mistral-7B-v0.3"), .mistral)
-        XCTAssertEqual(ModelCapabilityProfile.resolve(family: "mixtral"), .mistral)
+        for family in ["mistral", "Mistral-7B-v0.3", "mixtral"] {
+            XCTAssertEqual(ModelCapabilityProfile.resolve(family: family).family, "mistral",
+                           "'\(family)' should resolve to .mistral")
+        }
     }
 
     func testResolveGemma() {
-        XCTAssertEqual(ModelCapabilityProfile.resolve(family: "gemma"), .gemma)
-        XCTAssertEqual(ModelCapabilityProfile.resolve(family: "gemma3"), .gemma)
-        XCTAssertEqual(ModelCapabilityProfile.resolve(family: "gemma-2-9b"), .gemma)
+        // Base "gemma" and "gemma3" share the "gemma" family profile; only
+        // "gemma-3n" / "gemma3n" gets the dedicated MatFormer profile (which is
+        // itself labelled "gemma"), so every case here resolves to family
+        // "gemma".
+        for family in ["gemma", "gemma3", "gemma-2-9b"] {
+            XCTAssertEqual(ModelCapabilityProfile.resolve(family: family).family, "gemma",
+                           "'\(family)' should resolve to the gemma family")
+        }
     }
 
     func testResolvePhi() {
-        XCTAssertEqual(ModelCapabilityProfile.resolve(family: "phi"), .phi)
-        XCTAssertEqual(ModelCapabilityProfile.resolve(family: "phi-3"), .phi)
-        XCTAssertEqual(ModelCapabilityProfile.resolve(family: "phi-4"), .phi)
-        XCTAssertEqual(ModelCapabilityProfile.resolve(family: "Phi-3-mini-4k"), .phi)
+        for family in ["phi", "phi-3", "phi-4", "Phi-3-mini-4k"] {
+            XCTAssertEqual(ModelCapabilityProfile.resolve(family: family).family, "phi",
+                           "'\(family)' should resolve to .phi")
+        }
     }
 
     // MARK: - resolve(family:) — fallback
 
     func testResolveEmptyStringReturnsDefault() {
-        let profile = ModelCapabilityProfile.resolve(family: "")
-        XCTAssertEqual(profile, .default)
+        // The default profile is the only one whose family string is empty.
+        XCTAssertEqual(ModelCapabilityProfile.resolve(family: "").family, "")
     }
 
     func testResolveUnknownFamilyReturnsDefault() {
         for family in ["gpt4", "solar", "orion", "deepseek", "falcon"] {
             let profile = ModelCapabilityProfile.resolve(family: family)
-            XCTAssertEqual(profile, .default,
-                           "Unknown family '\(family)' should fall back to .default")
+            XCTAssertEqual(profile.family, "",
+                           "Unknown family '\(family)' should fall back to .default (empty family)")
         }
     }
 

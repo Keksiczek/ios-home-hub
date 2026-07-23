@@ -126,12 +126,35 @@ final class ModelCatalogService: ObservableObject {
         // Selection priority (each tier matches the previous tier's intent
         // with a more permissive filter, so an upstream rename / missing ID
         // can't strand onboarding on a non-MLX entry):
-        //   1. MLX + iPhone-safe + usable in this build
-        //   2. Any MLX + usable
-        //   3. Any usable model
-        //   4. Hard fallback: catalog[0] (only reached if the catalog has
+        //   1. MLX + iPhone-safe + usable + a STRONG instruction follower
+        //   2. MLX + iPhone-safe + usable (any strength)
+        //   3. Any MLX + usable
+        //   4. Any usable model
+        //   5. Hard fallback: catalog[0] (only reached if the catalog has
         //      no usable model at all — guarded against by the ≥ 2 MLX
         //      entries validator check, which runs on every PR).
+        //
+        // Tier 1 exists because onboarding installs this model, and a weak
+        // instruction follower (≤2B params) forces `PromptAssemblyService` into
+        // lean mode — dropping recall, episodes and file excerpts — so a first
+        // impression made on a weak default understates what the app can do.
+        //
+        // It is a *predicate*, not an ordering convention, deliberately. This
+        // used to be "whatever iPhone-safe MLX model appears first in the
+        // array", which meant inserting a new small model near the top silently
+        // changed the onboarding default. That is an invisible contract; adding
+        // a modern 1.7B model tripped it immediately, and only the catalog
+        // consistency test caught it.
+        if let m = models.first(where: {
+            $0.backend == .mlx
+                && $0.recommendedFor.contains(.iPhone)
+                && $0.isUsableInThisBuild
+                && !ModelCapabilityProfile.resolve(
+                    family: $0.family,
+                    parameterCount: $0.parameterCount,
+                    contextLength: $0.contextLength
+                ).isWeakInstructionFollower
+        }) { return m }
         if let m = models.first(where: {
             $0.backend == .mlx
                 && $0.recommendedFor.contains(.iPhone)
@@ -445,6 +468,153 @@ enum ModelCatalog {
         // the device tier (4096 on a moderate/free-account iPhone 16 Pro, 1024
         // on a tight SE), so raising the base only *unlocks* headroom on devices
         // that can use it — it can't push a small device past its tier ceiling.
+        // ── Current generation (verified against the Hugging Face API, July 2026) ──
+        //
+        // Every `sizeBytes` and `requiresLargeMmapAddressing` below was read
+        // from `https://huggingface.co/api/models/<repo>/tree/main`, not
+        // estimated. All of these repos ship their weights as a **single**
+        // `model.safetensors` (the accompanying `model.safetensors.index.json`
+        // indexes that one file), so the largest shard equals the whole weight
+        // file — which is what the sandboxed ~2.1 GB mmap ceiling applies to.
+        //
+        // `sizeBytes` is weights + tokenizer assets, i.e. what the user actually
+        // downloads, so the storage pre-check and the progress bar agree with
+        // reality.
+        //
+        // Re-verify these when bumping: a repo can be re-quantised or re-sharded
+        // in place, and a stale `requiresLargeMmapAddressing: false` costs the
+        // user a multi-GB download that ends in a refusal.
+
+        // Qwen3 4B Instruct (2507 refresh) — the sweet spot on an entitled
+        // 8 GB phone: markedly stronger instruction-following than the 2–3B
+        // tier while still leaving room for a long conversation.
+        LocalModel(
+            id: "mlx-qwen3-4b-it-2507",
+            displayName: "Qwen3 4B Instruct (MLX)",
+            family: "Qwen3",
+            parameterCount: "4B",
+            quantization: "4-bit",
+            sizeBytes: 2_279_000_000,           // HF: model.safetensors 2.263 GB + ~16 MB tokenizer
+            contextLength: 4096,                // MLX grows KV lazily; adjustContextLength clamps per tier
+            downloadURL: URL(static: "https://huggingface.co/mlx-community/Qwen3-4B-Instruct-2507-4bit"),
+            sha256: nil,
+            installState: .notInstalled,
+            recommendedFor: [.iPadMSeries],     // 2.26 GB single shard > 2.1 GB ceiling → widened by effectiveRecommendedFor when entitled
+            license: "Apache 2.0",
+            backend: .mlx,
+            format: .mlx,
+            requiresLargeMmapAddressing: true
+        ),
+
+        // Qwen3 1.7B — modern replacement for the 1–2B slot. Fits the
+        // sandboxed mmap ceiling comfortably, so it needs no entitlement.
+        LocalModel(
+            id: "mlx-qwen3-1.7b",
+            displayName: "Qwen3 1.7B (MLX)",
+            family: "Qwen3",
+            parameterCount: "1.7B",
+            quantization: "4-bit",
+            sizeBytes: 984_000_000,             // HF: model.safetensors 968 MB + ~16 MB tokenizer
+            contextLength: 4096,
+            downloadURL: URL(static: "https://huggingface.co/mlx-community/Qwen3-1.7B-4bit"),
+            sha256: nil,
+            installState: .notInstalled,
+            recommendedFor: [.iPhone, .iPadMSeries],
+            license: "Apache 2.0",
+            backend: .mlx,
+            format: .mlx
+        ),
+
+        // Qwen3 8B — the largest text model worth attempting on an 8 GB phone,
+        // and only with the entitlements: 4.6 GB of weights plus KV needs the
+        // raised jetsam limit as well as the lifted mmap ceiling.
+        LocalModel(
+            id: "mlx-qwen3-8b",
+            displayName: "Qwen3 8B (MLX)",
+            family: "Qwen3",
+            parameterCount: "8B",
+            quantization: "4-bit",
+            sizeBytes: 4_624_000_000,           // HF: model.safetensors 4.608 GB + ~16 MB tokenizer
+            contextLength: 4096,
+            downloadURL: URL(static: "https://huggingface.co/mlx-community/Qwen3-8B-4bit"),
+            sha256: nil,
+            installState: .notInstalled,
+            recommendedFor: [.iPadMSeries],
+            license: "Apache 2.0",
+            backend: .mlx,
+            format: .mlx,
+            requiresLargeMmapAddressing: true
+        ),
+
+        // Gemma 3 1B (QAT) — quantisation-aware training, so it holds up far
+        // better at 4-bit than a post-hoc quantised model this size. The
+        // smallest entry that still gives usable Czech.
+        LocalModel(
+            id: "mlx-gemma-3-1b-it-qat",
+            displayName: "Gemma 3 1B QAT (MLX)",
+            family: "Gemma3",
+            parameterCount: "1B",
+            quantization: "4-bit (QAT)",
+            sizeBytes: 772_000_000,             // HF: model.safetensors 733 MB + ~39 MB tokenizer
+            contextLength: 4096,
+            downloadURL: URL(static: "https://huggingface.co/mlx-community/gemma-3-1b-it-qat-4bit"),
+            sha256: nil,
+            installState: .notInstalled,
+            recommendedFor: [.iPhone, .iPadMSeries],
+            license: "Gemma Terms of Use",
+            backend: .mlx,
+            format: .mlx
+        ),
+
+        // ── Gemma 3 4B QAT — WITHDRAWN, do not re-add without device testing ──
+        //
+        // This entry shipped briefly and **hard-crashed the app** on an
+        // iPhone 16 Pro, reproducibly: five crashes in one session, each
+        // immediately after `mlx.generate.start` for the post-load smoke test,
+        // with ~3 GB of the 6 GB budget still free — so not a jetsam.
+        //
+        // Cause: `mlx-community/gemma-3-4b-it-qat-4bit` is **multimodal** — its
+        // repo carries `preprocessor_config.json` and `processor_config.json`,
+        // so MLX routes it to `VLMModelFactory`. But it was catalogued with
+        // `family: "Gemma3"`, which resolves to the `.gemma` capability profile
+        // and `supportsVision: false`. Generation therefore took the text-only
+        // `ChatSession` path into a container whose processor expects the
+        // image-token scaffolding, and the process died inside MLX.
+        //
+        // Marking it vision-capable would not have helped: the smoke test has
+        // no images, so `shouldUseVisionInputPath(hasImages: false, …)` is
+        // false and the text path is taken regardless. Making Gemma 3 VLM work
+        // needs a real Gemma-3 vision profile plus a container-aware routing
+        // decision — and that cannot be validated from a simulator, because
+        // MLX inference needs Metal.
+        //
+        // The 1B QAT entry above is unaffected: its repo has no processor
+        // configs, so it is a genuine text-only model.
+        //
+        // To restore: build the VLM routing, then verify on hardware that the
+        // smoke test completes. Do not rely on "it compiles".
+
+        // LFM2.5 1.2B — Liquid's edge-targeted architecture. Smallest entry
+        // with genuinely usable instruction-following; useful on tight devices.
+        // Falls to the `.default` capability profile (no dedicated family
+        // entry), which is the conservative weak-model path — appropriate here.
+        LocalModel(
+            id: "mlx-lfm2.5-1.2b-it",
+            displayName: "LFM2.5 1.2B (MLX)",
+            family: "LFM",
+            parameterCount: "1.2B",
+            quantization: "4-bit",
+            sizeBytes: 663_000_000,             // HF: model.safetensors 659 MB + ~5 MB tokenizer
+            contextLength: 4096,
+            downloadURL: URL(static: "https://huggingface.co/mlx-community/LFM2.5-1.2B-Instruct-4bit"),
+            sha256: nil,
+            installState: .notInstalled,
+            recommendedFor: [.iPhone, .iPadMSeries],
+            license: "LFM Open License",
+            backend: .mlx,
+            format: .mlx
+        ),
+
         LocalModel(
             id: "mlx-llama-3.2-3b-it",
             displayName: "Llama 3.2 3B (MLX)",
@@ -661,7 +831,20 @@ enum ModelCatalog {
             recommendedFor: [.iPadMSeries],
             license: "Apache 2.0",
             backend: .mlx,
-            format: .mlx
+            format: .mlx,
+            // A 3.9 GB 4-bit repo of this vintage ships its weights as one
+            // `model.safetensors`, which cannot be mapped without
+            // extended-virtual-addressing. The flag was set on the same-size
+            // Gemma 3n E4B and Qwen2-VL entries but missed here, so a
+            // non-entitled user got no warning and discovered the problem only
+            // after downloading ~4 GB and hitting the runtime refusal.
+            //
+            // Erring towards `true` on an unverified shard layout is the safe
+            // direction: a false positive costs one advisory line, a false
+            // negative costs a 4 GB download. Confirm against the repo's
+            // `model.safetensors.index.json` (absent ⇒ single shard) and clear
+            // this if it turns out to be sharded.
+            requiresLargeMmapAddressing: true
         ),
 
         LocalModel(
@@ -678,7 +861,11 @@ enum ModelCatalog {
             recommendedFor: [.iPadMSeries],
             license: "Llama 3.1 Community License",
             backend: .mlx,
-            format: .mlx
+            format: .mlx,
+            // Same reasoning as Mistral 7B above — 4.3 GB in what is very
+            // likely a single shard, and the flag was missing while its
+            // same-size-class siblings had it.
+            requiresLargeMmapAddressing: true
         ),
 
         // MARK: Vision-Language Models (multimodal — image + text)
@@ -731,6 +918,52 @@ enum ModelCatalog {
             license: "Apache 2.0",
             backend: .mlx,
             format: .mlx
+        ),
+
+        LocalModel(
+            // Qwen3-VL 2B — current-generation vision model and the smaller of
+            // the two most-downloaded VLMs on mlx-community. Fits the sandboxed
+            // mmap ceiling, so it works without the entitlements.
+            //
+            // The family string matters: `ModelCapabilityProfile.baseProfile`
+            // used to detect Qwen VLMs with an exact "qwen-vl" / "qwen2-vl"
+            // list, so "Qwen3-VL" resolved to the *text-only* profile and
+            // `shouldUseVisionInputPath` silently dropped attached images.
+            // That detection is now `contains("qwen") && contains("vl")`.
+            id: "mlx-qwen3-vl-2b-it",
+            displayName: "Qwen3-VL 2B (MLX, vision)",
+            family: "Qwen3-VL",
+            parameterCount: "2B",
+            quantization: "4-bit",
+            sizeBytes: 1_798_000_000,           // HF: model.safetensors 1.782 GB + ~16 MB tokenizer
+            contextLength: 2048,                // Vision tokens eat into context; keep modest
+            downloadURL: URL(static: "https://huggingface.co/mlx-community/Qwen3-VL-2B-Instruct-4bit"),
+            sha256: nil,
+            installState: .notInstalled,
+            recommendedFor: [.iPhone, .iPadMSeries],
+            license: "Apache 2.0",
+            backend: .mlx,
+            format: .mlx
+        ),
+
+        // Qwen3-VL 4B — the most-downloaded VLM on mlx-community. Stronger
+        // grounding than the 2B at the cost of needing the entitlements.
+        LocalModel(
+            id: "mlx-qwen3-vl-4b-it",
+            displayName: "Qwen3-VL 4B (MLX, vision)",
+            family: "Qwen3-VL",
+            parameterCount: "4B",
+            quantization: "4-bit",
+            sizeBytes: 3_110_000_000,           // HF: model.safetensors 3.094 GB + ~16 MB tokenizer
+            contextLength: 4096,
+            downloadURL: URL(static: "https://huggingface.co/mlx-community/Qwen3-VL-4B-Instruct-4bit"),
+            sha256: nil,
+            installState: .notInstalled,
+            recommendedFor: [.iPadMSeries],
+            license: "Apache 2.0",
+            backend: .mlx,
+            format: .mlx,
+            requiresLargeMmapAddressing: true
         ),
 
         LocalModel(

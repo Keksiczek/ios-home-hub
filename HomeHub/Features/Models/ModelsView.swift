@@ -234,7 +234,11 @@ struct ModelsView: View {
     /// models like Gemma 3n stay reachable as a baseline for users
     /// who want to experiment.
     private func isRiskyOnPhone(_ model: LocalModel) -> Bool {
-        isRunningOnPhone && !model.recommendedFor.contains(.iPhone)
+        // `effectiveRecommendedFor`, not the static list: on an entitled build
+        // running on a generous-tier device, the large models the catalog marks
+        // iPad-only do run on this iPhone, and telling the user otherwise is
+        // exactly the value the paid account was bought for.
+        isRunningOnPhone && !model.effectiveRecommendedFor.contains(.iPhone)
     }
 
     /// Compose the download confirm sheet's body text from the static

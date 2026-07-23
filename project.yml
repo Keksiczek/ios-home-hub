@@ -120,20 +120,28 @@ packages:
 
 settings:
   base:
-    # DEVELOPMENT_TEAM is intentionally NOT set here.
+    # Apple Developer Program team (paid, Individual). Declared here rather
+    # than left to per-developer Xcode state because:
     #
-    # We used to wire LocalOverride.xcconfig into project.yml via
-    # `configFiles:`, but xcodegen emits non-deterministic `TEMP_<uuid>`
-    # PBXFileReferences and a working-directory-named PBXGroup for any
-    # configFile that lives outside the source tree. That made the
-    # committed pbxproj drift on every regeneration — fatal for the
-    # build-ios drift guard, which fails the moment `xcodegen generate`
-    # produces any diff against HEAD.
+    #   * Picking a team in Xcode → Signing & Capabilities writes
+    #     DEVELOPMENT_TEAM into project.pbxproj, NOT into xcuserdata. Since
+    #     the pbxproj is regenerated from this file, every `xcodegen generate`
+    #     silently wiped the selection and the next device build failed to
+    #     sign. (The previous comment here asserted the opposite; it was
+    #     wrong, which is why device builds kept losing their team.)
+    #   * The kernel entitlements below are only granted by Apple's signing
+    #     server when the build is signed by a team entitled to them. A build
+    #     with no team produces an unentitled binary that still *believes* it
+    #     is entitled — precisely the state that jetsams on a large model.
     #
-    # Developer signing now lives in xcuserdata (gitignored) — open the
-    # project in Xcode, pick your team under Signing & Capabilities, and
-    # Xcode stores the selection per-user. CI builds for the iOS
-    # simulator and never signs, so it doesn't need a team at all.
+    # We deliberately do NOT go back to the LocalOverride.xcconfig route:
+    # xcodegen emits non-deterministic `TEMP_<uuid>` PBXFileReferences for
+    # configFiles outside the source tree, which made the pbxproj drift on
+    # every regeneration and broke the CI drift guard.
+    #
+    # Forking this project? Replace the value with your own team ID, or
+    # override on the command line: `xcodebuild … DEVELOPMENT_TEAM=YOURID`.
+    DEVELOPMENT_TEAM: 8Y755TXDN8
     CODE_SIGN_STYLE: Automatic
     SWIFT_VERSION: "6.0"
     GENERATE_INFOPLIST_FILE: YES
@@ -155,16 +163,74 @@ targets:
         # iCloud Documents sync — backs AppSettings.iCloudSyncEnabled.
         # Container must be provisioned on the team's App ID; on free
         # Apple-ID teams the runtime falls back to local Application
-        # Support silently. See KERNEL_ENTITLEMENTS.md for the paid
-        # kernel entitlements (memory-limit, extended-virtual-addressing)
-        # that are intentionally NOT declared here — they require a
-        # paid Developer Program account and break free-tier builds.
+        # Support silently.
         com.apple.developer.icloud-container-identifiers:
           - iCloud.cz.keksiczek.homehub
         com.apple.developer.icloud-services:
           - CloudDocuments
         com.apple.developer.ubiquity-container-identifiers:
           - iCloud.cz.keksiczek.homehub
+        # ── Kernel memory entitlements ────────────────────────────────────
+        # Both require a paid Apple Developer Program membership and are
+        # granted by Apple's signing server at signing time. They are
+        # permitted for App Store distribution, so every user of a
+        # store build gets them — not just local development installs.
+        #
+        # increased-memory-limit
+        #   Raises the per-process jetsam threshold. On an 8 GB device the
+        #   app goes from roughly a 3 GB working set to ~5 GB before iOS
+        #   starts killing it. This is what makes a 4-bit 7B model or
+        #   Gemma 3n E4B viable at all.
+        #
+        # extended-virtual-addressing
+        #   Lifts the ~2 GB ceiling on a single contiguous mmap. MLX-Swift
+        #   maps each *.safetensors shard as one region, so without this a
+        #   model shipping its weights as one 4.5 GB file cannot load no
+        #   matter how much RAM the device has.
+        #
+        # These are declared unconditionally. Safety does NOT come from
+        # omitting them — it comes from DeviceMemoryProvider verifying at
+        # runtime (SecTaskCopyValueForEntitlement) that the signature
+        # actually carries them, and falling back to the conservative tier
+        # when it does not. A build signed by a team without these
+        # capabilities still runs correctly, just with smaller budgets.
+        # See docs/production-readiness/03-ENTITLEMENTS.md.
+        com.apple.developer.kernel.increased-memory-limit: true
+        com.apple.developer.kernel.extended-virtual-addressing: true
+    # ── Partial Info.plist for keys the INFOPLIST_KEY_ mechanism cannot set ──
+    #
+    # `GENERATE_INFOPLIST_FILE: YES` stays on and keeps handling everything
+    # below. Xcode merges the generated keys INTO this file rather than
+    # replacing it, so the two mechanisms coexist — an earlier comment in this
+    # file assumed a real plist "drops all the INFOPLIST_KEY_* auto-injection",
+    # which has not been true since Xcode 13 and is why these two keys went
+    # missing instead of being fixed.
+    #
+    # Why they need a real file: INFOPLIST_KEY_ only maps a fixed allowlist of
+    # keys, not every key of a supported type. `UISupportedInterfaceOrientations`
+    # (array of strings) is on the list and works; `UIBackgroundModes` and
+    # `BGTaskSchedulerPermittedIdentifiers` are not, so
+    # `INFOPLIST_KEY_UIBackgroundModes = processing` is accepted by xcodebuild,
+    # visible in `-showBuildSettings`, and silently absent from the bundle.
+    #
+    # Consequence before this fix: BGTaskScheduler.submit() threw
+    # BGTaskSchedulerErrorDomain code 1 on every call, so the Knowledge Base
+    # background ingest never ran. The throw is caught and logged
+    # (KnowledgeBase/IngestScheduler.swift:96-99), so nothing surfaced.
+    #
+    # `scripts/check-infoplist-keys.sh` asserts against the BUILT plist, which
+    # is the only place this class of bug is observable.
+    info:
+      path: HomeHub/Info.plist
+      properties:
+        # BGProcessingTask requires BOTH of these. `fetch` is deliberately
+        # omitted — IngestScheduler sets requiresNetworkConnectivity = false
+        # because embeddings are computed on-device.
+        UIBackgroundModes:
+          - processing
+        # Must match IngestScheduler.backgroundTaskIdentifier exactly.
+        BGTaskSchedulerPermittedIdentifiers:
+          - cz.keksiczek.homehub.ingest
     sources:
       - path: HomeHub
         # `*.md` documentation files are sprinkled across feature
@@ -253,8 +319,18 @@ targets:
           UIInterfaceOrientationPortraitUpsideDown
           UIInterfaceOrientationLandscapeLeft
           UIInterfaceOrientationLandscapeRight
-        NSMicrophoneUsageDescription: "Potřebujeme mikrofon pro možnost hlasové konverzace offline."
-        NSSpeechRecognitionUsageDescription: "Nativní rozpoznávání hovoru pro diktování přes Apple infrastrukturu beze slov mimo zařízení."
+        # ── Privacy usage descriptions ────────────────────────────────────
+        # The INFOPLIST_KEY_ prefix is MANDATORY. This target builds its
+        # Info.plist via GENERATE_INFOPLIST_FILE=YES, and Xcode only injects
+        # build settings whose name starts with INFOPLIST_KEY_. These seven
+        # keys previously lacked the prefix, so they landed in the pbxproj
+        # as inert build settings and never reached the bundle — meaning
+        # every mic / speech / HomeKit / Calendar / Reminders request
+        # terminated the app via TCC, and the build was un-shippable.
+        # `scripts/check-infoplist-keys.sh` now asserts they are present in
+        # the built app so this cannot regress silently.
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: "Mikrofon používáme jen pro hlasovou konverzaci s asistentem. Nahrávka se zpracuje přímo v zařízení a nikam se neodesílá."
+        INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: "Rozpoznávání řeči převádí tvůj hlas na text pro asistenta. Probíhá on-device, mimo zařízení nic neodchází."
         # Usage descriptions for the Skills registered by default in
         # SkillManager.init. Without these, iOS terminates the app the
         # moment HMHomeManager() is constructed or EKEventStore.requestAccess
@@ -262,11 +338,11 @@ targets:
         # who never invoke the skills must have the keys present, because
         # the prompt assembler may surface them to the model and the user
         # may trigger them via a tool call.
-        NSHomeKitUsageDescription: "Pro ovládání chytrých zařízení v domácnosti přes asistenta."
-        NSCalendarsUsageDescription: "Pro čtení a vytváření událostí v kalendáři přes asistenta."
-        NSCalendarsFullAccessUsageDescription: "Pro plnou práci s kalendářem (čtení i zápis událostí) přes asistenta na iOS 17+."
-        NSRemindersUsageDescription: "Pro čtení a vytváření připomínek přes asistenta."
-        NSRemindersFullAccessUsageDescription: "Pro plnou práci s připomínkami (čtení i zápis) přes asistenta na iOS 17+."
+        INFOPLIST_KEY_NSHomeKitUsageDescription: "Přístup k HomeKitu potřebujeme, aby asistent mohl na tvůj pokyn ovládat chytrá zařízení v domácnosti."
+        INFOPLIST_KEY_NSCalendarsUsageDescription: "Přístup ke kalendáři umožní asistentovi číst a vytvářet události, když ho o to požádáš."
+        INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription: "Plný přístup ke kalendáři umožní asistentovi číst i zapisovat události, když ho o to požádáš."
+        INFOPLIST_KEY_NSRemindersUsageDescription: "Přístup k připomínkám umožní asistentovi číst a vytvářet připomínky, když ho o to požádáš."
+        INFOPLIST_KEY_NSRemindersFullAccessUsageDescription: "Plný přístup k připomínkám umožní asistentovi číst i zapisovat připomínky, když ho o to požádáš."
         # App uses only standard HTTPS/TLS for model downloads and no custom
         # cryptography — declare exemption so App Store review doesn't flag
         # the build as missing an export-compliance answer. If this changes
@@ -296,21 +372,44 @@ targets:
         # launch with `Error Domain=BGTaskSchedulerErrorDomain Code=1`.
         # The string MUST match `IngestScheduler.backgroundTaskIdentifier`.
         INFOPLIST_KEY_BGTaskSchedulerPermittedIdentifiers: cz.keksiczek.homehub.ingest
+        # `BGTaskSchedulerPermittedIdentifiers` above is only half of what
+        # BGProcessingTask needs — `UIBackgroundModes` must also contain
+        # `processing`, or `BGTaskScheduler.submit(_:)` throws
+        # BGTaskSchedulerErrorDomain code 1 on every call. It was missing, and
+        # because `IngestScheduler.scheduleIfNeeded()` catches and logs the
+        # throw (KnowledgeBase/IngestScheduler.swift:96-99), the Knowledge Base
+        # background ingest silently never ran — the failure only ever appeared
+        # as one line in Console.
+        #
+        # `fetch` is deliberately NOT included: the pipeline sets
+        # `requiresNetworkConnectivity = false` because embeddings are computed
+        # on-device, so there is no background-fetch work to declare and asking
+        # for a capability the app doesn't use invites review questions.
+        INFOPLIST_KEY_UIBackgroundModes: processing
         # The bridging header is intentionally kept even when llama.cpp is OFF:
         # it sits behind `#ifdef HOMEHUB_LLAMA_RUNTIME` so the C preprocessor
         # produces an empty translation unit by default. Removing the path
         # entirely would require a project regen on every flag flip.
         SWIFT_OBJC_BRIDGING_HEADER: "HomeHub/Runtime/Bridge/HomeHub-Bridging-Header.h"
-        # ── [Kernel entitlements opt-in] ────────────────────────────────────────
-        # Requires a PAID Apple Developer account + both capabilities added in
-        # Xcode → Signing & Capabilities (see KERNEL_ENTITLEMENTS.md).
-        # Unlocks generous memory tier: 4096-token context, 128 MB MLX cache,
-        # full image budget, and safe loading of models > 2 GB.
-        # Without this flag, DeviceMemoryProvider caps at the moderate tier.
-        # Add to LocalOverride.xcconfig instead of uncommenting here so it
-        # stays out of version control (personal account-specific).
+        # ── Kernel entitlements ─────────────────────────────────────────────────
+        # Declares intent: "this build is signed by a team entitled to
+        # increased-memory-limit + extended-virtual-addressing". Paired with
+        # the entitlement keys in the `entitlements:` block above.
         #
-        # SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) HOMEHUB_HAS_KERNEL_ENTITLEMENTS"
+        # It is only half the gate. DeviceMemoryProvider ANDs this flag with a
+        # runtime check (SecTaskCopyValueForEntitlement) that asks the kernel
+        # what the running binary was *actually* signed with. The generous
+        # memory tier unlocks only when both agree. That matters because
+        # Apple's signing server silently strips restricted entitlements from
+        # builds signed by an unentitled team — leaving a binary that believes
+        # it has 5 GB of headroom and jetsams on the first large model.
+        #
+        # Previously this lived commented-out here with instructions pointing
+        # at LocalOverride.xcconfig, but the `configFiles:` wiring that would
+        # have made that file part of the build had been removed — so the
+        # documented procedure was a no-op and the flag could never be set.
+        # See docs/production-readiness/03-ENTITLEMENTS.md.
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) HOMEHUB_HAS_KERNEL_ENTITLEMENTS"
         #
         # ── [llama.cpp opt-in] Compile flag ────────────────────────────────────
         # Uncomment BOTH lines to enable llama.cpp. The flag must be visible to

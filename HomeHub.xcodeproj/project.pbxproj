@@ -16,11 +16,13 @@
 		0324625B07ABFA06342D9BE7 /* ConversationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE8824F44274F1BFCA74AB43 /* ConversationService.swift */; };
 		0412246B791E13AC4F6B3679 /* HHTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14F56F13E17D9A38363D6734 /* HHTheme.swift */; };
 		0AC4AF60B75D230C54CFE6FD /* LoadProgressThrottleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 26A8844885601746CF081920 /* LoadProgressThrottleTests.swift */; };
+		0C740F0C73EBB529D13CB5B5 /* MLXVisionInputPathTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8140DD20BB9381BAC4EACFA2 /* MLXVisionInputPathTests.swift */; };
 		0CB136DBBBCACB4CFF8D0988 /* SwiftDataStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEF86EF53AC6FD924A5DCED4 /* SwiftDataStoreTests.swift */; };
 		0CD310D2359471B25699B88B /* RuntimeManagerLifecycleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF3B4090AFA2F0C3D244E359 /* RuntimeManagerLifecycleTests.swift */; };
 		0CE5FDCB7C954D0B26727BFD /* SummarizationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = C531BB7640CC6C8CC144B16F /* SummarizationService.swift */; };
 		0F861B11541E3644B43BD9EB /* HHEmptyState.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD320E3C736EB617655621FA /* HHEmptyState.swift */; };
 		115F1A01D97DE2D99A6EF75F /* VoiceService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 15725DCFC610AA047227CEF3 /* VoiceService.swift */; };
+		127088DA725AE4332C90E39D /* ToolInjectionGuardTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8F2E08818AC61CF870BA147 /* ToolInjectionGuardTests.swift */; };
 		13E15A35EAB556B8BFD61BA7 /* VoiceCallView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A8840F1060850B851B45663 /* VoiceCallView.swift */; };
 		14FAEF7AA8F9766C17935525 /* DeveloperDiagnosticsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71E59AFA3D1ABAFB10F4588D /* DeveloperDiagnosticsView.swift */; };
 		16A47601CAC86406ED514264 /* AppSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4A1A02E95EBC929BFA1E294 /* AppSettings.swift */; };
@@ -188,6 +190,7 @@
 		BB4DABB9DB1988621A9AAD2B /* ChatDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD74366D444F383B878ADE17 /* ChatDetailView.swift */; };
 		BD82D505C1ED53727C57548F /* MLXLLM in Frameworks */ = {isa = PBXBuildFile; productRef = 3644E5838BEC3A2E12593D42 /* MLXLLM */; };
 		BFA8B3A11AEA1055D6EAE332 /* TokenEstimatorCacheTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23F85BE1E19778D837C293DC /* TokenEstimatorCacheTests.swift */; };
+		C2739482E0399B75DA94FC3A /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 9BE14A17C620C75643C89F12 /* PrivacyInfo.xcprivacy */; };
 		C3255CC2686294D3AC8EB739 /* NLExtractionPass.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DA90D3CD0DAC38466D0F263 /* NLExtractionPass.swift */; };
 		C3AC682A8EBD1BCB997D5A06 /* UserMemoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2DE8C44856B796D2702D6001 /* UserMemoryStore.swift */; };
 		C43FB02E414CBE68FE08A857 /* ConversationRuntimeSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51C028E2DB46A4B748E32CD6 /* ConversationRuntimeSession.swift */; };
@@ -215,6 +218,7 @@
 		DD8FB7DD5BB4D5E958E5409D /* HHScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6AB838E7C6BD87C2B41AC8AA /* HHScreen.swift */; };
 		DF791AF833ADC64FC847EB65 /* WidgetRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAD5DE0125D0E15A89AE6065 /* WidgetRenderer.swift */; };
 		DF8C2F81A5E589755F3F453F /* HomeKitSkill.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E0C0CBC0663CD6F3E7EB586 /* HomeKitSkill.swift */; };
+		E1C963D7E80262A84FE576E6 /* PromptBudgetSheddingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 82806F3DD611E849A1D8130D /* PromptBudgetSheddingTests.swift */; };
 		E2350E86142A4C42F774B8F8 /* MemoryServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 385DF27F2323F418E3404652 /* MemoryServiceTests.swift */; };
 		E67163491D28858D49ABD3DA /* KnowledgeBaseStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22A7EE84FD139ED699ADC692 /* KnowledgeBaseStore.swift */; };
 		E7717608A4F814BABD7A9C19 /* CachingWebSearchEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 083604E05306960561B6BBDC /* CachingWebSearchEngine.swift */; };
@@ -321,6 +325,7 @@
 		26A8844885601746CF081920 /* LoadProgressThrottleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoadProgressThrottleTests.swift; sourceTree = "<group>"; };
 		287FC089939B42C75F581C3D /* CalculatorSkill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalculatorSkill.swift; sourceTree = "<group>"; };
 		291904E21323E8F8CFF20A5A /* HomeHub.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = HomeHub.entitlements; sourceTree = "<group>"; };
+		297856558B145DE237D04917 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		2997D1B83AB30BF53418D586 /* OnboardingFlowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingFlowView.swift; sourceTree = "<group>"; };
 		2A8505D0E222EDD4A76D7F79 /* DocumentChunker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentChunker.swift; sourceTree = "<group>"; };
 		2D3068CA7795D7498ADCE550 /* MainTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainTabView.swift; sourceTree = "<group>"; };
@@ -401,6 +406,8 @@
 		7E0C0CBC0663CD6F3E7EB586 /* HomeKitSkill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeKitSkill.swift; sourceTree = "<group>"; };
 		7F62558DF30DAEBF0FAE53D0 /* DocumentEmbedder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentEmbedder.swift; sourceTree = "<group>"; };
 		80907DFA568CA36B49A48D00 /* UserMemoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserMemoryView.swift; sourceTree = "<group>"; };
+		8140DD20BB9381BAC4EACFA2 /* MLXVisionInputPathTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MLXVisionInputPathTests.swift; sourceTree = "<group>"; };
+		82806F3DD611E849A1D8130D /* PromptBudgetSheddingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PromptBudgetSheddingTests.swift; sourceTree = "<group>"; };
 		82A2E4A3B6B3790456B2C1F0 /* SummarizationServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SummarizationServiceTests.swift; sourceTree = "<group>"; };
 		89062DD40E73F06FE2CA9AFB /* OnboardingAssistantStyleView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingAssistantStyleView.swift; sourceTree = "<group>"; };
 		8936EBEB9DCAC133B99EF26C /* LocalModelService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalModelService.swift; sourceTree = "<group>"; };
@@ -424,6 +431,7 @@
 		9ACB0973427987485E38CF9D /* URL+StaticLiteral.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "URL+StaticLiteral.swift"; sourceTree = "<group>"; };
 		9BB206CAB60E7C11402EE63B /* DeepLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeepLink.swift; sourceTree = "<group>"; };
 		9BE00F466486DEAC0E2650F3 /* ImagePromptCommandTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImagePromptCommandTests.swift; sourceTree = "<group>"; };
+		9BE14A17C620C75643C89F12 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		9DDAC1ADDCAA036F24953348 /* PromptTokenBudgeterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PromptTokenBudgeterTests.swift; sourceTree = "<group>"; };
 		A0331937FD8BE5947933D67C /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
 		A134E1B2C695D7EB07C8179F /* IngestJobStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IngestJobStore.swift; sourceTree = "<group>"; };
@@ -505,6 +513,7 @@
 		F4E712C2A2B9D22EA0517C38 /* ArtifactView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArtifactView.swift; sourceTree = "<group>"; };
 		F6E161D67BCC83C25AA3F67C /* SystemPromptManagerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemPromptManagerView.swift; sourceTree = "<group>"; };
 		F7C358644F9FBE72193E634A /* OnboardingModelPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingModelPickerView.swift; sourceTree = "<group>"; };
+		F8F2E08818AC61CF870BA147 /* ToolInjectionGuardTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolInjectionGuardTests.swift; sourceTree = "<group>"; };
 		FAD68AC867F11BD32F9AA663 /* MLXHardeningTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MLXHardeningTests.swift; sourceTree = "<group>"; };
 		FB23E314497A6A7DE50575D8 /* MessageImportance.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageImportance.swift; sourceTree = "<group>"; };
 		FBAE7DE844F8AA59B0950B96 /* PromptBudgetReporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PromptBudgetReporter.swift; sourceTree = "<group>"; };
@@ -789,6 +798,8 @@
 			children = (
 				8ACB7AD6B67FD0E795922245 /* Assets.xcassets */,
 				291904E21323E8F8CFF20A5A /* HomeHub.entitlements */,
+				297856558B145DE237D04917 /* Info.plist */,
+				9BE14A17C620C75643C89F12 /* PrivacyInfo.xcprivacy */,
 				4508AE6DF7AD1E3250725AC6 /* App */,
 				0D1A13E6A6DE62350D62D666 /* DesignSystem */,
 				006999C4981733E529F2C0D0 /* Features */,
@@ -933,6 +944,7 @@
 				FAD68AC867F11BD32F9AA663 /* MLXHardeningTests.swift */,
 				3C249D3C58DAE5D178D3E1C0 /* MLXIntegrationTests.swift */,
 				ADD4E25F5DFF5967F1506916 /* MLXRuntimeManagerTests.swift */,
+				8140DD20BB9381BAC4EACFA2 /* MLXVisionInputPathTests.swift */,
 				E6C56EBE1665161CD6E39B67 /* ModelCapabilityProfileTests.swift */,
 				1E8F0A241288CD9D9A9BAC04 /* ModelCatalogMLXFirstTests.swift */,
 				149D5CEB395DB0533A6D2706 /* ModelImportTests.swift */,
@@ -942,6 +954,7 @@
 				4BD8C51C7925A000E0ACC102 /* PersistenceRoundtripTests.swift */,
 				262B268D586046808ED3954F /* PressureRingbufferTests.swift */,
 				2492104C44B30C7B88503EBC /* PromptAssemblyTests.swift */,
+				82806F3DD611E849A1D8130D /* PromptBudgetSheddingTests.swift */,
 				429BFF53A90FF508F54D7520 /* PromptBuilderRailSplitTests.swift */,
 				44C6CD92457FB6C42115B299 /* PromptModeAssemblyTests.swift */,
 				92D0F0AA299697C9F7EE8F3A /* PromptStabilityTests.swift */,
@@ -954,6 +967,7 @@
 				BEF86EF53AC6FD924A5DCED4 /* SwiftDataStoreTests.swift */,
 				23F85BE1E19778D837C293DC /* TokenEstimatorCacheTests.swift */,
 				63639F95FB7A6B1763D7FDE1 /* ToolCallEnvelopeTests.swift */,
+				F8F2E08818AC61CF870BA147 /* ToolInjectionGuardTests.swift */,
 				1AABA4286FDCE3C4143BDAE9 /* ToolObservationTests.swift */,
 				34CFC9682B7445C2C3F878C0 /* WebSearchServiceTests.swift */,
 				CB7BBFC71C3F75C6995DE948 /* WebSearchSnippetCleanupTests.swift */,
@@ -1055,15 +1069,19 @@
 				LastUpgradeCheck = 1540;
 				TargetAttributes = {
 					0CD9FB03CB4A437F090A41D5 = {
+						DevelopmentTeam = 8Y755TXDN8;
 						ProvisioningStyle = Automatic;
 					};
 					0F61A399A9FC5475945573AB = {
+						DevelopmentTeam = 8Y755TXDN8;
 						ProvisioningStyle = Automatic;
 					};
 					27DF3E3541C53527ABBE7AE8 = {
+						DevelopmentTeam = 8Y755TXDN8;
 						ProvisioningStyle = Automatic;
 					};
 					BCE3B88C507A9E6C6664FA6D = {
+						DevelopmentTeam = 8Y755TXDN8;
 						ProvisioningStyle = Automatic;
 					};
 				};
@@ -1103,6 +1121,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				9D5B684F9F258E2111DFA7E7 /* Assets.xcassets in Resources */,
+				C2739482E0399B75DA94FC3A /* PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1327,6 +1346,7 @@
 				5EDFED45DB90D4206D584F88 /* MLXHardeningTests.swift in Sources */,
 				422D4454521F209BB14FC9C1 /* MLXIntegrationTests.swift in Sources */,
 				7AF2D364C0144AB77338FB86 /* MLXRuntimeManagerTests.swift in Sources */,
+				0C740F0C73EBB529D13CB5B5 /* MLXVisionInputPathTests.swift in Sources */,
 				946F63C65AF3B032880F4CD7 /* MarkdownContentTests.swift in Sources */,
 				0076860D20E30488E3A81BF4 /* MemoryExtractionTests.swift in Sources */,
 				B0CDB87E10C37EF44AAD73C4 /* MemoryPersistenceTests.swift in Sources */,
@@ -1343,6 +1363,7 @@
 				722A7E7C71F77514A4202545 /* PersistenceRoundtripTests.swift in Sources */,
 				8FB757EF44C1991C2B9E8734 /* PressureRingbufferTests.swift in Sources */,
 				5D2BD1C5646329993DD94ABC /* PromptAssemblyTests.swift in Sources */,
+				E1C963D7E80262A84FE576E6 /* PromptBudgetSheddingTests.swift in Sources */,
 				ACF06159F49443B878203FA0 /* PromptBuilderRailSplitTests.swift in Sources */,
 				F765D14126ACB6D9AF8BFCB7 /* PromptModeAssemblyTests.swift in Sources */,
 				2BC96096B45830EFD1A72FC0 /* PromptStabilityTests.swift in Sources */,
@@ -1355,6 +1376,7 @@
 				0CB136DBBBCACB4CFF8D0988 /* SwiftDataStoreTests.swift in Sources */,
 				BFA8B3A11AEA1055D6EAE332 /* TokenEstimatorCacheTests.swift in Sources */,
 				A2108DEF40DC9276F5B7E512 /* ToolCallEnvelopeTests.swift in Sources */,
+				127088DA725AE4332C90E39D /* ToolInjectionGuardTests.swift in Sources */,
 				7A2A4D32709722ADAB87F9D5 /* ToolObservationTests.swift in Sources */,
 				CF4C6550C9BA28937A272825 /* WebSearchServiceTests.swift in Sources */,
 				9BEC190AEA5714F14F431BC8 /* WebSearchSnippetCleanupTests.swift in Sources */,
@@ -1454,6 +1476,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = 8Y755TXDN8;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
@@ -1484,10 +1507,19 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = HomeHub/HomeHub.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
+				INFOPLIST_FILE = HomeHub/Info.plist;
 				INFOPLIST_KEY_BGTaskSchedulerPermittedIdentifiers = cz.keksiczek.homehub.ingest;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
+				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "Plný přístup ke kalendáři umožní asistentovi číst i zapisovat události, když ho o to požádáš.";
+				INFOPLIST_KEY_NSCalendarsUsageDescription = "Přístup ke kalendáři umožní asistentovi číst a vytvářet události, když ho o to požádáš.";
+				INFOPLIST_KEY_NSHomeKitUsageDescription = "Přístup k HomeKitu potřebujeme, aby asistent mohl na tvůj pokyn ovládat chytrá zařízení v domácnosti.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Mikrofon používáme jen pro hlasovou konverzaci s asistentem. Nahrávka se zpracuje přímo v zařízení a nikam se neodesílá.";
+				INFOPLIST_KEY_NSRemindersFullAccessUsageDescription = "Plný přístup k připomínkám umožní asistentovi číst i zapisovat připomínky, když ho o to požádáš.";
+				INFOPLIST_KEY_NSRemindersUsageDescription = "Přístup k připomínkám umožní asistentovi číst a vytvářet připomínky, když ho o to požádáš.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Rozpoznávání řeči převádí tvůj hlas na text pro asistenta. Probíhá on-device, mimo zařízení nic neodchází.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UIBackgroundModes = processing;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
@@ -1495,15 +1527,9 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				NSCalendarsFullAccessUsageDescription = "Pro plnou práci s kalendářem (čtení i zápis událostí) přes asistenta na iOS 17+.";
-				NSCalendarsUsageDescription = "Pro čtení a vytváření událostí v kalendáři přes asistenta.";
-				NSHomeKitUsageDescription = "Pro ovládání chytrých zařízení v domácnosti přes asistenta.";
-				NSMicrophoneUsageDescription = "Potřebujeme mikrofon pro možnost hlasové konverzace offline.";
-				NSRemindersFullAccessUsageDescription = "Pro plnou práci s připomínkami (čtení i zápis) přes asistenta na iOS 17+.";
-				NSRemindersUsageDescription = "Pro čtení a vytváření připomínek přes asistenta.";
-				NSSpeechRecognitionUsageDescription = "Nativní rozpoznávání hovoru pro diktování přes Apple infrastrukturu beze slov mimo zařízení.";
 				PRODUCT_BUNDLE_IDENTIFIER = cz.keksiczek.homehub;
 				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) HOMEHUB_HAS_KERNEL_ENTITLEMENTS";
 				SWIFT_OBJC_BRIDGING_HEADER = "HomeHub/Runtime/Bridge/HomeHub-Bridging-Header.h";
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -1570,10 +1596,19 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = HomeHub/HomeHub.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
+				INFOPLIST_FILE = HomeHub/Info.plist;
 				INFOPLIST_KEY_BGTaskSchedulerPermittedIdentifiers = cz.keksiczek.homehub.ingest;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
+				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "Plný přístup ke kalendáři umožní asistentovi číst i zapisovat události, když ho o to požádáš.";
+				INFOPLIST_KEY_NSCalendarsUsageDescription = "Přístup ke kalendáři umožní asistentovi číst a vytvářet události, když ho o to požádáš.";
+				INFOPLIST_KEY_NSHomeKitUsageDescription = "Přístup k HomeKitu potřebujeme, aby asistent mohl na tvůj pokyn ovládat chytrá zařízení v domácnosti.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Mikrofon používáme jen pro hlasovou konverzaci s asistentem. Nahrávka se zpracuje přímo v zařízení a nikam se neodesílá.";
+				INFOPLIST_KEY_NSRemindersFullAccessUsageDescription = "Plný přístup k připomínkám umožní asistentovi číst i zapisovat připomínky, když ho o to požádáš.";
+				INFOPLIST_KEY_NSRemindersUsageDescription = "Přístup k připomínkám umožní asistentovi číst a vytvářet připomínky, když ho o to požádáš.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Rozpoznávání řeči převádí tvůj hlas na text pro asistenta. Probíhá on-device, mimo zařízení nic neodchází.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UIBackgroundModes = processing;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
@@ -1581,15 +1616,9 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				NSCalendarsFullAccessUsageDescription = "Pro plnou práci s kalendářem (čtení i zápis událostí) přes asistenta na iOS 17+.";
-				NSCalendarsUsageDescription = "Pro čtení a vytváření událostí v kalendáři přes asistenta.";
-				NSHomeKitUsageDescription = "Pro ovládání chytrých zařízení v domácnosti přes asistenta.";
-				NSMicrophoneUsageDescription = "Potřebujeme mikrofon pro možnost hlasové konverzace offline.";
-				NSRemindersFullAccessUsageDescription = "Pro plnou práci s připomínkami (čtení i zápis) přes asistenta na iOS 17+.";
-				NSRemindersUsageDescription = "Pro čtení a vytváření připomínek přes asistenta.";
-				NSSpeechRecognitionUsageDescription = "Nativní rozpoznávání hovoru pro diktování přes Apple infrastrukturu beze slov mimo zařízení.";
 				PRODUCT_BUNDLE_IDENTIFIER = cz.keksiczek.homehub;
 				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) HOMEHUB_HAS_KERNEL_ENTITLEMENTS";
 				SWIFT_OBJC_BRIDGING_HEADER = "HomeHub/Runtime/Bridge/HomeHub-Bridging-Header.h";
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -1631,6 +1660,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = 8Y755TXDN8;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;

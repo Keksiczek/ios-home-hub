@@ -3,9 +3,21 @@ import MLXLMCommon
 
 /// Narrow protocol for the model container, allowing mocks in tests.
 protocol MLXModelContainer: Sendable {
+    /// Run `action` against the model's context.
+    ///
+    /// Declared `throws`, not `rethrows`. `rethrows` would restrict a conformer
+    /// to failing only when `action` itself fails, which is fine for the real
+    /// `ModelContainer` but leaves a stub with **no way to say "I cannot run
+    /// inference"** — it can only trap. That is exactly what the test fake did,
+    /// and a trap during normal test execution kills the runner and takes every
+    /// other result in the run with it.
+    ///
+    /// A `rethrows` function satisfies a `throws` requirement, so
+    /// `extension ModelContainer: MLXModelContainer {}` below still conforms
+    /// unchanged and real call sites keep their existing behaviour.
     func perform<R: Sendable>(
         _ action: @Sendable (ModelContext) async throws -> sending R
-    ) async rethrows -> sending R
+    ) async throws -> sending R
 }
 
 extension ModelContainer: MLXModelContainer {}

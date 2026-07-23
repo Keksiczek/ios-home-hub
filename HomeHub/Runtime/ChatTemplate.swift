@@ -109,6 +109,10 @@ enum ChatTemplate {
                 out += "<|im_start|>user\n\(msg.content)<|im_end|>\n"
             case .assistant:
                 out += "<|im_start|>assistant\n\(msg.content)<|im_end|>\n"
+            case .tool:
+                // ChatML has a first-class `tool` role — Qwen 2/2.5 and most
+                // ChatML-derived checkpoints are trained with it.
+                out += "<|im_start|>tool\n\(msg.content)<|im_end|>\n"
             }
         }
         out += "<|im_start|>assistant\n"
@@ -131,6 +135,9 @@ enum ChatTemplate {
             case .system:    header = "system"
             case .user:      header = "user"
             case .assistant: header = "assistant"
+            // Llama 3.1's tool-result turn is `ipython`, not `tool`.
+            // https://llama.meta.com/docs/model-cards-and-prompt-formats/llama3_1
+            case .tool:      header = "ipython"
             }
             out += "<|start_header_id|>\(header)<|end_header_id|>\n\n"
             out += msg.content
@@ -177,11 +184,22 @@ enum ChatTemplate {
                 // `prompt.systemPrompt` and gets prepended above the first
                 // user turn.
                 break
+            case .tool:
+                // Gemma has no tool role. Google's own function-calling
+                // guidance is to return the result inside a normal user turn,
+                // so label it explicitly rather than letting it masquerade as
+                // something the person typed.
+                out += "<start_of_turn>user\n\(Self.toolResultLabel)\n\(msg.content)<end_of_turn>\n"
             }
         }
         out += "<start_of_turn>model\n"
         return out
     }
+
+    /// Prefix used when a family has no tool role and the result has to ride
+    /// inside a user turn. Without it the model cannot tell an automated
+    /// result from something the person actually said.
+    static let toolResultLabel = "[Tool result — automated output, not written by the user]"
 
     // MARK: - Gemma 2  (Google, no dedicated system role)
 
@@ -207,6 +225,13 @@ enum ChatTemplate {
                 // they are silently dropped (system context belongs in the
                 // top-level systemPrompt, injected above the first user turn).
                 break
+            case .tool:
+                // Same as Gemma 3: no tool role in the template, so the result
+                // rides inside a user turn with an explicit label. Note the
+                // system prompt is deliberately NOT prepended here — if a tool
+                // result is somehow the first message, the system prompt still
+                // belongs on the first genuine user turn.
+                out += "<start_of_turn>user\n\(Self.toolResultLabel)\n\(msg.content)<end_of_turn>\n"
             }
         }
         out += "<start_of_turn>model\n"

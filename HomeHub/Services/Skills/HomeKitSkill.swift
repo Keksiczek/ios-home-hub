@@ -49,6 +49,22 @@ struct HomeKitSkill: Skill {
     /// will surface a `.noHomeFound` error if the user revoked access.
     var availability: SkillAvailability { .enabled }
 
+    /// Everything except an explicit status read physically changes the home.
+    ///
+    /// Same fail-closed shape as Reminders: `execute` treats "status" and the
+    /// empty string as the read path and routes everything else into
+    /// `applyChanges`, so this mirrors that boundary rather than guessing which
+    /// payloads look like writes.
+    ///
+    /// Note the read path is itself part of the injection chain even though it
+    /// changes nothing — `HomeKitSearch` with "status" enumerates every
+    /// accessory name, which is exactly what an injected instruction needs
+    /// before it can target one. Blocking the *write* is what breaks the chain.
+    func isStateChanging(input: String) -> Bool {
+        let clean = input.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return !(clean == "status" || clean.isEmpty)
+    }
+
     func execute(input: String) async throws -> String {
         let manager = await HomeKitManager.shared.ensureReady()
 
