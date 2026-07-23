@@ -394,11 +394,16 @@ enum PromptBuilder {
                 řekni "Nevím." — neopisuj otázku.
                 """
             }
+            // "Use bullet lists for enumerations" reads as balanced guidance to
+            // a large model and as a standing instruction to a small one, which
+            // then bullets everything. Inverted to make prose the default and
+            // lists the exception, which is what the sentence always meant.
             return """
             Answer length — Balanced:
             Give a short direct answer, then 1–2 lines of supporting \
-            context. Use bullet lists for enumerations, prose for everything \
-            else. No filler.
+            context. Write in prose by default; use a bullet list only when \
+            the content is genuinely an enumeration of parallel items. \
+            No filler.
             """
         case .detailed:
             if isWeak {

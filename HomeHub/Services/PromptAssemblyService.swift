@@ -304,6 +304,26 @@ final class PromptAssemblyService {
             Always answer with at least 2 complete sentences. \
             If you cannot answer the question, briefly explain why.
             """)
+
+            // Anti-mimicry rail. Small models reproduce the dominant surface
+            // structure of their context, and this system prompt is mostly
+            // bulleted rule blocks — `PromptBuilder.toolPolicyBlock` alone
+            // emits 4-6 lines all starting with "- " when WebSearch is on,
+            // which on a ~1500-token prompt is a large share of what the model
+            // sees. The observed result on Gemma 2 2B was a reply formatted as
+            // three bullets no matter what was asked.
+            //
+            // Naming the cause works better on small checkpoints than a bare
+            // "don't use lists": they follow rules that come with a reason far
+            // more reliably than prohibitions. Kept to three sentences because
+            // this is the tier that can least afford the tokens.
+            stableChunks.append("""
+            Formatting: write your reply as ordinary prose sentences. The \
+            instructions above are written as bullet lists for your reference \
+            only — do not copy that shape into your answer. Use bullets ONLY \
+            when the user explicitly asks for a list, or when the answer really \
+            is three or more parallel items of the same kind.
+            """)
         }
 
         // L0a''. Explain the <context> envelope (STABLE — same wording every
