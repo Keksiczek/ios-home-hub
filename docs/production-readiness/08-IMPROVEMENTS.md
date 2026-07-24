@@ -324,3 +324,84 @@ step, and C1 turned out to be small rather than medium.
 **Nothing here is blocked on a library question any more.** The remaining
 unknowns are all measurements that need the device: decode throughput, prefill
 cost, and whether more context helps or hurts a 2 B checkpoint.
+
+---
+
+## E · The bar to clear — Noema (studied 2026-07-24)
+
+The owner found **Noema — Local AI & Offline LLM** (App Store id6751169935) on
+their phone and set it as **the benchmark in the sense of a standard**: this is
+the level HomeHub has to reach, as a whole product. Not a list of features to
+copy one at a time — the point is that Noema is a finished, coherent app in
+exactly our category, and the distance between it and HomeHub is the real
+backlog.
+
+It is a close competitor by construction — llama.cpp + MLX + CoreML + Apple
+Foundation Models, on-device RAG, web search with citations, model routing,
+multi-platform. That overlap is what makes it a fair yardstick: where it has
+something we don't, the gap is a genuine product gap rather than a difference in
+taste.
+
+### Where it currently stands (from its listing + release notes)
+
+| Area | Noema | HomeHub today |
+|---|---|---|
+| Runtimes | GGUF, MLX, ExecuTorch, CoreML, Apple Foundation Models | MLX (+ llama.cpp opt-in, AFM wired) |
+| Platforms | iPhone, iPad, Mac, visionOS | iPhone, iPad |
+| RAG | PDF/EPUB/text ingest, curated **Knowledge Packs** | ingest works; no packs |
+| Web | search + opens pages, citations in chat | search + FetchPage, citations |
+| Routing | **Autopilot** — routes by message difficulty, local *or* remote | `ModelRouter` (local only) |
+| Remote | OpenRouter, LM Studio, **MCP servers** | none |
+| Memory fit | FlashAttention + **V-cache quantization** | neither (A2 is exactly this) |
+| Long chats | **context compaction** | layer shedding (F-201) |
+| Voice | on-device voice mode (beta) | `SFSpeechRecognizer` only |
+| Reach | 11 languages, Siri intents | Czech-first, intents present |
+| Exotic | **"Overfit"** — streams experts from storage to exceed RAM | — |
+| Network | **Off-grid master switch**, HF-mirror endpoint choice | per-feature toggles only |
+| Settings | Simple/Advanced split, device+thermal overview | one flat advanced surface |
+| Chat UI | context-budget meter in status drawer | computed but Console-only |
+
+### What actually closes the distance
+
+Ordered by how much ground each covers, not by ease:
+
+1. **Reliability first — we are not yet at the starting line.** Noema's whole
+   list assumes generation works. HomeHub currently cannot generate at all
+   (F-012), and the Qwen family could not load (F-013). Nothing else on this
+   page matters until the owner can hold a conversation without a crash. This is
+   the single biggest gap and it is not a feature gap.
+2. **Model breadth that actually runs.** Their advantage is not the runtime
+   count, it is that models load and produce tokens. Our catalog is larger on
+   paper and smaller in practice. The F-010 rule (a catalog entry must be run on
+   hardware) is what converts one into the other.
+3. **Memory fit — A2 (quantized KV cache).** They ship V-cache quantization to
+   make bigger models fit on more devices; we have the same capability available
+   and unused, and it is also the lever on F-104. Independent corroboration that
+   A2 is correctly prioritised.
+4. **Off-grid switch + HF mirror (E-net).** Both are small. The mirror is
+   directly relevant to the unresolved download problems; the off-grid switch is
+   the clearest possible statement of a local-first promise.
+5. **Context-budget meter in chat.** We already compute every number
+   (`PromptBudgetReport`); it only goes to Console. Surfacing it is cheap and
+   makes F-104's behaviour self-explaining to the user.
+6. **Knowledge Packs.** Curated public-domain corpora (survival, first aid,
+   emergency prep, World Factbook). Our KB can already ingest; packs make it
+   useful on first launch and fit an offline-first product.
+7. **Simple/Advanced settings split.** Our settings have grown a lot of developer
+   surface. A segmented control keeps it without overwhelming a normal user.
+8. **Later, deliberately:** remote endpoints + MCP, context compaction, voice
+   mode, localisation, "Overfit". Each is real work and none of it helps until
+   1–3 are done.
+
+**Explicitly low priority: their Benchmarking Center.** Noted only because it
+exists. Our own need for measurement (F-104's real budgets, the deep-search
+latency table, proving A2/A3 are worth it) is better served by targeted
+instrumentation on the owner's device than by a user-facing benchmark tab.
+
+### Where HomeHub is already ahead
+
+Worth stating so the comparison stays honest, and so these are not traded away
+while chasing breadth: the information-flow prompt-injection guard (F-301), the
+SSRF-hardened fetch path (F-303), entitlement-aware memory tiers, and the
+silent-failure work have no visible counterpart in their listing. The security
+posture is ours to keep.

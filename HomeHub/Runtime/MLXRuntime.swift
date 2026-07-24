@@ -31,29 +31,74 @@ private final class ProgressLogThrottle: @unchecked Sendable {
     var lastLoggedFraction: Double = -1
 }
 
-/// Records the first MLX-internal error reported during a generation so the
-/// decode loop can throw a normal Swift error instead of dying.
+/// Records the first MLX-internal error so the decode loop can throw a normal
+/// Swift error instead of the process dying.
 ///
-/// F-012: an internal MLX failure (e.g. the repetition-penalty `where()`
-/// broadcast crash seen in device crash reports) calls MLX's default error
-/// handler, which `assertionFailure`s — an uncatchable `SIGTRAP` that kills the
-/// whole app. Wrapping the decode in `MLX.withErrorHandler` redirects that into
-/// this box; the loop then throws `RuntimeError.underlying`, which the existing
-/// generation `catch` turns into a clean `.failed` turn. The wrap is strictly
-/// safe: if the error fires on a thread outside the handler's scope, MLX still
-/// aborts exactly as it does today — the box simply never fills. It can never
-/// make generation worse, only sometimes rescue it.
+/// F-012: an internal MLX failure calls MLX's default error handler, which
+/// `assertionFailure`s — an uncatchable `SIGTRAP` that kills the whole app.
 ///
-/// `@unchecked Sendable`: an `NSLock` guards the single field. The handler
-/// (invoked on MLX's compute thread) writes; the decode loop reads.
-private final class MLXGenerationErrorFlag: @unchecked Sendable {
+/// **This box is filled by a GLOBAL handler, deliberately.** The first attempt
+/// used a scoped `MLX.withErrorHandler` around the decode loop; device crash
+/// reports proved it never fires. The stack shows why: MLX evaluates inside
+/// `ChatSession.streamMap`'s *own* detached task
+/// (`completeTaskWithClosure` on `com.apple.root.default-qos.cooperative`,
+/// under `SerialAccessContainer.update` → `AsyncMutex.withLock`), which is a
+/// different task from the consumer loop — so a scope installed around the
+/// consumer is simply not active where the error is raised. A process-wide
+/// handler has no such gap.
+///
+/// `@unchecked Sendable`: an `NSLock` guards the single field. The handler runs
+/// on whichever thread MLX raised the error on; the decode loop reads.
+final class MLXInternalErrorBox: @unchecked Sendable {
+    static let shared = MLXInternalErrorBox()
+
     private let lock = NSLock()
     private var _message: String?
+
     func record(_ message: String) {
         lock.withLock { if _message == nil { _message = message } }
     }
-    var message: String? { lock.withLock { _message } }
+
+    /// Reads and clears, so one failed generation cannot poison the next.
+    func take() -> String? {
+        lock.withLock { defer { _message = nil }; return _message }
+    }
+
+    func clear() { lock.withLock { _message = nil } }
 }
+
+/// C-compatible MLX error handler. Must be a top-level closure with no captures
+/// — `mlx_set_error_handler` takes a `@convention(c)` pointer — so it reaches
+/// the box through the shared singleton rather than a captured reference.
+private let mlxInternalErrorHandler:
+    @convention(c) (UnsafePointer<CChar>?, UnsafeMutableRawPointer?) -> Void = { message, _ in
+        let text = message.map { String(cString: $0) } ?? "(unknown MLX error)"
+        MLXInternalErrorBox.shared.record(text)
+    }
+
+/// Installs the process-wide MLX error handler exactly once.
+///
+/// Replacing the default handler is what stops MLX from calling
+/// `assertionFailure` on an internal error. Execution continues with poisoned
+/// arrays, so every caller that can observe an MLX error MUST check
+/// `MLXInternalErrorBox.shared` and abandon the work rather than using the
+/// result.
+///
+/// `setErrorHandler` is formally deprecated in favour of the scoped
+/// `withErrorHandler`, but the scoped variant provably cannot cover MLX's own
+/// task (see `MLXInternalErrorBox`), so the global installer is the correct
+/// tool here. The one deprecation warning this produces is deliberate and
+/// preferable to an uncatchable process abort.
+func installMLXInternalErrorHandlerIfNeeded() {
+    _ = mlxErrorHandlerInstalled
+}
+
+/// `let` rather than a function body so the installation runs exactly once per
+/// process, lazily and thread-safely, no matter how many `MLXRuntime`s are made.
+private let mlxErrorHandlerInstalled: Bool = {
+    MLX.setErrorHandler(mlxInternalErrorHandler)
+    return true
+}()
 
 /// MLX-backed local runtime for Apple Silicon — the primary backend.
 ///
@@ -430,6 +475,13 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
 
     init(loader: any MLXLoader = DefaultMLXLoader()) {
         self.loader = loader
+
+        // F-012: replace MLX's default error handler before any MLX work runs.
+        // The default calls `assertionFailure` on an internal error, which is an
+        // uncatchable SIGTRAP that kills the app; ours records into
+        // `MLXInternalErrorBox` so the decode loop can fail the turn instead.
+        // Idempotent — the installer runs exactly once per process.
+        installMLXInternalErrorHandlerIfNeeded()
         // Configure MLX GPU memory cache limit using the *minimum* of two budgets:
         //   1. DeviceMemoryProvider — how much RAM the sandbox actually has.
         //   2. HardwareCapabilities  — how much we trust this SoC's Metal stack.
@@ -1053,9 +1105,44 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                 // so the sampler short-circuits the bookkeeping.
                 // `repetitionContextSize` mirrors the legacy llama.cpp
                 // `repeat_last_n` setting.
-                let repetitionPenalty: Float? = parameters.repeatPenalty > 1.0
-                    ? Float(parameters.repeatPenalty)
-                    : nil
+                // ⚠️ F-012: repetition penalty is DISABLED — it makes this
+                // mlx-swift-lm revision crash the process on every generation.
+                //
+                // `GenerateParameters.processor()` builds a `RepetitionContext`
+                // whenever `repetitionPenalty != nil && repetitionContextSize > 0`.
+                // That context's `TokenRing.loadPrompt` reads the prompt length as
+                // `prompt.dim(0)` — but the prompt arrives rank-2 (`[1, seqLen]`),
+                // so `dim(0)` is the BATCH size (1), not the sequence length:
+                //
+                //     n = 1  →  padding = zeros[capacity - 1]
+                //     buffer = concat(flatten(prompt) /* [seqLen] */, padding)
+                //            = [seqLen + capacity - 1]        ← not [capacity]
+                //
+                // `TokenRing.append` then evaluates
+                // `MLX.where(mask[capacity], token, buffer[seqLen + capacity - 1])`,
+                // whose shapes cannot broadcast. MLX raises an internal error, its
+                // default handler calls `assertionFailure`, and the process dies on
+                // an uncatchable SIGTRAP. A 1-D prompt would work in either branch,
+                // so the rank-2 path is the only way this can fail — which is why
+                // it reproduces on *every* prompt longer than a single token,
+                // including the 4-token post-load smoke test.
+                //
+                // Confirmed on device: seven crash reports, all with the identical
+                // stack (`mlx_where → TokenRing.append → RepetitionContext.didSample`).
+                // Since `repeatPenalty` defaults to 1.1 this fired on every model,
+                // which is why generation appeared broken app-wide.
+                //
+                // Passing `nil` means `processor()` never constructs the context, so
+                // the buggy code path cannot be reached at all. The sampler's
+                // temperature / topK / topP / minP still apply.
+                //
+                // Cost: the anti-repetition pressure that originally fixed Czech
+                // replies bleeding Russian/Spanish tokens is gone. Restoring it
+                // needs a correct `LogitProcessor` of our own (see
+                // `08-IMPROVEMENTS.md` A1) or an upstream fix — NOT re-enabling
+                // this flag. Re-enable only after verifying `TokenRing.loadPrompt`
+                // handles a rank-2 prompt.
+                let repetitionPenalty: Float? = nil
 
                 let generateParameters = GenerateParameters(
                     maxTokens: parameters.maxTokens,
@@ -1064,7 +1151,7 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                     topK: parameters.topK,
                     minP: Float(parameters.minP),
                     repetitionPenalty: repetitionPenalty,
-                    repetitionContextSize: max(0, parameters.repeatPenaltyLastN)
+                    repetitionContextSize: 0
                 )
 
                 let start = Date()
@@ -1271,24 +1358,25 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                     )
                     watchdog.start()
 
-                    // F-012: redirect MLX-internal aborts into a catchable
-                    // throw. The default MLX error handler `assertionFailure`s
-                    // (uncatchable SIGTRAP → whole app dies); the scoped handler
-                    // records instead, and the loop throws on the next iteration
-                    // so the outer `catch` fails the turn cleanly. Strictly safe
-                    // — see `MLXGenerationErrorFlag`.
-                    let mlxErrorFlag = MLXGenerationErrorFlag()
-                    try await MLX.withErrorHandler({ [weak self] message in
-                        mlxErrorFlag.record(message)
-                        self?.log.error("MLX internal error during decode (F-012): \(message, privacy: .public)")
-                    }) {
+                    // F-012: MLX-internal errors must not kill the process.
+                    // The global handler (installed in `init`) records instead of
+                    // calling `assertionFailure`; this loop then converts the
+                    // recorded message into a normal throw. Cleared first so a
+                    // message left over from an earlier turn cannot fail this one.
+                    //
+                    // A scoped `MLX.withErrorHandler` was tried here and device
+                    // crash reports proved it never fires — MLX evaluates on its
+                    // own detached task, outside any scope installed around this
+                    // consumer loop. Hence the process-wide handler.
+                    MLXInternalErrorBox.shared.clear()
                     for try await piece in responseStream {
-                        if let mlxMessage = mlxErrorFlag.message {
+                        if let mlxMessage = MLXInternalErrorBox.shared.take() {
                             // Continuing would consume poisoned MLXArrays. Drop
                             // the cached session so the *next* turn rebuilds a
                             // clean prefix rather than reusing poisoned KV, then
                             // bail to the outer catch, which marks the turn
                             // failed.
+                            self.log.error("MLX internal error during decode (F-012): \(mlxMessage, privacy: .public)")
                             self.sessionLock.withLock { self.activeSession = nil }
                             throw RuntimeError.underlying("MLX internal error during generation: \(mlxMessage)")
                         }
@@ -1350,8 +1438,6 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                         }
                         if shouldStop { break }
                     }
-                    }  // MLX.withErrorHandler (F-012); loop body kept at prior
-                       // indentation so the wrap is a small, reviewable diff.
 
                     watchdog.stop()
 

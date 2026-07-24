@@ -1151,3 +1151,73 @@ at the tokenizer, before generation), so a non-Qwen model tripped this.
 Not fixed this session: the trigger cannot be confirmed without the device, and per
 the project rule ("say when you can't verify instead of guessing") the fix waits on
 that confirmation.
+
+---
+
+## Session 7 — F-012 root-caused and fixed (2026-07-24)
+
+### F-012 · CRITICAL · **ROOT CAUSE FOUND** — upstream rank bug made generation impossible
+
+Four more crash reports arrived from a build that already contained session 6's
+`withErrorHandler` wrap (bundle `57D7A4A7…`, 08:35–08:36). Same stack, four
+crashes in 25 seconds. Two conclusions, both important.
+
+**1. The scoped wrap does not work — and the stack says why.**
+
+MLX evaluates inside `ChatSession.streamMap`'s **own detached task**
+(`completeTaskWithClosure` on `com.apple.root.default-qos.cooperative`, under
+`SerialAccessContainer.update` → `AsyncMutex.withLock`), not on the consumer's
+task. A handler scoped around the consumer loop is therefore never active where
+the error is raised. Session 6 flagged this as a possible outcome; the device
+settled it. **Replaced with a process-wide handler** installed via
+`MLX.setErrorHandler` in `MLXRuntime.init` — no scope gap.
+
+**2. The real cause is an upstream rank bug, not something we could catch.**
+
+`TokenRing.loadPrompt` (mlx-swift-lm, `MLXLMCommon/Evaluate.swift`) reads the
+prompt length as `prompt.dim(0)`. The prompt arrives **rank-2 `[1, seqLen]`**, so
+`dim(0)` is the batch size (1), not the sequence length:
+
+```
+n = 1                      → padding = zeros[capacity - 1]
+buffer = concat(flatten(prompt) /* [seqLen] */, padding)
+       = [seqLen + capacity - 1]          ← not [capacity]
+```
+
+`TokenRing.append` then evaluates
+`MLX.where(mask[capacity], token, buffer[seqLen + capacity - 1])`, whose shapes
+cannot broadcast → MLX internal error → default handler `assertionFailure` →
+uncatchable SIGTRAP.
+
+The deduction is closed: `where` here can only fail when `buffer.count != capacity`,
+and a **1-D prompt cannot produce that** — short prompts pad to exactly
+`capacity`, long prompts slice to exactly `capacity`. The rank-2 branch is the
+only path that can fail, and it fails for every prompt longer than one token.
+
+**Severity is higher than first assessed.** `RuntimeParameters.repeatPenalty`
+defaults to **1.1** and `processor()` builds the `RepetitionContext` whenever
+`repetitionPenalty != nil && repetitionContextSize > 0` — so this fired on
+**every generation of every model**, including the 4-token post-load smoke test.
+The app could not produce a single token. That, not any per-model issue, is what
+the owner has been reporting for several rounds ("hodně modelů nefunguje",
+repeated crashes across different models).
+
+**It also re-diagnoses F-008.** Gemma 3 4B was withdrawn as "multimodal routed
+through the text path". Its breadcrumb signature — `generate.start maxTokens=4`
+then death — is exactly this sampler crash on the smoke test. Withdrawing Gemma
+"fixed" it only by stopping its smoke test from running. **Gemma 3 4B should be
+re-tested once this fix is on device**; its withdrawal may have been unnecessary.
+
+**Fix:** `repetitionPenalty` is passed as `nil` and `repetitionContextSize` as
+`0`, so the buggy context is never constructed. Sampling still has temperature /
+topK / topP / minP.
+
+**Cost, stated plainly:** the anti-repetition pressure that was added to stop
+Czech replies bleeding Russian/Spanish tokens is gone. It was never actually
+working in production — it crashed instead — so this is not a regression against
+observed behaviour, but the underlying quality risk returns. Restoring it needs
+either an upstream fix or our own `LogitProcessor` with a correct ring buffer
+(`08-IMPROVEMENTS.md` A1 — the protocol is public and this is a small, pure
+Swift ring). **Do not simply re-enable the flag.**
+
+**Status:** FIXED (crash path removed) · repetition-penalty quality: OPEN
