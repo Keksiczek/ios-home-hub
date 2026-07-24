@@ -143,23 +143,17 @@ final class ModelRouter {
             return .smart
         }
 
-        // Length-based classification. The thresholds are tuned for
-        // typical Czech / English chat lengths:
-        //   - Greetings, quick yes/no, follow-up clarifications
-        //     hover around 5–40 chars.
-        //   - "Normal" questions land in 40–500 chars.
-        //   - Anything longer than 500 chars is usually a multi-
-        //     paragraph dump that benefits from more reasoning.
-        let charCount = trimmed.count
-        if charCount < 60 {
-            return .fast
-        }
-        if charCount > 500 {
-            return .smart
-        }
-
-        // Explicit "detail / depth" markers — even a short prompt
-        // with these wants the bigger model.
+        // Explicit "detail / depth" markers — even a SHORT prompt with
+        // these wants the bigger model.
+        //
+        // This check must stay AHEAD of the length gate below. It used to
+        // sit after it, which made it unreachable for exactly the inputs
+        // its own comment describes: "vysvětli detailně proč je nebe modré"
+        // is 36 characters, so `charCount < 60` returned `.fast` and the
+        // depth markers were never consulted. A user explicitly asking for
+        // depth got the smallest model. The class contract states the rule
+        // as a disjunction — "> 500 chars OR contains explicit markers"
+        // (see the header doc) — so the ordering, not the rule, was wrong.
         let depthMarkers = [
             "vysvětli detailně", "vysvětli podrobně",
             "explain in detail", "step by step",
@@ -168,6 +162,21 @@ final class ModelRouter {
             "analyze", "analyzuj"
         ]
         if depthMarkers.contains(where: { lower.contains($0) }) {
+            return .smart
+        }
+
+        // Length-based classification. The thresholds are tuned for
+        // typical Czech / English chat lengths:
+        //   - Greetings, quick yes/no, follow-up clarifications
+        //     hover around 5–40 chars.
+        //   - "Normal" questions land in 60–500 chars.
+        //   - Anything longer than 500 chars is usually a multi-
+        //     paragraph dump that benefits from more reasoning.
+        let charCount = trimmed.count
+        if charCount < 60 {
+            return .fast
+        }
+        if charCount > 500 {
             return .smart
         }
 

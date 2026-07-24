@@ -10,7 +10,7 @@ import XCTest
 /// 4. Inputs containing `>` (comparison operators) parse correctly.
 /// 5. Envelope embedded in prose still parses.
 /// 6. Missing `name` field → nil.
-/// 7. Missing `input` field → nil.
+/// 7. Missing `input` field → empty input (no-argument skills are valid).
 /// 8. Invalid JSON between the tags → nil.
 /// 9. No tags present → nil.
 /// 10. Empty string → nil.
@@ -93,9 +93,23 @@ final class ToolCallEnvelopeTests: XCTestCase {
         XCTAssertNil(ToolCallEnvelope.parse(from: text))
     }
 
-    func testMissingInputFieldReturnsNil() {
+    /// A missing `input` field parses to an EMPTY input, not to nil.
+    ///
+    /// This was `XCTAssertNil` until the universal tool-call parser
+    /// landed, and the relaxation is deliberate: `DeviceInfoSkill.execute`
+    /// ignores its input entirely, so `{"name": "DeviceInfo"}` is a
+    /// well-formed call. Requiring `input` would reject every no-argument
+    /// skill.
+    ///
+    /// Safe downstream: `CalculatorSkill` answers an empty expression with
+    /// "Error: No valid math expression provided.", and
+    /// `isStateChanging("")` is false for every write-capable skill, so an
+    /// empty input can never dispatch a state change.
+    func testMissingInputFieldParsesToEmptyInput() {
         let text = #"<tool_call>{"name": "Calculator"}</tool_call>"#
-        XCTAssertNil(ToolCallEnvelope.parse(from: text))
+        let envelope = ToolCallEnvelope.parse(from: text)
+        XCTAssertEqual(envelope?.name, "Calculator")
+        XCTAssertEqual(envelope?.input, "")
     }
 
     func testInvalidJSONReturnsNil() {
@@ -111,8 +125,31 @@ final class ToolCallEnvelopeTests: XCTestCase {
         XCTAssertNil(ToolCallEnvelope.parse(from: ""))
     }
 
-    func testOpenTagWithoutCloseTagReturnsNil() {
+    /// A dropped closing tag around OTHERWISE COMPLETE JSON is salvaged.
+    ///
+    /// Also a deliberate relaxation. `looksLikeToolCallAttempt` matches on
+    /// the `tool_call` substring, then `extractFirstJSONObject` recovers a
+    /// brace-balanced object. Small models drop closing tags routinely —
+    /// this codebase is built around that fact — and the payload here is
+    /// complete, so refusing it would discard a call the model fully
+    /// emitted.
+    ///
+    /// The safety argument rests on *balance*: salvage requires balanced
+    /// braces, so a generation truncated mid-JSON cannot be recovered.
+    /// `testUnbalancedJSONIsNotSalvaged` pins that boundary — the two
+    /// tests are only meaningful as a pair.
+    func testOpenTagWithoutCloseTagIsSalvaged() {
         let text = #"<tool_call>{"name": "Calculator", "input": "2+2"}"#
+        let envelope = ToolCallEnvelope.parse(from: text)
+        XCTAssertEqual(envelope?.name, "Calculator")
+        XCTAssertEqual(envelope?.input, "2+2")
+    }
+
+    /// The boundary the salvage path must NOT cross: unbalanced braces
+    /// mean the model was cut off mid-emission, and acting on a partial
+    /// tool call is exactly the failure the balance requirement prevents.
+    func testUnbalancedJSONIsNotSalvaged() {
+        let text = #"<tool_call>{"name": "Calculator", "input": "2+2""#
         XCTAssertNil(ToolCallEnvelope.parse(from: text))
     }
 

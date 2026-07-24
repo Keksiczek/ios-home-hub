@@ -123,8 +123,11 @@ actor SkillManager {
     /// Parses the first `<tool_call>` envelope in `text`.
     ///
     /// Returns `nil` if no valid envelope is present, the JSON is malformed,
-    /// or either the `name` or `input` field is missing. Logs the drop at
-    /// `debug` so agentic-loop regressions leave a trace in Console.app.
+    /// or the `name` field is missing. A missing `input` parses to an EMPTY
+    /// input rather than nil — no-argument skills like `DeviceInfo` ignore
+    /// their input entirely, so requiring the field would reject well-formed
+    /// calls. Logs the drop at `debug` so agentic-loop regressions leave a
+    /// trace in Console.app.
     func parseAction(from text: String) -> ActionCommand? {
         if let cmd = ToolCallEnvelope.parse(from: text)?.toActionCommand() {
             return cmd

@@ -124,17 +124,39 @@ final class PromptAssemblyTests: XCTestCase {
         ]
         let package = makePackage(facts: facts, episodes: episodes)
         let prompt = service.build(from: package)
-        let system = prompt.systemPrompt
 
-        // L0: profile appears before L1: facts
-        let profileRange = system.range(of: "About the user")!
-        let factsRange = system.range(of: "Remembered facts")!
-        let episodesRange = system.range(of: "Recent context")!
-        let guardrailsRange = system.range(of: "Never fabricate")!
+        // Ordering is asserted WITHIN each half, not across the merged legacy
+        // string.
+        //
+        // The prompt is assembled in two halves: a `stableSystemPrompt` that
+        // stays byte-identical across turns (so the KV-cache prefix survives)
+        // and a `volatileSystemPrompt` that changes every turn. The profile and
+        // the privacy guardrail are stable; facts and episodes are volatile.
+        //
+        // The legacy `systemPrompt` getter concatenates `stable + volatile`, so
+        // the guardrail now precedes episodes in that merged string — which is
+        // why the old cross-half assertion (`episodes < guardrails`) fails. The
+        // guardrail's stable placement is deliberate and must not be reverted
+        // to satisfy a test: in production the volatile half is not appended to
+        // the system prompt at all, `MLXRuntime` injects it into the user turn
+        // inside `<context>`. Asserting across the halves was measuring an
+        // artifact of the legacy getter, not the assembly contract.
+        let stable = prompt.stableSystemPrompt
+        let volatileHalf = prompt.volatileSystemPrompt
 
-        XCTAssertTrue(profileRange.lowerBound < factsRange.lowerBound)
-        XCTAssertTrue(factsRange.lowerBound < episodesRange.lowerBound)
-        XCTAssertTrue(episodesRange.lowerBound < guardrailsRange.lowerBound)
+        let profileRange = stable.range(of: "About the user")!
+        let guardrailsRange = stable.range(of: "Never fabricate")!
+        XCTAssertTrue(
+            profileRange.lowerBound < guardrailsRange.lowerBound,
+            "stable half: profile must precede the privacy guardrail"
+        )
+
+        let factsRange = volatileHalf.range(of: "Remembered facts")!
+        let episodesRange = volatileHalf.range(of: "Recent context")!
+        XCTAssertTrue(
+            factsRange.lowerBound < episodesRange.lowerBound,
+            "volatile half: facts must precede episodes"
+        )
     }
 
     // MARK: - Limits

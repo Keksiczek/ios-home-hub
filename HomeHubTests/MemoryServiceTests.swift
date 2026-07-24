@@ -83,7 +83,24 @@ final class MemoryServiceTests: XCTestCase {
         let (service, _) = await makeStructuredService(responseJSON: json)
 
         let conversationID = UUID()
-        let message = Message.user("I work at Apple on the SwiftUI team", in: conversationID)
+        // The message must REACH Layer 3, which means clearing two gates in
+        // `MemoryExtractionService.extract`: `candidates.isEmpty` (no Layer-1
+        // trigger, no Layer-2 proper noun) and `count >= llmMinMessageLength`
+        // (40).
+        //
+        // The original fixture — "I work at Apple on the SwiftUI team" — failed
+        // both: 35 characters, and "i work at" is a Layer-1 trigger. So the
+        // pipeline answered from the heuristic layer and never called the LLM,
+        // and the test asserted `.structured` against a `.heuristic` candidate.
+        // The extraction pipeline was inverted to cheapest-first in 093f6f7;
+        // this file predates that and was never adapted.
+        //
+        // The assertions below check the STUB's JSON, not the message text, so
+        // the wording is free to change.
+        let message = Message.user(
+            "The kitchen light stays on much longer than it needs to",
+            in: conversationID
+        )
         await service.consider(message: message)
 
         XCTAssertEqual(service.candidates.count, 1)
@@ -113,7 +130,13 @@ final class MemoryServiceTests: XCTestCase {
         let (service, _) = await makeStructuredService(responseJSON: json)
 
         let conversationID = UUID()
-        let message = Message.user("I'm migrating my app to SwiftUI", in: conversationID)
+        // Same Layer-3 gate as the fact test above. The original fixture
+        // ("I'm migrating my app to SwiftUI") was 31 characters — under
+        // `llmMinMessageLength` — so structured extraction never ran.
+        let message = Message.user(
+            "Spent most of the afternoon reorganising the cupboards",
+            in: conversationID
+        )
         await service.consider(message: message)
 
         XCTAssertEqual(service.candidates.count, 1)
@@ -143,7 +166,23 @@ final class MemoryServiceTests: XCTestCase {
         await service.consider(message: message)
 
         XCTAssertFalse(service.candidates.isEmpty)
-        XCTAssertTrue(service.candidates.allSatisfy { $0.extractionMethod == .heuristic })
+        // Layer 2 (NLTagger) runs ADDITIVELY after Layer 1, skipping only
+        // categories Layer 1 already covered. "Alex" tags as a personal name →
+        // `.relationships`, which the triggers here don't cover, so a
+        // `.naturalLanguage` candidate legitimately joins the heuristic ones.
+        //
+        // `allSatisfy { == .heuristic }` therefore asserted something the
+        // pipeline never promised, and its outcome depended on NLTagger's
+        // OS-version behaviour. What this test actually cares about is that the
+        // cheap layers answered and the LLM was never consulted.
+        XCTAssertTrue(
+            service.candidates.contains { $0.extractionMethod == .heuristic },
+            "the keyword trigger should have produced at least one candidate"
+        )
+        XCTAssertFalse(
+            service.candidates.contains { $0.extractionMethod == .structured },
+            "cheap layers matched, so Layer 3 must not have run"
+        )
         XCTAssertTrue(service.candidates.allSatisfy { $0.kind == .fact })
     }
 
@@ -281,9 +320,17 @@ final class MemoryServiceTests: XCTestCase {
         await service.consider(message: message)
         XCTAssertFalse(service.candidates.isEmpty)
 
+        // `reject` removes exactly one candidate by ID, so asserting the list
+        // is empty afterwards only holds when there was exactly one to begin
+        // with. Layer 2 can add a `.relationships` candidate for "Alex"
+        // alongside the Layer-1 `.personal` one, making the count
+        // NLTagger-dependent. Assert what `reject` actually contracts: that
+        // *this* candidate is gone and exactly one was removed.
+        let before = service.candidates.count
         let candidateID = service.candidates[0].id
         service.reject(candidateID: candidateID)
-        XCTAssertTrue(service.candidates.isEmpty)
+        XCTAssertFalse(service.candidates.contains { $0.id == candidateID })
+        XCTAssertEqual(service.candidates.count, before - 1)
     }
 
     func testRejectAllCandidates() async {

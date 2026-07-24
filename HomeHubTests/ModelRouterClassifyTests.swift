@@ -132,12 +132,24 @@ final class ModelRouterClassifyTests: XCTestCase {
     func testTypicalQuestionRoutesToBalanced() {
         // 60–500 chars, no code markers, no depth phrases — the
         // workhorse path.
+        //
+        // Every fixture here must actually exceed 60 characters. The
+        // original four were 40–55 chars, so they all hit the
+        // `charCount < 60 → .fast` gate and never reached the
+        // `.balanced` default this test claims to cover — the test
+        // was asserting against a band it never entered.
         let prompts = [
-            "Můžeš mi doporučit dobrou knihu o psychologii?",
-            "Jaký je dnes program v Národním divadle?",
-            "What's the difference between an ETF and a mutual fund?",
-            "Jak se připravuje pravá italská carbonara bez smetany"
+            "Můžeš mi doporučit nějakou dobrou knihu o psychologii pro začátečníky?",
+            "Jaký je dnes večer program v Národním divadle a seženu ještě lístek?",
+            "What is the practical difference between an ETF and a mutual fund?",
+            "Jak se připravuje pravá italská carbonara bez smetany a bez zbytečností?"
         ]
+        for prompt in prompts {
+            XCTAssertGreaterThan(
+                prompt.count, 60,
+                "Fixture must exceed the 60-char fast-path gate to exercise .balanced: \(prompt)"
+            )
+        }
         for prompt in prompts {
             XCTAssertEqual(
                 ModelRouter.classify(userInput: prompt, hasImageAttachment: false),
@@ -189,8 +201,16 @@ final class ModelRouterClassifyTests: XCTestCase {
         // We rely on the marker including its trailing space so
         // common words like "funcs" or sentences ending in "func."
         // don't trigger. This test pins the boundary.
+        //
+        // The sentence is deliberately over 60 characters. The original
+        // was 21, which returned `.fast` via the length gate before the
+        // code markers were ever consulted — so it asserted `.balanced`
+        // while proving nothing about substring matching. Long enough to
+        // clear the gate, the assertion actually tests what it claims.
+        let prompt = "mám tu funci na ulici a chtěl bych vědět, jestli to má vůbec smysl"
+        XCTAssertGreaterThan(prompt.count, 60)
         XCTAssertEqual(
-            ModelRouter.classify(userInput: "mám tu funci na ulici", hasImageAttachment: false),
+            ModelRouter.classify(userInput: prompt, hasImageAttachment: false),
             .balanced
         )
     }
