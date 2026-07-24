@@ -163,9 +163,63 @@ struct RetrievalQuery: Sendable {
 }
 
 struct RetrievedChunk: Sendable, Equatable {
+
+    /// Which ranker surfaced this chunk.
+    ///
+    /// Retrieval is hybrid: a dense (embedding cosine) ranking fused with a
+    /// lexical (BM25) one. Recording which side found a chunk is not
+    /// diagnostics decoration — it is the only way to distinguish
+    /// "the corpus genuinely has nothing" from "the embedding backend is
+    /// unavailable and we are running on lexical alone", and those two
+    /// situations need completely different responses from the caller.
+    enum MatchKind: String, Sendable, Equatable {
+        /// Both rankers agreed. The strongest signal available.
+        case hybrid
+        /// Embedding cosine only — no query term matched literally. Normal for
+        /// paraphrased questions.
+        case dense
+        /// BM25 only. Either an exact string the embedder missed (proper noun,
+        /// error code, version number), or dense scoring was unavailable.
+        case lexical
+    }
+
     let document: DocumentRecord
     let chunk: ChunkRecord
+
+    /// Cosine similarity against the query.
+    ///
+    /// - When dense scoring ran, this is the chunk's real cosine — **even for a
+    ///   `.lexical` match**. A chunk can score below `minRelevance` on cosine
+    ///   (so dense did not rank it) yet still surface via BM25; in that case
+    ///   this holds the true sub-threshold cosine, not zero. That is
+    ///   deliberately more informative than zeroing it.
+    /// - When dense scoring did not run at all (`canScoreDense == false`, e.g.
+    ///   the embedder is unavailable), this is `0` — meaning "not measured",
+    ///   not "unrelated".
+    ///
+    /// Either way, **rank order comes from `rank`, not from this value** —
+    /// `similarity` is not comparable across match kinds.
     let similarity: Float
+
+    /// Final position after fusion, 0-based. This is the authoritative
+    /// ordering; `similarity` is not comparable across match kinds.
+    let rank: Int
+
+    let matchKind: MatchKind
+
+    init(
+        document: DocumentRecord,
+        chunk: ChunkRecord,
+        similarity: Float,
+        rank: Int = 0,
+        matchKind: MatchKind = .dense
+    ) {
+        self.document = document
+        self.chunk = chunk
+        self.similarity = similarity
+        self.rank = rank
+        self.matchKind = matchKind
+    }
 }
 
 protocol KnowledgeBaseRetrieving: Sendable {
