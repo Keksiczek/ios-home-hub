@@ -601,3 +601,272 @@ demonstrated hole without blocking on a UX decision.
 `HomeHubTests/ToolInjectionGuardTests.swift` — 12 tests: state-changing
 classification for each skill, untrusted-source marking, the registry lookup,
 and the guard itself (refuses a write on a tainted turn, still allows a read).
+
+---
+
+## Session 5 — 2026-07-24
+
+### Housekeeping first: `main` was 12 commits stale
+
+The round opened on the assumption that `production-readiness/2026-07` was
+merged. It was — as PR #58 on the remote — but the local `main` still pointed at
+`271a7f6`, so `docs/production-readiness/` did not exist in the working tree and
+the handover could not be read from disk. Fast-forwarded before anything else.
+
+Worth recording because the failure mode is silent: every file the handover
+referenced was present on the *branch* and absent from the *checkout*, which
+reads as "the docs were never written" rather than "you are on the wrong commit".
+
+### The failing-test names were never written down
+
+`01-FINDINGS.md` (F-007) and `04-NEXT-ROUND.md` both instruct the next round to
+compare failing-test **names** against the baseline. Neither records the names.
+So the instruction could not actually be followed without first reproducing a
+baseline run.
+
+Fixed by capturing the pristine set into `07-TEST-BASELINE.md` (see below) from
+a run in a detached worktree at `5449523`. Future rounds diff against that file
+instead of spending a full clean build rediscovering it.
+
+### `mlx.generate.prefillStart` breadcrumb
+
+Added in `MLXRuntime.swift`, between "generation requested" and "the model is
+decoding".
+
+Motivated by how F-008 failed rather than by a new defect. When Gemma 3 4B killed
+the process, the last breadcrumb was `mlx.generate.start` — which is written
+*before the ChatSession is constructed*. The trail therefore could not separate
+"crashed building the session" from "crashed in prefill", and that ambiguity is
+what made the F-011 follow-up necessary as a separate device round.
+
+With the crumb, a crash locates itself:
+
+| Last crumb | Fault domain |
+|---|---|
+| `mlx.generate.start` | ChatSession construction / KV setup |
+| `mlx.generate.prefillStart` | prefill or decode inside MLX |
+
+It carries `supportsVision` and `path`, which is precisely the open F-011
+question. Scalars are snapshotted into locals before the `Task { @MainActor }`
+hop so the closure captures no non-Sendable `[Chat.Message]`.
+
+### Deep Search — design agreed, no code yet
+
+`06-DEEP-SEARCH-DESIGN.md`. The governing claim: Perplexity-grade quality comes
+from the retrieval pipeline, not from a clever model — which is what makes it
+reachable on a 2 B on-device checkpoint at all.
+
+The current design delegates five of six retrieval decisions to the model, each
+costing a generation pass, against `maxLoops = 4` and a ~90 s budget. A thorough
+multi-source answer is not unlikely under that arrangement, it is structurally
+unreachable. The proposal replaces the agentic search loop with one deterministic
+research pass plus one synthesis pass.
+
+Decisions settled with the owner: explicit trigger (not model-invoked, not
+auto-classified); generous + moderate tiers only; inline `[n]` citations with a
+deterministic attribution pass as the safety net; **staged delivery**.
+
+Stage 1 (passage extraction, ranking, budgeting, evidence fencing on the existing
+single-search path) adds **no new network or privacy surface**, so it is not
+blocked on the outstanding device checks. Stage 2 is gated on F-303 and F-403 —
+both are inside components the design leans on, and both fail silently today.
+
+### F-007 — one real defect, the rest was test rot
+
+A source-only diagnosis pass was run against the 25-test baseline before
+touching anything. The instruction it was given mattered: decide **per test**
+whether the TEST is stale or the PRODUCT is wrong, and do not paper over a
+defect by adjusting an assertion.
+
+That distinction paid for itself exactly once, and it was worth the whole pass.
+
+#### The defect: `ModelRouter` depth markers were unreachable
+
+`ModelRouter.classify` evaluates in order: image → backticks → code markers →
+**`charCount < 60 → .fast`** → `> 500 → .smart` → **depth markers** → `.balanced`.
+
+The depth-marker block sat *after* the short-input early return, so it could
+never fire for a short prompt. Its own comment two lines above read *"even a
+short prompt with these wants the bigger model"*, and the class header states
+the rule as a disjunction — *"> 500 chars **OR** contains explicit … markers"*.
+Both descriptions were correct; the ordering contradicted them.
+
+Effect on the product: `"vysvětli detailně proč je nebe modré"` is 36 characters,
+so a user explicitly asking for depth was routed to the **smallest** model. The
+block was only reachable in the 60–500 char band — where it matters least.
+
+`"porovnej Swift a Rust ohledně paměti"` passed only by accident: `"swift "` is
+in `codeMarkers`.
+
+Fixed by moving the depth-marker check ahead of the length gate. Two tests went
+green with no test change, which is the signal that they were pinning real
+behaviour rather than rotting.
+
+> Also corrected a doc/code disagreement found alongside it: the comment claimed
+> "normal questions land in 40–500 chars" while the code used 60.
+
+#### The rot: three deliberate redesigns, tests never adapted
+
+| Redesign | Commit | Tests left behind |
+|---|---|---|
+| extraction pipeline inverted to cheapest-first | `093f6f7` | 4 × `MemoryServiceTests` |
+| universal tool-call parser | `bc8a21c` | 2 × `ToolCallEnvelopeTests` |
+| stable/volatile prompt split | `1f49369` | `PromptAssemblyTests.testLayerOrdering` |
+
+**`MemoryServiceTests`** — the fixtures could not reach Layer 3. Structured
+extraction now requires `candidates.isEmpty && content.count >= 40`;
+`"I work at Apple on the SwiftUI team"` is 35 characters *and* fires the
+`"i work at"` keyword trigger, so it failed both halves. The tests asserted
+`.structured` against a `.heuristic` candidate. New fixtures clear both gates.
+
+Two further `MemoryServiceTests` were brittle rather than wrong: Layer 2
+(`NLTagger`) runs *additively*, so `"Alex"` adds a `.relationships` candidate
+alongside the Layer-1 one. `allSatisfy { == .heuristic }` and
+`XCTAssertTrue(candidates.isEmpty)` after a single `reject` both depended on
+NLTagger's OS-version behaviour. Rewritten to assert the contract instead: that
+the cheap layers answered and Layer 3 did not run, and that `reject` removed
+exactly the candidate it was given.
+
+**`ToolCallEnvelopeTests`** — both relaxations are correct and now documented:
+
+- *Missing `input` → empty input, not nil.* `DeviceInfoSkill.execute` ignores
+  its input entirely, so `{"name": "DeviceInfo"}` is a well-formed call.
+  Requiring the field would reject every no-argument skill.
+- *Dropped closing tag → salvaged.* Small models drop tags routinely. The safety
+  argument rests on brace **balance**: a generation truncated mid-JSON cannot be
+  recovered. Rather than delete the coverage, a new
+  `testUnbalancedJSONIsNotSalvaged` pins that boundary — the two tests are only
+  meaningful as a pair.
+
+**`PromptAssemblyTests.testLayerOrdering`** — was asserting ordering *across* the
+stable/volatile halves via the legacy concatenating `systemPrompt` getter. The
+privacy guardrail moved to the stable half deliberately (KV-prefix reuse), and
+in production the volatile half is not appended to the system prompt at all —
+`MLXRuntime` injects it into the user turn inside `<context>`. The old
+assertion measured an artifact of the legacy getter. Now asserts ordering
+*within* each half.
+
+Stale prose corrected in the same pass: `SkillManager.parseAction`'s doc still
+claimed a missing `input` returned nil.
+
+#### Not touched, deliberately
+
+`SkillManagerTests` and `SwiftDataStoreTests` were traced and **no source-level
+cause was found**. `SwiftDataStoreTests.testStoreInitializesSuccessfully` builds
+a real on-disk `ModelContainer` in the host app's process; the plausible causes
+are on-disk or simulator state, not source. The tempting fix — switch it to
+`isStoredInMemoryOnly: true` — would silently delete the only coverage of the
+production init path, so it was left alone pending a confirmed diagnosis.
+
+### Disk exhaustion masqueraded as a build failure
+
+A test run failed with `ld: write() failed, errno=28` and
+`clang: error: linker command failed`. Read literally that is a linker problem;
+`errno 28` is **ENOSPC**. The volume had **169 MB free of 113 GB**.
+
+Cause was self-inflicted: the pristine-baseline worktree got its own
+`DerivedData` (1.2 GB of MLX build products) alongside the main tree's 2.5 GB.
+Both worktree and its DerivedData removed once the baseline set was extracted.
+
+Worth recording because the presenting symptom points at the wrong layer
+entirely — nothing in that error mentions disk, and the natural next move is to
+go looking for a code defect that isn't there.
+
+> `~/Library/Developer/Xcode/iOS DeviceSupport` holds 5.7 GB for
+> `iPhone17,1 26.5.2` and `CoreSimulator/Devices` another 8.5 GB. Both are
+> reclaimable but belong to the owner's active debugging setup — deleting the
+> DeviceSupport for the device currently under test would force a slow symbol
+> re-download on next attach. Left alone.
+
+### F-403 (retrieval half) + hybrid retrieval — the deep-search Stage 1 quality step
+
+F-403 was marked OPEN in the register but its **ingest half was already fixed**
+in `37c7dcb` (the pipeline throws code -5 when every chunk embeds to a
+zero-dimension vector). The **retrieval half was still silent**: if the query
+itself could not be embedded, `retrieve` returned `[]` with no log — the same
+"documents answer as if they don't exist" failure, one layer down.
+
+Closed both by making retrieval hybrid rather than dense-only.
+
+**`LexicalRetrieval.swift`** — BM25 + Reciprocal Rank Fusion as a pure `enum` of
+static functions. Design choices worth recording:
+
+- **BM25, not TF-IDF.** Chunks vary in length; BM25's `b` term stops a short
+  chunk that repeats a term from burying a long one that discusses it. `k1=1.2`,
+  `b=0.75` are the standard TREC defaults.
+- **Non-negative IDF.** The textbook IDF goes negative for terms in more than
+  half the corpus, which on a small corpus would let a common word *subtract*
+  from a score. The `log(1 + …)` form prevents it. Pinned by
+  `testCommonTermNeverContributesNegativeScore`.
+- **Diacritic folding, no stemming.** Czech users type "hlaseni" for "hlášení",
+  so folding is required. Stemming ("pracoval"/"práce") is deliberately left to
+  the embedder — a hand-rolled Slavic stemmer trades a real false-positive risk
+  (wrong passages in the prompt) for a benefit the dense half already provides.
+- **RRF over weighted sum.** BM25 is unbounded, cosine is [-1, 1]; any weighted
+  sum needs a normalisation that drifts with corpus size. RRF consults only
+  positions, so it is scale-invariant and tuning-free. Pinned by
+  `testFusionIsScaleInvariant`.
+
+**`KnowledgeBaseRetrievalService.retrieve`** now attempts dense, always computes
+lexical, and fuses. `minRelevance` stays a dense-only cosine threshold (applying
+it to a BM25 or fused score compares unrelated scales). A missing embedder
+degrades to lexical with an `.error` log; a corpus of all-zero vectors (indexed
+before the ingest guard) is named explicitly. `RetrievedChunk` gained
+`matchKind` and `rank` so a caller can distinguish "corpus empty" from
+"lexical-only fallback".
+
+**Verification:** 12 new tests, all pass. Full suite 677 pass / 14 fail, and the
+14 are *byte-identical* to the post-F-007 failing set — the retrieval work added
+zero failures. Confirmed by name-diff, not exit code.
+
+> One build lesson re-learned: `Logger.error(_:)` takes an `OSLogMessage` built
+> from a **string literal**. A message assembled with `+` concatenation is a
+> runtime `String` and does not conform — it compiles nowhere near the call site
+> in the error message ("cannot convert value of type 'String' to expected
+> argument type 'OSLogMessage'"). Long log lines must be a single literal.
+
+This is the ranking half of deep-search Stage 1 (`06-DEEP-SEARCH-DESIGN.md`).
+What remains for Stage 1: passage-level chunking of a fetched page, fitting
+passages to the window via the F-201 shedding mechanism, and the one-sentence
+evidence fence.
+
+### Review response — hybrid retrieval hardened before commit
+
+An independent `swift-reviewer` pass over the retrieval diff returned **no
+CRITICAL/HIGH**; it hand-verified the BM25 math, the RRF fusion, the
+dense/lexical index alignment, and the `matchKind` classification as correct,
+and confirmed no Sendable/data-race issues. The MEDIUM/LOW items were addressed:
+
+- **Lexical-only cap (the one that mattered).** Dense hits must clear
+  `minRelevance`; a lexical hit needs only to share a token, and RRF lets a
+  chunk survive on one ranker alone. Unbounded, that widens the injection
+  surface: an imported web page crafted to be keyword-dense in likely-asked
+  vocabulary could take several `maxChunks` slots on `.lexical` matches with no
+  topical support, displacing relevant chunks. Now lexical-**only** survivors
+  are capped (default 2) *when dense scoring is available*; the cap lifts when
+  the embedder is unavailable, because then lexical is the only signal and
+  capping it would cripple the fallback. An absolute BM25 floor was rejected for
+  the same reason RRF beats a weighted sum — BM25 is unbounded and corpus-scaled,
+  so a fixed threshold drifts.
+- **Extracted `fuseAndRank` as a pure, tested function.** The fuse + cap +
+  classify logic — which owns the index-alignment invariant — was inline in the
+  actor's `retrieve`, where it could only be hand-verified. It is now a static
+  function with 8 unit tests (`KnowledgeBaseRetrievalFusionTests`) covering
+  hybrid/dense-only/lexical-only classification, the cap, the degraded path, and
+  bounds. This closes the reviewer's "riskiest invariant has no automated
+  coverage" finding without a DI refactor.
+- **Doc-comment correctness.** `RetrievedChunk.similarity` claimed "0 for a
+  `.lexical` match" unconditionally; that only holds when dense scoring never
+  ran. When dense ran, a lexical-surfaced chunk carries its real sub-threshold
+  cosine (more informative than zero). Comment corrected to match.
+- **Cancellation.** A `Task.checkCancellation()` was restored before the lexical
+  pass, so a task cancelled during the dense pass does not also pay for BM25.
+- Complexity doc-comment corrected (`O(tokens) + O(queryTerms × docs)`).
+
+**Deferred, with reason:** a full integration test *through* `retrieve` needs
+`KnowledgeBaseStore` and `EmbeddingService` behind protocols — both are concrete
+actors today. That DI refactor is worth doing but widens the blast radius past a
+retrieval change, so it is left for its own round. Extracting `fuseAndRank`
+captures the risky logic in the meantime. A web-page-specific (vs. global)
+lexical cap was also considered and left out as premature — the global cap
+bounds the exposure regardless of source.

@@ -8,6 +8,49 @@ maintainability) · **LOW** (polish).
 
 ---
 
+## ⚠️ Status audit — 2026-07-24 (session 5)
+
+**The inline `**Status:**` lines below are stale.** A batch of findings was
+fixed in commit `37c7dcb` ("fix: answer quality, silent failures, and a KB index
+that could never match") and others in the entitlement work, but their status
+lines were never updated. The register was being used as a work list, so this
+matters: several items marked OPEN are done.
+
+This table is authoritative where it disagrees with an inline status line below.
+It supersedes, it does not rewrite — the original entries are left intact so the
+reasoning is still readable.
+
+| ID | Inline says | **Actual** | Evidence (verified this session) |
+|---|---|---|---|
+| F-102 | OPEN | **FIXED** | `HardwareCapabilities.swift` a18/mSeries → 768 MB entitled cap, 512-token budget (was 256) |
+| F-201 | FIXED ✓ | FIXED | already marked in session 2 |
+| F-202 | OPEN | **FIXED** | `PromptAssemblyService.swift:499-525` — stable prompt now explains the `<context>` envelope |
+| F-206 | OPEN | **STILL OPEN** | `ChatTemplate.swift:70-71` still maps `phi3`/`phi2` → `renderChatML` |
+| F-303 | OPEN | **FIXED** | `FetchPageSkill.extractOGImage` calls `isBlockedHost(host)` and drops (`37c7dcb`) |
+| F-304 | OPEN | **FIXED** | `project.yml` sets `INFOPLIST_KEY_UIBackgroundModes: processing` |
+| F-401 | OPEN | **FIXED** | `ConversationService.persist(_:_:)` wrapper logs every save failure (`:403`, `37c7dcb`) |
+| F-402 | — | **FIXED** | `loadMessages` now logs read errors (`37c7dcb`) |
+| F-403 | OPEN | **FIXED** | ingest guard throws code -5 on `dim==0` (`IngestPipeline.swift`, `37c7dcb`); retrieval-side loud fallback added session 5 |
+| F-404 | — | **STILL OPEN** | `HomeHubIntents.swift:372,460` still `(try? await retrieval.retrieve) ?? []` |
+| F-405 | OPEN | **FIXED** | `UserMemoryStore` quarantines the undecodable blob and logs (`37c7dcb`) |
+| F-410 | — | **FIXED** | lifecycle writes routed through the same `persist(_:_:)` helper (`37c7dcb`) |
+| F-416 | — | **STILL OPEN** | `ConversationService.swift:1385` logs and omits; the model is still not told |
+
+**Confirmed STILL OPEN (files untouched by `37c7dcb`):** F-406 (`FileStore`),
+F-407 (`ModelDownloadService`), F-408 (`MLXBackgroundDownloader`), F-411
+(`EmbeddingService`), F-413 (`MemoryExtractionService`), F-414 / F-415
+(`SwiftDataStore`). Not individually re-verified this session, but none of their
+files are in the fix commit, so their OPEN status stands.
+
+**Not re-audited (lower confidence, left as-is):** F-409, F-412 — both in
+`ConversationService`, which *was* touched, so they need a direct check next
+round before being trusted either way.
+
+**F-007** progressed 25 → 14 failing tests this session; see `07-TEST-BASELINE.md`.
+**F-104** and **F-011** remain device-blocked; see `05-DEVICE-CHECKS.md`.
+
+---
+
 ## Round 0 — own analysis
 
 ### F-001 · CRITICAL · Privacy usage descriptions never reach `Info.plist`
