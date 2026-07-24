@@ -683,10 +683,13 @@ enum ModelCatalog {
             format: .mlx
         ),
 
-        // Qwen 2.5 3B removed: swift-transformers 0.1.14 does not support
-        // Qwen2Tokenizer — runtime throws unsupportedTokenizer on every load,
-        // which deletes the cache and re-triggers the broken GGUF download
-        // loop. Re-add once swift-transformers gains Qwen2Tokenizer support.
+        // Qwen 2.5 3B was removed when swift-transformers 0.1.14 threw
+        // unsupportedTokenizer("Qwen2Tokenizer") on every load. That is now
+        // handled: `SwiftTransformersTokenizerLoader.remappingUnsupportedBPEClass`
+        // remaps Qwen2Tokenizer onto the generic byte-level BPE driver, and the
+        // Qwen3 text + Qwen VL entries below rely on it. Qwen 2.5 3B itself is
+        // left out only because it has not been run on device (the F-010 rule);
+        // it can be re-added once verified.
 
         LocalModel(
             id: "mlx-gemma-2-2b-it",

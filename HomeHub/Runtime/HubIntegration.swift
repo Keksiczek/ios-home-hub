@@ -67,13 +67,13 @@ struct SwiftTransformersTokenizerLoader: TokenizerLoader {
 
     func load(from directory: URL) async throws -> any MLXLMCommon.Tokenizer {
         do {
-            let upstream = try await AutoTokenizer.from(modelFolder: directory)
+            let upstream = try await Self.loadUpstream(from: directory)
             return SwiftTransformersTokenizerBridge(upstream, modelFamily: modelFamily)
         } catch {
             // Log what is actually present in the folder for easier debugging on device
             let fm = FileManager.default
             let files = (try? fm.contentsOfDirectory(atPath: directory.path))?.joined(separator: ", ") ?? "unreadable"
-            
+
             HHLog.runtime.error("""
                 Tokenizer load failed at: \(directory.path)
                 Found files: \(files)
@@ -81,6 +81,70 @@ struct SwiftTransformersTokenizerLoader: TokenizerLoader {
                 """)
             throw error
         }
+    }
+
+    /// Loads the upstream tokenizer, remapping tokenizer classes that
+    /// swift-transformers 0.1.14 does not register by name but which are
+    /// structurally the generic byte-level BPE it *does* support.
+    ///
+    /// This replicates `AutoTokenizer.from(modelFolder:)` exactly — which is
+    /// itself just `PreTrainedTokenizer(tokenizerConfig:tokenizerData:)` — with
+    /// one inserted step: `remappingUnsupportedBPEClass` rewrites the
+    /// `tokenizer_class`. For every model whose class *is* registered, the remap
+    /// is a no-op and the path is behaviourally identical to before.
+    private static func loadUpstream(from directory: URL) async throws -> any Tokenizers.Tokenizer {
+        let configLoader = LanguageModelConfigurationFromHub(modelFolder: directory)
+        guard let tokenizerConfig = try await configLoader.tokenizerConfig else {
+            // No tokenizer_config.json to inspect — defer to the stock loader so
+            // its own missing-config error and behaviour are preserved exactly.
+            return try await AutoTokenizer.from(modelFolder: directory)
+        }
+        let tokenizerData = try await configLoader.tokenizerData
+        let patched = remappingUnsupportedBPEClass(tokenizerConfig)
+        return try PreTrainedTokenizer(tokenizerConfig: patched, tokenizerData: tokenizerData)
+    }
+
+    /// swift-transformers 0.1.14 registers a fixed set of tokenizer class names
+    /// (`Tokenizer.swift` `knownTokenizers`) and throws `unsupportedTokenizer`
+    /// for anything else — including `Qwen2Tokenizer`, which the whole Qwen
+    /// 2 / 2.5 / 3 family (text and VL) declares. That failure is fatal *and*
+    /// destructive: it deletes the cache and re-triggers the download loop
+    /// (see `ModelCatalogService`'s Qwen-2.5 note).
+    ///
+    /// `Qwen2Tokenizer` is a byte-level BPE tokenizer, structurally identical to
+    /// the GPT-2 / Llama / Gemma tokenizers swift-transformers *does* support —
+    /// all of which are literally empty `: BPETokenizer {}` subclasses. A
+    /// tokenizer's real behaviour (pre-tokenizer, normalizer, BPE merges,
+    /// decoder) is built entirely from `tokenizer.json`; the class name only
+    /// selects the driver. So remapping the name onto the generic
+    /// `PreTrainedTokenizer` (whose model resolves to `BPETokenizer`) loads
+    /// Qwen correctly, using the identical code path swift-transformers would
+    /// run if it registered `class Qwen2Tokenizer: BPETokenizer {}` itself.
+    ///
+    /// The remap is an allowlist of exactly one. A blanket "unknown class → BPE"
+    /// would risk silently mistokenising a genuinely different tokenizer (e.g. a
+    /// SentencePiece one) as byte-level BPE, which is worse than a clean failure.
+    static let byteLevelBPEClassRemap: [String: String] = [
+        "Qwen2Tokenizer": "PreTrainedTokenizer"
+    ]
+
+    /// Returns `config` unchanged unless its `tokenizer_class` is in
+    /// `byteLevelBPEClassRemap`, in which case a copy with the rewritten class
+    /// is returned. Pure; unit-tested in `TokenizerRemapTests`.
+    static func remappingUnsupportedBPEClass(_ config: Config) -> Config {
+        guard let rawClass = config.dictionary["tokenizer_class" as NSString] as? String
+        else { return config }
+        // swift-transformers itself strips a "Fast" suffix before lookup, so a
+        // `Qwen2TokenizerFast` config resolves the same way.
+        let normalized = rawClass.replacingOccurrences(of: "Fast", with: "")
+        guard let replacement = byteLevelBPEClassRemap[normalized] else { return config }
+
+        var dictionary = config.dictionary
+        dictionary["tokenizer_class" as NSString] = replacement
+        HHLog.runtime.info(
+            "tokenizer: remapped \(rawClass, privacy: .public) → \(replacement, privacy: .public) — swift-transformers 0.1.14 has no \(normalized, privacy: .public) driver, using generic byte-level BPE"
+        )
+        return Config(dictionary)
     }
 }
 
