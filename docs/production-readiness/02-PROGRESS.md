@@ -931,3 +931,79 @@ means the *efficacy* claim waits on hardware, even though the change is safe.
 Not shipped: a blind sampler change (removing repetition penalty). The trigger is
 strongly evidenced but unconfirmed, and the project rule is to say so rather than
 guess. The device round confirms it (smoke test with `repeatPenalty = 1.0`).
+
+---
+
+## Session 7 — 2026-07-24 · F-012 root-caused; Noema set as the bar
+
+### The app could not generate a single token
+
+Four more crash reports arrived from a build that **already contained session
+6's `withErrorHandler` wrap**. Identical stack, four crashes in 25 seconds. Both
+halves of that were informative.
+
+**The scoped wrap was ineffective, and the stack said why.** MLX evaluates inside
+`ChatSession.streamMap`'s own detached task (`completeTaskWithClosure` on
+`com.apple.root.default-qos.cooperative`, under `SerialAccessContainer.update` →
+`AsyncMutex.withLock`) — a different task from the consumer loop the handler was
+scoped around, so it was never active where the error was raised. Session 6 had
+flagged exactly this as a possible outcome and shipped it anyway because the wrap
+was strictly ≥ current behaviour; the device settled it. Replaced with a
+process-wide handler via `MLX.setErrorHandler` in `MLXRuntime.init`, which has no
+scope gap.
+
+**The cause was an upstream rank bug.** `TokenRing.loadPrompt` reads the prompt
+length as `prompt.dim(0)`, but the prompt is rank-2 `[1, seqLen]` — so it takes
+the batch size (1). The ring becomes `[seqLen + capacity - 1]` instead of
+`[capacity]`, and `TokenRing.append`'s
+`MLX.where(mask[capacity], token, buffer)` cannot broadcast. MLX raises, its
+default handler `assertionFailure`s, process dies on an uncatchable SIGTRAP.
+
+The deduction closes without needing to run anything: `where` here can only fail
+when `buffer.count != capacity`, and a **1-D prompt cannot produce that** — short
+prompts pad to exactly `capacity`, long prompts slice to exactly `capacity`. The
+rank-2 branch is the only path that can fail, and it fails for every prompt over
+one token.
+
+**Severity was higher than session 6 assessed.** `repeatPenalty` defaults to 1.1
+and `processor()` builds the context whenever `repetitionPenalty != nil &&
+repetitionContextSize > 0`, so this fired on *every generation of every model*,
+including the post-load smoke test. Generation was impossible app-wide. That is
+almost certainly the "hodně modelů nefunguje" reported across several rounds — it
+was never per-model.
+
+**It also re-diagnoses F-008.** Gemma 3 4B's breadcrumb signature
+(`generate.start maxTokens=4` → death) is this sampler crash on the smoke test,
+not the multimodal-container routing originally inferred. Its withdrawal may have
+been unnecessary; flagged for re-test.
+
+Fixed by passing `repetitionPenalty: nil` / `repetitionContextSize: 0`.
+
+> **Cost, stated plainly.** The anti-repetition pressure that targeted Czech
+> replies bleeding Russian/Spanish tokens is gone. It never actually ran in
+> production — it crashed — so nothing regressed against observed behaviour, but
+> the underlying quality risk returns. Restoring it needs our own
+> `LogitProcessor` with a correct ring buffer (A1), **not** re-enabling the flag.
+
+### Noema recorded as the bar to clear
+
+The owner found **Noema — Local AI & Offline LLM** and set it as the standard
+HomeHub has to reach *as a whole product*, not as a feature checklist. Written up
+in `08-IMPROVEMENTS.md` §E with a side-by-side table and an ordering by ground
+covered.
+
+The honest conclusion from that comparison: **the top of the list is reliability,
+not features.** Their entire feature set presupposes that generation works, which
+until this session ours did not. Their user-facing Benchmarking Center is
+explicitly *low* priority — our own measurement needs (F-104's real budgets, the
+deep-search latency table) are better served by targeted instrumentation.
+
+Also recorded: where HomeHub is already ahead (the F-301 information-flow
+injection guard, the SSRF-hardened fetch path, entitlement-aware memory tiers,
+the silent-failure work) so those are not traded away while chasing breadth.
+
+### Verification
+
+Suite 691 pass / 14 fail, failing set byte-identical to the previous run — zero
+regressions. Disk hit ENOSPC mid-session again; scratch logs are now deleted
+after extracting the failing-name sets.
