@@ -31,6 +31,30 @@ private final class ProgressLogThrottle: @unchecked Sendable {
     var lastLoggedFraction: Double = -1
 }
 
+/// Records the first MLX-internal error reported during a generation so the
+/// decode loop can throw a normal Swift error instead of dying.
+///
+/// F-012: an internal MLX failure (e.g. the repetition-penalty `where()`
+/// broadcast crash seen in device crash reports) calls MLX's default error
+/// handler, which `assertionFailure`s — an uncatchable `SIGTRAP` that kills the
+/// whole app. Wrapping the decode in `MLX.withErrorHandler` redirects that into
+/// this box; the loop then throws `RuntimeError.underlying`, which the existing
+/// generation `catch` turns into a clean `.failed` turn. The wrap is strictly
+/// safe: if the error fires on a thread outside the handler's scope, MLX still
+/// aborts exactly as it does today — the box simply never fills. It can never
+/// make generation worse, only sometimes rescue it.
+///
+/// `@unchecked Sendable`: an `NSLock` guards the single field. The handler
+/// (invoked on MLX's compute thread) writes; the decode loop reads.
+private final class MLXGenerationErrorFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _message: String?
+    func record(_ message: String) {
+        lock.withLock { if _message == nil { _message = message } }
+    }
+    var message: String? { lock.withLock { _message } }
+}
+
 /// MLX-backed local runtime for Apple Silicon — the primary backend.
 ///
 /// **Why this is the default:** MLX has no native binary dependency beyond
@@ -1247,7 +1271,27 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                     )
                     watchdog.start()
 
+                    // F-012: redirect MLX-internal aborts into a catchable
+                    // throw. The default MLX error handler `assertionFailure`s
+                    // (uncatchable SIGTRAP → whole app dies); the scoped handler
+                    // records instead, and the loop throws on the next iteration
+                    // so the outer `catch` fails the turn cleanly. Strictly safe
+                    // — see `MLXGenerationErrorFlag`.
+                    let mlxErrorFlag = MLXGenerationErrorFlag()
+                    try await MLX.withErrorHandler({ [weak self] message in
+                        mlxErrorFlag.record(message)
+                        self?.log.error("MLX internal error during decode (F-012): \(message, privacy: .public)")
+                    }) {
                     for try await piece in responseStream {
+                        if let mlxMessage = mlxErrorFlag.message {
+                            // Continuing would consume poisoned MLXArrays. Drop
+                            // the cached session so the *next* turn rebuilds a
+                            // clean prefix rather than reusing poisoned KV, then
+                            // bail to the outer catch, which marks the turn
+                            // failed.
+                            self.sessionLock.withLock { self.activeSession = nil }
+                            throw RuntimeError.underlying("MLX internal error during generation: \(mlxMessage)")
+                        }
                         if Task.isCancelled { break }
                         watchdog.recordToken()
                         if firstTokenAt == nil {
@@ -1306,6 +1350,8 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                         }
                         if shouldStop { break }
                     }
+                    }  // MLX.withErrorHandler (F-012); loop body kept at prior
+                       // indentation so the wrap is a small, reviewable diff.
 
                     watchdog.stop()
 
