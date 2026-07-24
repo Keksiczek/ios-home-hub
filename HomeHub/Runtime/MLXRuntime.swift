@@ -1193,6 +1193,37 @@ final class MLXRuntime: LocalLLMRuntime, @unchecked Sendable {
                         MLXRandom.seed(seed)
                     }
 
+                    // Phase marker between "generation was requested" and
+                    // "the model is actually decoding". F-008 killed the
+                    // process somewhere in this gap and the breadcrumb
+                    // trail could not say where: the last crumb was
+                    // `mlx.generate.start`, which is written before the
+                    // session is even built. With this crumb a crash
+                    // report is self-locating — its presence means the
+                    // ChatSession was constructed and the crash is in
+                    // prefill/decode; its absence means the crash is in
+                    // session construction.
+                    //
+                    // `supportsVision` is recorded because the open
+                    // question (F-011) is precisely whether a VLM
+                    // container survives this text-only path.
+                    // Values are snapshotted into locals before the Task so
+                    // the closure captures only Sendable scalars — capturing
+                    // `canonicalHistory` itself would drag a non-Sendable
+                    // `[Chat.Message]` across the actor hop.
+                    let crumbModelID = currentModelID
+                    let crumbHistoryCount = canonicalHistory.count
+                    let crumbSupportsVision = loadedSupportsVision
+                    Task { @MainActor in
+                        OOMTelemetryService.shared.breadcrumb("mlx.generate.prefillStart", context: [
+                            "modelID": crumbModelID,
+                            "conversationID": conversationID.uuidString,
+                            "path": "chatSession",
+                            "supportsVision": "\(crumbSupportsVision)",
+                            "historyMessages": "\(crumbHistoryCount)"
+                        ])
+                    }
+
                     let responseStream = session.streamResponse(
                         to: injectedContent,
                         role: lastTurn.role,
