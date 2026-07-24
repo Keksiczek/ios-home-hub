@@ -167,3 +167,60 @@ Check 1 steps 1–4 is the blocker. Everything else can wait a round.
 
 Checks 2 and 3 are cheap to bundle in while you already have the device out —
 but they are not blocking anything.
+
+---
+
+## Round 6 device checks — after the tokenizer fix + F-012 wrap
+
+Session 6 diagnosed the device data. F-011 is **resolved** (Qwen3-VL failed at the
+tokenizer, not the vision path — see `01-FINDINGS.md`). This round verifies the
+two fixes that went in and confirms the F-012 crash trigger.
+
+### Check A — do the Qwen models load now? (tokenizer remap)
+
+The whole Qwen family (Qwen3 4B/1.7B/8B text, Qwen3-VL, Qwen2-VL) failed with
+`unsupportedTokenizer("Qwen2Tokenizer")`. `SwiftTransformersTokenizerLoader` now
+remaps that class onto the generic byte-level BPE driver. The remap logic is
+unit-tested on CPU; **only the device can confirm the remapped tokenizer actually
+tokenises correctly and the model generates coherent text.**
+
+1. Download and load **Qwen3 4B Instruct** (`mlx-qwen3-4b-it-2507`). It should now
+   load past the tokenizer instead of looping.
+2. Ask a normal Czech question. Watch for: does it answer coherently, or is the
+   output garbled? Garbled text = the BPE remap tokenises wrong (would need a
+   different tokenizer path). Coherent = the remap is correct end-to-end.
+3. Look in Console for `tokenizer: remapped Qwen2Tokenizer → PreTrainedTokenizer`
+   — confirms the remap fired.
+
+If it generates coherently, the same fix unblocks all seven Qwen entries.
+
+### Check B — F-012: is the sampler crash caught now, and what triggers it?
+
+Three crash reports showed an **uncatchable** crash in the repetition-penalty
+sampler (`RepetitionContext.didSample → mlx_where → assertionFailure`). Generation
+is now wrapped in `MLX.withErrorHandler`, which should convert that abort into a
+clean failed turn instead of killing the app.
+
+**B1 — does the wrap catch it?** Load a model that previously crashed on load (the
+smoke test) or on first message. Instead of the app vanishing, you should now see
+the model turn fail with an error banner and a Console line
+`MLX internal error during decode (F-012): …`. If the app still hard-crashes, the
+error fires on a thread outside the handler's scope and we need a different
+approach (the wrap is harmless either way).
+
+**B2 — confirm the trigger.** The crash is activated by repetition penalty
+(`repeatPenalty` defaults to 1.1, applied even on the 4-token smoke test). If a
+model reproducibly crashes, that confirms F-012's mechanism. Capture the crash
+report (`.ips`) + breadcrumbs so the last crumb (`mlx.generate.start` vs
+`mlx.generate.prefillStart`) pins where it died.
+
+> This also likely re-explains **F-008** (Gemma 3 4B). If Gemma 3 4B, re-added and
+> loaded, now fails *gracefully* (caught) instead of crashing, that confirms the
+> smoke-test sampler crash — not multimodal routing — was the real F-008 cause.
+> Only try this if you want to confirm it; otherwise leave Gemma 3 4B withdrawn.
+
+### What to send
+
+Same as before: `oom-breadcrumbs.json`, the diagnostic export, and any `.ips`
+crash reports. For Check A, a screenshot of a Qwen3 answer (coherent or garbled)
+is the key signal.

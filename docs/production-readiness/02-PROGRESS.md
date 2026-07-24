@@ -870,3 +870,64 @@ retrieval change, so it is left for its own round. Extracting `fuseAndRank`
 captures the risky logic in the meantime. A web-page-specific (vs. global)
 lexical cap was also considered and left out as premature — the global cap
 bounds the exposure regardless of source.
+
+---
+
+## Session 6 — 2026-07-24 · device diagnosis + two fixes
+
+Štěpán ran the device checks and sent crash reports, breadcrumbs, and a
+diagnostic export. The data reframed two findings and produced two fixes.
+
+### The Qwen family cannot load — tokenizer, not vision (F-011 resolved, F-013)
+
+F-011 predicted Qwen3-VL would crash on the text-path smoke test. It doesn't — it
+fails earlier and cleanly, at tokenizer load:
+`unsupportedTokenizer("Qwen2Tokenizer")`. swift-transformers 0.1.14's
+`knownTokenizers` has no `Qwen2Tokenizer`, and **the entire Qwen 2/2.5/3 family
+declares it** — confirmed by fetching all seven catalog repos' tokenizer_config
+(3 text + 4 vision, all `"tokenizer_class": "Qwen2Tokenizer"`). This is the same
+wall that already sank Qwen 2.5 3B (documented at `ModelCatalogService.swift:686`);
+the catalog refresh re-hit it, the F-010 lesson recurring.
+
+**Fixed by remap, not withdrawal** (owner's call). `Qwen2Tokenizer` is byte-level
+BPE — structurally identical to the GPT-2/Llama/Gemma tokenizers swift-transformers
+*does* support, all of which are literally empty `: BPETokenizer {}` subclasses. A
+tokenizer's behaviour comes entirely from `tokenizer.json`; the class name only
+picks the driver. So `SwiftTransformersTokenizerLoader` now rewrites
+`Qwen2Tokenizer → PreTrainedTokenizer` before construction, using the identical
+code path swift-transformers would run if it registered the class itself. The
+remap is an allowlist of one (a blanket "unknown → BPE" could mistokenise a
+SentencePiece model). Verified sound by reading swift-transformers'
+`PreTrainedTokenizer.init` (all pipeline stages built from `tokenizer.json`,
+`Tokenizer.swift:233-240`).
+
+Six CPU unit tests (`TokenizerRemapTests`) cover the decision table. End-to-end
+tokenisation correctness (does the remapped tokenizer produce coherent Qwen
+output) is a device check — a faithful fixture would need the real ~7 MB Qwen
+`tokenizer.json`, and a hand-built one risks a `fatalError`-on-missing-merges
+runner crash for less confidence than the source proof already gives.
+
+### F-012 · uncatchable SIGTRAP in the repetition-penalty sampler
+
+The three `.ips` are one crash, not OOM and not the vision path:
+`RepetitionContext.didSample → TokenRing.append → MLX.where → _mlx_error →
+assertionFailure → brk 1`. MLX's default error handler turns an internal `where()`
+broadcast error into an uncatchable SIGTRAP. It is activated by our config —
+`repeatPenalty` defaults to 1.1, applied even on the 4-token post-load smoke test —
+so it can brick the app on model load. **This likely re-diagnoses F-008**: Gemma 3
+4B's "generate.start maxTokens=4 → died" pattern matches a smoke-test sampler
+crash, not the multimodal-container routing originally hypothesised.
+
+**Fix: `MLX.withErrorHandler` wrap.** The native decode loop now runs inside a
+scoped handler that records MLX-internal errors; the loop throws on the next
+iteration, dropping the (poisoned) session, and the existing generation `catch`
+turns it into a clean `.failed` turn. The wrap is **strictly ≥ current behaviour**:
+if the error fires outside the handler's thread scope, MLX aborts exactly as it
+does today — the box just never fills. It can rescue, never regress, which is why
+it is safe to ship before device confirmation. **Whether it actually catches this
+crash is device-pending** (`05-DEVICE-CHECKS.md` Check B) — the F-008/F-010 rule
+means the *efficacy* claim waits on hardware, even though the change is safe.
+
+Not shipped: a blind sampler change (removing repetition penalty). The trigger is
+strongly evidenced but unconfirmed, and the project rule is to say so rather than
+guess. The device round confirms it (smoke test with `repeatPenalty = 1.0`).

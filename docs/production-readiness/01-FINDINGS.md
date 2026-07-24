@@ -1039,3 +1039,115 @@ kept on that basis, but **neither has been run on hardware**.
 Needs: load Qwen3-VL 2B on device and confirm the smoke test completes. If it
 crashes, the same withdrawal as F-008 applies and the VLM routing needs the
 container-aware fix.
+
+---
+
+## Session 6 — device diagnosis (2026-07-24, Štěpán's iPhone 16 Pro)
+
+Device data: 3 crash reports (`.ips`), `oom-breadcrumbs 3.json`, diagnostic export,
+Xcode console. iPhone17,1, iOS 26.5.2, 6132 MB budget, tier generous, entitlements
+active. This session **reframes F-008 and resolves F-011** — both differently than
+predicted from breadcrumbs alone.
+
+### F-011 · RESOLVED (not the predicted cause) · Qwen3-VL fails at the TOKENIZER, not the vision path
+
+The device shows Qwen3-VL 2B does **not** crash on the text-path smoke test as F-011
+hypothesised. It fails earlier and cleanly, at tokenizer load:
+
+```
+Tokenizer load failed … Error: Tokenizers.TokenizerError.unsupportedTokenizer("Qwen2Tokenizer")
+MLX: Failed to load model … unsupportedModelType("qwen3_vl")
+```
+
+Root cause is **already documented in this codebase**: `ModelCatalogService.swift:686`
+withdrew Qwen 2.5 3B because *"swift-transformers 0.1.14 does not support
+Qwen2Tokenizer."* `knownTokenizers` in swift-transformers 0.1.14
+(`Tokenizers/Tokenizer.swift:64-75`) lists Bert/CodeGen/CodeLlama/Falcon/Gemma/GPT2/
+Llama/T5/Whisper/Cohere/PreTrainedTokenizer — **no Qwen2Tokenizer** — so
+`TokenizerModel.from` throws `unsupportedTokenizer` (`:90`) before `tokenizer.json`
+is ever consulted. `unsupportedModelType("qwen3_vl")` is a secondary error on the
+same failed load.
+
+The catalog refresh (`14d94c6`) added the Qwen family without connecting the
+already-known tokenizer limitation — the F-010 lesson (a catalog entry must be run
+on hardware) recurring.
+
+### F-013 · HIGH · Seven catalog models cannot load — all use Qwen2Tokenizer
+
+Confirmed by fetching each repo's `tokenizer_config.json` (all HTTP 200,
+`"tokenizer_class": "Qwen2Tokenizer"`):
+
+| Model | Line | Kind |
+|---|---|---|
+| Qwen3 4B Instruct 2507 | `:492` | text — **flagship of the refresh** |
+| Qwen3 1.7B | `:512` | text |
+| Qwen3 8B | `:532` | text |
+| Qwen3-VL 2B | `:933` | vision |
+| Qwen3-VL 4B | `:952` | vision |
+| Qwen2-VL 2B | `:970` | vision |
+| Qwen2-VL 7B | `:991` | vision |
+
+Every one throws `unsupportedTokenizer("Qwen2Tokenizer")` on load. The documented
+side effect (`:688`) makes this worse than a clean failure: the failure *"deletes
+the cache and re-triggers the broken download loop"* — so a user downloads multiple
+GB, fails, and loops. The device log shows exactly this: 4 repeated
+`mlx.load.start` for Qwen3-VL and an earlier interrupted download.
+
+**Two fixes exist:**
+
+1. **Withdraw all seven** (the proven Qwen-2.5-3B pattern). Safe, immediate, but
+   removes the catalog's entire current-generation Qwen lineup.
+2. **Remap the tokenizer class** in `SwiftTransformersTokenizerLoader`
+   (`HubIntegration.swift:68`): rewrite `tokenizer_class: "Qwen2Tokenizer"` →
+   `"PreTrainedTokenizer"` before constructing, so it resolves to the generic
+   `BPETokenizer`. **This is sound** — verified in swift-transformers that
+   `PreTrainedTokenizer` builds its pre-tokenizer / normalizer / decoder / BPE
+   merges entirely from `tokenizer.json` (`Tokenizer.swift:233-240`); the class
+   string only picks the driver, and byte-level BPE (the Qwen/GPT2/Llama-3 family)
+   is precisely what `BPETokenizer` handles. Unlocks all seven. The tokenizer layer
+   is CPU-only, so correctness is unit-testable off-device (round-trip on Czech +
+   emoji + special tokens); end-to-end generation quality still needs the device.
+
+### F-012 · CRITICAL · Uncatchable SIGTRAP in the repetition-penalty sampler
+
+The three `.ips` are **not** OOM and **not** the vision path. All three share one
+symbolicated stack:
+
+```
+_assertionFailure → ErrorHandler.dispatch → _mlx_error → mlx_where
+  → TokenRing.append → RepetitionContext.didSample → PenaltyProcessor.didSample
+  → TokenIterator.convertToToken → … → ChatSession.streamMap
+```
+
+An MLX-internal error in `MLX.where` (a broadcast op) inside mlx-swift-lm's
+repetition-penalty processor calls MLX's default error handler, which
+`assertionFailure`s → `brk 1` → uncatchable SIGTRAP that kills the process.
+
+**Activated by our config.** `RuntimeParameters.repeatPenalty` defaults to **1.1**
+(`LocalLLMRuntime.swift:339`); `MLXRuntime` maps `repeatPenalty > 1.0` to a non-nil
+`repetitionPenalty` (`:1032`), which constructs the `PenaltyProcessor`. The
+post-load smoke test (`RuntimeManager.swift:929`) does **not** override
+`repeatPenalty`, so it inherits 1.1 — meaning **every model runs the penalty
+processor on its 4-token smoke test right after load.**
+
+**This likely re-diagnoses F-008.** Gemma 3 4B's breadcrumb pattern
+("generate.start maxTokens=4 → process died") matches a smoke-test sampler crash,
+not necessarily the multimodal-container routing originally hypothesised.
+Withdrawing Gemma "fixed" it only by stopping its smoke test from running. The
+`.ips` here are from a model that *did* load and generate (the Qwen models all fail
+at the tokenizer, before generation), so a non-Qwen model tripped this.
+
+**Candidate fixes (need device confirmation):**
+- **Robustness (proper):** wrap MLX generation in `withError { … }` /
+  `withErrorHandler` (`MLX/ErrorHandler.swift:52,110`) — MLX exposes exactly this to
+  convert its aborts into catchable Swift errors (the docstring's example is a
+  broadcast error, our exact case). On catch, tear down the container (post-error
+  arrays are poisoned) and surface `.failed`. Turns an app-killing crash into a
+  graceful model failure.
+- **Confirm the trigger first:** set the smoke test's `repeatPenalty = 1.0` and load
+  a model that was crashing. If it stops, the penalty processor is confirmed. Do not
+  ship a blind sampler change — the F-008/F-010 lesson.
+
+Not fixed this session: the trigger cannot be confirmed without the device, and per
+the project rule ("say when you can't verify instead of guessing") the fix waits on
+that confirmation.
